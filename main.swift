@@ -351,6 +351,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return v
     }()
     var installed: [(id: String, name: String)]?
+    // YouTube Music 미니 플레이어
+    var playerEnabled = true
+    var playerCheck: NSButton!
+    let playerH: CGFloat = 34
+    lazy var music: YTMusic = {
+        let m = YTMusic()
+        m.onFoundChange = { [unowned self] in refresh() }
+        m.onUpdate = { [unowned self] title, playing in playerBar.update(title: title, playing: playing) }
+        return m
+    }()
+    lazy var playerBar = PlayerBar(music: music)
+    var showPlayer: Bool { playerEnabled && music.target != nil }
     let topH: CGFloat = 40
     var previews = true
     lazy var preview: PreviewController = {
@@ -389,6 +401,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         makeWindow()
 
         if d.object(forKey: "previews") != nil { previews = d.bool(forKey: "previews") }
+        if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
+        if playerEnabled { music.start() }
         hideDock = d.bool(forKey: "hideDock")
         if hideDock {
             applyDockHiding()
@@ -585,6 +599,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func previewChecked(_ b: NSButton) { setPreviews(b.state == .on) }
+
+    func setPlayer(_ on: Bool) {
+        playerEnabled = on
+        d.set(on, forKey: "player")
+        if on {
+            if !AX.trusted { AX.askTrust() }
+            music.start()
+        } else {
+            music.stop()
+        }
+        refresh()
+        if settings != nil { syncSettings() }
+    }
+
+    @objc func playerChecked(_ b: NSButton) { setPlayer(b.state == .on) }
 
     func applicationWillTerminate(_ notification: Notification) {
         if hideDock { restoreDock() }
@@ -1024,8 +1053,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2) 창 높이: 전부 보이게 하되 화면보다 크면 스크롤
         let screenH = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
-        let viewH = min(docH, screenH - bottom - topH - 80)
-        let h = viewH + bottom + topH
+        let ph = showPlayer ? playerH : 0
+        let viewH = min(docH, screenH - bottom - topH - ph - 80)
+        let h = viewH + bottom + topH + ph
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
         grid.target = { [unowned self] p in dropTarget(at: p, left: left, gridW: gridW, tile: tile) }
@@ -1122,6 +1152,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content.frame = NSRect(x: 0, y: 0, width: w, height: h)
         content.addSubview(scroll)
         if showBar { content.addSubview(bar) }
+        if ph > 0 {
+            playerBar.frame = NSRect(x: 0, y: h - topH - ph, width: w, height: ph)
+            content.addSubview(playerBar)
+            playerBar.needsLayout = true
+        }
 
         // 위쪽 줄: [🔍 앱 찾기 ........] [Finder]
         topBar.frame = NSRect(x: 0, y: h - topH, width: w, height: topH)
@@ -1165,6 +1200,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
         m.addItem(.separator())
+        if showPlayer, let t = music.target {
+            m.addItem(headerItem("♪ " + YTMusic.songTitle(t.rawTitle)))
+            m.addItem(Item("    재생 / 일시정지") { [unowned self] in music.press(.playPause) })
+            m.addItem(Item("    다음 곡") { [unowned self] in music.press(.next) })
+            m.addItem(Item("    이전 곡") { [unowned self] in music.press(.prev) })
+            m.addItem(.separator())
+        }
+        let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
+        pl.state = playerEnabled ? .on : .off
+        m.addItem(pl)
         let pv = Item("마우스를 올리면 열린 창 미리보기") { [unowned self] in setPreviews(!previews) }
         pv.state = previews ? .on : .off
         m.addItem(pv)
@@ -1189,7 +1234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 292),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 322),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -1228,6 +1273,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.addSubview(n)
             return (f, s)
         }
+
+        label("음악", y: 282)
+        playerCheck = NSButton(checkboxWithTitle: "YouTube Music 미니 플레이어", target: self, action: #selector(playerChecked(_:)))
+        playerCheck.frame = NSRect(x: 106, y: 281, width: 250, height: 22)
+        v.addSubview(playerCheck)
 
         label("창 미리보기", y: 252)
         previewCheck = NSButton(checkboxWithTitle: "아이콘에 마우스를 올리면 열린 창 보기", target: self, action: #selector(previewChecked(_:)))
@@ -1287,6 +1337,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         widgetCheck.state = widget ? .on : .off
         dockCheck.state = hideDock ? .on : .off
         previewCheck.state = previews ? .on : .off
+        playerCheck.state = playerEnabled ? .on : .off
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
         sizeSlider.doubleValue = Double(iconSize)
