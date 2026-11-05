@@ -242,6 +242,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var colsField: NSTextField!, rowsField: NSTextField!
     var colsStepper: NSStepper!, rowsStepper: NSStepper!
     var sizeSlider: NSSlider!, sizeLabel: NSTextField!
+    var widgetCheck: NSButton!
 
     let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44, headerH: CGFloat = 28, sectionGap: CGFloat = 10
 
@@ -277,12 +278,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 모드에 맞는 창을 새로 만든다. 일반 창과 위젯은 각자 마지막 위치를 따로 기억
     func makeWindow() {
+        // 모드를 바꿀 때는 새 창을 직전 창의 왼쪽 위 자리에 띄움 (위젯이 엉뚱한 모니터에 뜨지 않게)
+        var carryTopLeft: NSPoint?
         if let old = window {
+            carryTopLeft = NSPoint(x: old.frame.minX, y: old.frame.maxY)
             old.setFrameAutosaveName("")
             old.orderOut(nil)
         }
-        let autosave = widget ? "LauncherWidget" : "LauncherWindow"
-        let firstRun = d.string(forKey: "NSWindow Frame \(autosave)") == nil
+        let autosave = "LauncherWindow"
+        let firstRun = carryTopLeft == nil && d.string(forKey: "NSWindow Frame \(autosave)") == nil
         let rect = NSRect(x: 0, y: 0, width: 300, height: 150)
         let w: NSWindow
         if widget {
@@ -306,12 +310,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 위젯은 Dock 에 안 보이게, 일반 창은 Dock 에 보이게
         NSApp.setActivationPolicy(widget ? .accessory : .regular)
         refresh()
-        if firstRun {
-            if widget, let s = NSScreen.main?.visibleFrame {
-                w.setFrameTopLeftPoint(NSPoint(x: s.minX + 40, y: s.maxY - 40))
-            } else {
-                w.center()
-            }
+        if let p = carryTopLeft {
+            w.setFrameTopLeftPoint(p)
+        } else if firstRun {
+            w.center()
         }
         if widget { w.orderFrontRegardless() } else { showWindow() }
     }
@@ -321,7 +323,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         editing = false
         d.set(widget, forKey: "widget")
         makeWindow()
+        if settings != nil { syncSettings() }
     }
+
+    @objc func toggleWidgetAction() { setWidget(!widget) }
 
     func setWidgetLevel(_ l: Int) {
         widgetLevel = l
@@ -704,6 +709,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let gear = ActionButton(title: "", symbol: "gearshape") { [unowned self] _ in openSettings() }
         gear.toolTip = "열 · 행 · 아이콘 크기 설정 (⌘,)"
+        let widgetBtn = ActionButton(title: widget ? "창으로" : "위젯", symbol: widget ? "macwindow" : "rectangle.on.rectangle") { [unowned self] _ in
+            setWidget(!widget)
+        }
+        widgetBtn.toolTip = widget ? "일반 창으로 돌아가기" : "바탕화면 위젯으로 바꾸기 (⌘⇧W)"
         let total = allIds.count
         let info = NSTextField(labelWithString: editing ? "⊖ 를 눌러 빼기"
                                : "\(total)개" + (showHeaders ? " · \(cats.count)카테고리" : "") + " · \(cols)열")
@@ -723,7 +732,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         gear.setFrameOrigin(NSPoint(x: w - gear.frame.width - 10, y: (barH - gear.frame.height) / 2))
         bar.addSubview(gear)
-        info.setFrameOrigin(NSPoint(x: gear.frame.minX - info.frame.width - 8, y: (barH - info.frame.height) / 2))
+        widgetBtn.setFrameOrigin(NSPoint(x: gear.frame.minX - widgetBtn.frame.width - 4, y: (barH - widgetBtn.frame.height) / 2))
+        bar.addSubview(widgetBtn)
+        info.setFrameOrigin(NSPoint(x: widgetBtn.frame.minX - info.frame.width - 8, y: (barH - info.frame.height) / 2))
         if info.frame.minX > x { bar.addSubview(info) }
 
         let content: NSView
@@ -802,7 +813,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 196),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 232),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -841,6 +852,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.addSubview(n)
             return (f, s)
         }
+
+        label("모양", y: 192)
+        widgetCheck = NSButton(checkboxWithTitle: "바탕화면 위젯으로 쓰기", target: self, action: #selector(widgetChecked(_:)))
+        widgetCheck.frame = NSRect(x: 106, y: 191, width: 240, height: 22)
+        v.addSubview(widgetCheck)
 
         (colsField, colsStepper) = numberRow("열 (가로 칸)", y: 150, max: 12, note: "한 줄에 놓을 앱 수")
         (rowsField, rowsStepper) = numberRow("행 (세로 칸)", y: 116, max: 12, note: "카테고리마다 최소 줄 수")
@@ -882,11 +898,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func syncSettings() {
+        widgetCheck.state = widget ? .on : .off
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
         sizeSlider.doubleValue = Double(iconSize)
         sizeLabel.stringValue = "\(Int(iconSize))px"
     }
+
+    @objc func widgetChecked(_ b: NSButton) { setWidget(b.state == .on) }
 
     @objc func fieldChanged(_ f: NSTextField) {
         let v = max(1, min(12, f.integerValue))
@@ -917,6 +936,9 @@ func buildMainMenu(_ delegate: AppDelegate) {
     let pref = NSMenuItem(title: "설정…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
     pref.target = delegate
     appMenu.addItem(pref)
+    let wid = NSMenuItem(title: "위젯 모드로 바꾸기", action: #selector(AppDelegate.toggleWidgetAction), keyEquivalent: "W")
+    wid.target = delegate
+    appMenu.addItem(wid)
     appMenu.addItem(.separator())
     appMenu.addItem(withTitle: "도구함 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     appItem.submenu = appMenu
