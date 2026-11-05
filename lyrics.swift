@@ -231,54 +231,102 @@ final class LyricsModel: ObservableObject {
 
     private var translateTask: Task<Void, Never>?
 
-    /// 원래 언어와 번역 언어가 다를 때만 번역.
+    /// 줄마다 언어를 따로 알아내서, 언어별로 묶어 번역 (일본 노래 속 영어 줄 등도 빠지지 않게).
     /// 번역 데이터가 깔려 있으면 화면과 상관없이 바로 번역하고, 없을 때만 화면 쪽에서 내려받기를 물어봄
     private func makeConfig() {
         note = ""
         config = nil
         translateTask?.cancel()
-        guard !target.isEmpty, !lines.isEmpty, let src = sourceLang else { return }
+        guard !target.isEmpty, !lines.isEmpty else { return }
         let tgt = Locale.Language(identifier: target)
-        if src.languageCode == tgt.languageCode && !target.hasPrefix("zh") { return }
-        let reqs = requests()
-        guard !reqs.isEmpty else { return }
+        let groups = requestGroups()
+        guard !groups.isEmpty else { return }
+        let snapshot = lines
         translateTask = Task { [weak self] in
-            let status = await LanguageAvailability().status(from: src, to: tgt)
-            guard !Task.isCancelled, let self else { return }
-            switch status {
-            case .installed:
-                do {
-                    let session = TranslationSession(installedSource: src, target: tgt)
-                    let results = try await session.translations(from: reqs)
-                    guard !Task.isCancelled else { return }
-                    for r in results {
-                        if let id = r.clientIdentifier, let i = Int(id) { self.translations[i] = r.targetText }
+            var log: [Int: String] = [:]
+            var needDownload: (Locale.Language, Locale.Language)?
+            for (code, reqs) in groups {
+                let src = Locale.Language(identifier: code)
+                let status = await LanguageAvailability().status(from: src, to: tgt)
+                guard !Task.isCancelled, let self else { return }
+                switch status {
+                case .installed:
+                    do {
+                        let session = TranslationSession(installedSource: src, target: tgt)
+                        let results = try await session.translations(from: reqs)
+                        guard !Task.isCancelled else { return }
+                        for r in results {
+                            if let id = r.clientIdentifier, let i = Int(id) {
+                                self.translations[i] = r.targetText
+                                log[i] = "\(code) → \(r.targetText)"
+                            }
+                        }
+                    } catch {
+                        for r in reqs { if let id = r.clientIdentifier, let i = Int(id) { log[i] = "\(code) 실패: \(error.localizedDescription)" } }
+                        if !Task.isCancelled { self.note = "일부 줄을 번역하지 못했어요 (\(code)): \(error.localizedDescription)" }
                     }
-                } catch {
-                    if !Task.isCancelled { self.note = "번역하지 못했어요: \(error.localizedDescription)" }
+                case .supported:
+                    if needDownload == nil { needDownload = (src, tgt) }
+                    for r in reqs { if let id = r.clientIdentifier, let i = Int(id) { log[i] = "\(code) 번역 데이터 없음" } }
+                default:
+                    for r in reqs { if let id = r.clientIdentifier, let i = Int(id) { log[i] = "\(code) 번역 불가" } }
                 }
-            case .supported:
-                // 번역 데이터가 아직 없음 → 화면의 translationTask 가 내려받을지 물어봄
-                self.config = TranslationSession.Configuration(source: src, target: tgt)
-                self.note = "번역 언어 데이터를 내려받는 중이거나 허용이 필요해요"
-            default:
-                self.note = "이 언어 조합은 번역할 수 없어요"
+            }
+            guard !Task.isCancelled, let self else { return }
+            if let (s, t) = needDownload {
+                // 번역 데이터가 아직 없는 언어가 있음 → 화면의 translationTask 가 내려받을지 물어봄
+                self.config = TranslationSession.Configuration(source: s, target: t)
+                self.note = "번역 언어 데이터를 내려받아야 하는 줄이 있어요"
+            }
+            // 진단: 설정값 lyricsDump 가 켜져 있으면 줄마다 어떻게 번역됐는지 파일로
+            if UserDefaults.standard.bool(forKey: "lyricsDump") {
+                let out = snapshot.enumerated().map { i, l in "\(i)\t\(l)\t\(log[i] ?? (l.trimmingCharacters(in: .whitespaces).isEmpty ? "(빈 줄)" : "(번역 안 함: 같은 줄 반복이거나 이미 번역 언어)"))" }
+                try? out.joined(separator: "\n").write(toFile: NSHomeDirectory() + "/MyLauncher/lyrics-dump.txt", atomically: true, encoding: .utf8)
             }
         }
     }
 
-    /// 번역할 줄: 빈 줄 · 같은 문장 반복 · 이미 번역 언어로 된 줄은 건너뜀
-    func requests() -> [TranslationSession.Request] {
+    /// 한 줄의 언어: 글자 종류로 먼저 판단하고, 라틴 문자만 있는 줄은 서양 언어 중에서 고름
+    func lineLanguage(_ t: String) -> String {
+        if Pronounce.hasKana(t) { return "ja" }
+        if Pronounce.isMostlyHangul(t) { return "ko" }
+        let song = sourceLang?.languageCode?.identifier ?? ""
+        if Pronounce.hasHan(t) { return song == "ja" ? "ja" : (song.hasPrefix("zh") || song.isEmpty ? "zh-Hans" : song) }
+        if !Pronounce.hasNonLatinLetters(t) {
+            let r = NLLanguageRecognizer()
+            r.languageConstraints = [.english, .spanish, .french, .german, .portuguese, .italian, .dutch, .indonesian, .vietnamese, .turkish]
+            r.processString(t)
+            // 짧은 줄은 잘못 알아보기 쉬워서, 확신이 낮으면 영어로
+            if let (lang, p) = r.languageHypotheses(withMaximum: 1).first, p > 0.6 { return lang.rawValue }
+            return "en"
+        }
+        let r = NLLanguageRecognizer()
+        r.processString(t)
+        return r.dominantLanguage?.rawValue ?? (song.isEmpty ? "en" : song)
+    }
+
+    /// 번역할 줄을 언어별로: 빈 줄 · 같은 문장 반복 · 이미 번역 언어로 된 줄은 건너뜀
+    func requestGroups() -> [(String, [TranslationSession.Request])] {
         let tgt = Locale.Language(identifier: target).languageCode?.identifier ?? target
         var seen = Set<String>()
-        return lines.enumerated().compactMap { i, line in
+        var groups: [String: [TranslationSession.Request]] = [:]
+        var order: [String] = []
+        for (i, line) in lines.enumerated() {
             let t = line.trimmingCharacters(in: .whitespaces)
-            guard !t.isEmpty, seen.insert(t).inserted else { return nil }
-            let r = NLLanguageRecognizer()
-            r.processString(t)
-            if let d = r.dominantLanguage, d.rawValue.hasPrefix(tgt), t.count > 3 { return nil }
-            return TranslationSession.Request(sourceText: t, clientIdentifier: String(i))
+            guard !t.isEmpty, t != "♪", seen.insert(t).inserted else { continue }
+            let code = lineLanguage(t)
+            let base = Locale.Language(identifier: code).languageCode?.identifier ?? code
+            if base == tgt && !target.hasPrefix("zh") { continue }   // 이미 번역 언어
+            if groups[code] == nil { order.append(code) }
+            groups[code, default: []].append(TranslationSession.Request(sourceText: t, clientIdentifier: String(i)))
         }
+        return order.map { ($0, groups[$0]!) }
+    }
+
+    /// (내려받기 화면용) 지금 config 언어쌍에 해당하는 줄
+    func requests() -> [TranslationSession.Request] {
+        guard let src = config?.source?.languageCode?.identifier else { return requestGroups().first?.1 ?? [] }
+        return requestGroups().first { (Locale.Language(identifier: $0.0).languageCode?.identifier ?? $0.0) == src }?.1 ?? []
     }
 
     /// 같은 문장이 반복되는 줄(후렴)은 한 번 번역한 걸 같이 씀
