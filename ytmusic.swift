@@ -155,6 +155,14 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
     private func poll() {
         guard let wv = webView else { return }
+        // 진단: 설정값 ytmEvalJS 에 넣은 코드를 페이지에서 한 번 실행하고 결과를 파일로
+        if let js = UserDefaults.standard.string(forKey: "ytmEvalJS"), !js.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "ytmEvalJS")
+            wv.evaluateJavaScript(js) { r, e in
+                let out = r.map { String(describing: $0) } ?? "error: \(String(describing: e))"
+                try? out.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-eval.txt", atomically: true, encoding: .utf8)
+            }
+        }
         if UserDefaults.standard.bool(forKey: "ytmWebDump") {
             UserDefaults.standard.set(false, forKey: "ytmWebDump")
             debugDump()
@@ -272,8 +280,8 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     private static let queueJS = """
     (() => {
       const txt = el => el ? el.textContent.replace(/\\s+/g,' ').trim() : '';
-      const items = [...document.querySelectorAll('ytmusic-player-queue #contents > ytmusic-player-queue-item, ytmusic-player-queue #contents > ytmusic-playlist-panel-video-wrapper-renderer ytmusic-player-queue-item')];
-      const list = items.length ? items : [...document.querySelectorAll('ytmusic-player-queue-item')];
+      // 곡마다 노래·뮤직비디오 두 버전이 들어 있어서, 뮤직비디오 쪽(counterpart)은 빼고
+      const list = [...document.querySelectorAll('ytmusic-player-queue-item')].filter(i => !i.closest('#counterpart-renderer'));
       return JSON.stringify(list.map((it, i) => ({
         title: txt(it.querySelector('.song-title')),
         artist: txt(it.querySelector('.byline')),
@@ -304,8 +312,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     func play(_ item: QueueItem) {
         run("""
         (() => {
-          const items = [...document.querySelectorAll('ytmusic-player-queue #contents > ytmusic-player-queue-item, ytmusic-player-queue #contents > ytmusic-playlist-panel-video-wrapper-renderer ytmusic-player-queue-item')];
-          const list = items.length ? items : [...document.querySelectorAll('ytmusic-player-queue-item')];
+          const list = [...document.querySelectorAll('ytmusic-player-queue-item')].filter(i => !i.closest('#counterpart-renderer'));
           const it = list[\(item.index)];
           if (!it) return;
           const b = it.querySelector('ytmusic-play-button-renderer #play-button, ytmusic-play-button-renderer, .song-info');

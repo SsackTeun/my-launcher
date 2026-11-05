@@ -83,7 +83,11 @@ final class PlayerBar: NSView {
         addSubview(progress)
 
         func btn(_ symbol: String, _ tip: String, size: CGFloat = 13, _ key: String) -> ActionButton {
-            let b = ActionButton(title: "", symbol: symbol) { [weak self] _ in self?.music?.press(key) }
+            let b = ActionButton(title: "", symbol: symbol) { [weak self] _ in
+                self?.music?.press(key)
+                // 셔플은 켜짐 표시가 없어서 눌렀다는 걸 잠깐 알려 줌
+                if key == "shuffle" { self?.flash("🔀 다음 곡들을 섞었어요") }
+            }
             b.isBordered = false
             b.symbolConfiguration = .init(pointSize: size, weight: .semibold)
             b.toolTip = tip
@@ -113,11 +117,23 @@ final class PlayerBar: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     @objc private func openWindow() { music?.showWindow() }
+
+    private var flashUntil = Date.distantPast
+    private func flash(_ msg: String) {
+        flashUntil = Date().addingTimeInterval(2)
+        bylineLabel.stringValue = msg
+        bylineLabel.textColor = .controlAccentColor
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.05) { [weak self] in
+            guard let self, Date() >= self.flashUntil else { return }
+            self.bylineLabel.textColor = .secondaryLabelColor
+            if let st = self.music?.state { self.bylineLabel.stringValue = st.byline }
+        }
+    }
     @objc private func volumeChanged() { music?.setVolume(volume.doubleValue) }
 
     func update(_ st: PlayerState, art: NSImage?) {
         titleBtn.title = st.title.isEmpty ? "재생 중인 곡 없음" : st.title
-        bylineLabel.stringValue = st.byline
+        if Date() >= flashUntil { bylineLabel.stringValue = st.byline }
         timeLabel.stringValue = st.time
         progress.fraction = st.duration > 0 ? st.position / st.duration : 0
         if let art {
