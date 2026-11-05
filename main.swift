@@ -1101,6 +1101,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seg.sizeToFit()
             seg.setFrameOrigin(NSPoint(x: left, y: y))
             views.append(seg)
+            // 실행 중 탭: 골라서 종료 · 모두 종료
+            if tab == 1 {
+                var bx = seg.frame.maxX + 8
+                for (title, action) in [("골라서 종료", { QuitPicker.shared.show() }), ("모두 종료", { BulkWindows.confirmAndRun(.quit) })] as [(String, () -> Void)] {
+                    let b = ActionButton(title: title, symbol: nil) { _ in action() }
+                    b.controlSize = .small
+                    b.font = .systemFont(ofSize: 11)
+                    b.sizeToFit()
+                    b.setFrameOrigin(NSPoint(x: bx, y: y + (seg.frame.height - b.frame.height) / 2))
+                    if b.frame.maxX <= w - 6 { views.append(b) }
+                    bx = b.frame.maxX + 4
+                }
+            }
             y += seg.frame.height + 8
         }
         for sec in sections {

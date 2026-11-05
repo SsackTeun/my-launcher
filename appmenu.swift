@@ -246,7 +246,118 @@ enum BulkWindows {
         m.addItem(Item("열린 창 모두 닫기") { confirmAndRun(.close) })
         m.addItem(Item("열린 창 모두 최소화") { confirmAndRun(.minimize) })
         m.addItem(.separator())
+        m.addItem(Item("앱 골라서 종료…") { QuitPicker.shared.show() })
         m.addItem(Item("앱 모두 종료 (도구함·Finder 제외)") { confirmAndRun(.quit) })
         return m
+    }
+}
+
+// MARK: - 앱 골라서 한꺼번에 종료
+
+@MainActor
+final class QuitPicker: NSObject, NSWindowDelegate {
+    static let shared = QuitPicker()
+    private var window: NSPanel?
+    private var rows: [(NSRunningApplication, NSButton)] = []
+    private var force: NSButton!
+    private var quitBtn: NSButton!
+
+    func show() {
+        let apps = BulkWindows.apps(includeFinder: true)
+            .sorted { ($0.localizedName ?? "").localizedStandardCompare($1.localizedName ?? "") == .orderedAscending }
+        let rowH: CGFloat = 28, w: CGFloat = 340
+        let listH = min(CGFloat(apps.count) * rowH, 420)
+        let h = listH + 110
+
+        let p = window ?? NSPanel(contentRect: NSRect(x: 0, y: 0, width: w, height: h),
+                                  styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        p.title = "앱 골라서 종료"
+        p.isReleasedWhenClosed = false
+        p.delegate = self
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+
+        let head = NSTextField(labelWithString: "종료할 앱을 고르세요 (\(apps.count)개 실행 중)")
+        head.font = .boldSystemFont(ofSize: 12)
+        head.frame = NSRect(x: 14, y: h - 30, width: w - 28, height: 18)
+        v.addSubview(head)
+
+        // 목록 (Finder 는 처음엔 체크 안 함)
+        let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: w - 20, height: CGFloat(apps.count) * rowH))
+        rows = []
+        for (i, app) in apps.enumerated() {
+            let name = app.localizedName ?? app.bundleIdentifier ?? "?"
+            let cb = NSButton(checkboxWithTitle: name, target: self, action: #selector(changed))
+            cb.state = app.bundleIdentifier == "com.apple.finder" ? .off : .on
+            let icon = (app.icon?.copy() as? NSImage) ?? NSImage()
+            icon.size = NSSize(width: 18, height: 18)
+            cb.image = icon
+            cb.imagePosition = .imageLeading
+            cb.frame = NSRect(x: 12, y: CGFloat(i) * rowH + 4, width: w - 44, height: 22)
+            doc.addSubview(cb)
+            rows.append((app, cb))
+        }
+        let scroll = NSScrollView(frame: NSRect(x: 4, y: 70, width: w - 8, height: listH))
+        scroll.documentView = doc
+        scroll.hasVerticalScroller = CGFloat(apps.count) * rowH > listH
+        scroll.drawsBackground = false
+        v.addSubview(scroll)
+
+        let all = ActionButton(title: "모두 선택", symbol: nil) { [weak self] _ in self?.setAll(true) }
+        all.controlSize = .small; all.sizeToFit(); all.setFrameOrigin(NSPoint(x: 12, y: 40))
+        v.addSubview(all)
+        let none = ActionButton(title: "선택 해제", symbol: nil) { [weak self] _ in self?.setAll(false) }
+        none.controlSize = .small; none.sizeToFit(); none.setFrameOrigin(NSPoint(x: all.frame.maxX + 6, y: 40))
+        v.addSubview(none)
+
+        force = NSButton(checkboxWithTitle: "응답 없으면 강제 종료", target: nil, action: nil)
+        force.controlSize = .small
+        force.font = .systemFont(ofSize: 11)
+        force.sizeToFit()
+        force.setFrameOrigin(NSPoint(x: w - force.frame.width - 12, y: 42))
+        v.addSubview(force)
+
+        let cancel = ActionButton(title: "취소", symbol: nil) { [weak self] _ in self?.window?.orderOut(nil) }
+        cancel.keyEquivalent = "\u{1b}"
+        quitBtn = ActionButton(title: "선택한 앱 종료", symbol: nil) { [weak self] _ in self?.quitSelected() }
+        quitBtn.keyEquivalent = "\r"
+        quitBtn.sizeToFit()
+        quitBtn.setFrameOrigin(NSPoint(x: w - quitBtn.frame.width - 12, y: 8))
+        cancel.setFrameOrigin(NSPoint(x: quitBtn.frame.minX - cancel.frame.width - 6, y: 8))
+        v.addSubview(cancel)
+        v.addSubview(quitBtn)
+
+        p.setContentSize(NSSize(width: w, height: h))
+        p.contentView = v
+        if window == nil { p.center() }
+        window = p
+        changed()
+        p.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func setAll(_ on: Bool) {
+        rows.forEach { $0.1.state = on ? .on : .off }
+        changed()
+    }
+
+    @objc private func changed() {
+        let n = rows.filter { $0.1.state == .on }.count
+        quitBtn?.title = n > 0 ? "선택한 앱 \(n)개 종료" : "선택한 앱 종료"
+        quitBtn?.isEnabled = n > 0
+        quitBtn?.sizeToFit()
+        if let q = quitBtn, let v = q.superview { q.setFrameOrigin(NSPoint(x: v.bounds.width - q.frame.width - 12, y: 8)) }
+    }
+
+    private func quitSelected() {
+        let picked = rows.filter { $0.1.state == .on }.map { $0.0 }
+        let forceOn = force.state == .on
+        window?.orderOut(nil)
+        for app in picked { app.terminate() }
+        // 저장 안 한 문서가 있는 앱은 각자 저장할지 물어봄. 강제 종료를 골랐으면 5초 뒤에도 안 꺼진 앱은 강제로
+        if forceOn {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                for app in picked where !app.isTerminated { app.forceTerminate() }
+            }
+        }
     }
 }
