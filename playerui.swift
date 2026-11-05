@@ -86,7 +86,11 @@ final class VolumeViewController: NSViewController {
 
 @MainActor
 final class PlayerBar: NSView {
-    static let height: CGFloat = 118
+    /// 도구함 글자 크기 배율 (설정에서 바꿈)
+    static var fontScale: CGFloat = 1
+    /// 글자가 커지면 곡 정보 줄이 높아지는 만큼 플레이어도 높아짐
+    static var extra: CGFloat { max(0, (fontScale - 1) * 36) }
+    static var height: CGFloat { 118 + extra }
     weak var music: YTMusic?
 
     private let artView = NSImageView()
@@ -274,12 +278,17 @@ final class PlayerBar: NSView {
         dislike.frame = NSRect(x: openBtn.frame.minX - 28, y: 16, width: 24, height: 24)
         like.frame = NSRect(x: dislike.frame.minX - 26, y: 16, width: 24, height: 24)
         let textX = artView.frame.maxX + 10
-        titleBtn.frame = NSRect(x: textX - 2, y: 9, width: like.frame.minX - textX - 4, height: 20)
-        bylineLabel.frame = NSRect(x: textX, y: 30, width: like.frame.minX - textX - 4, height: 16)
+        let fs = PlayerBar.fontScale
+        titleBtn.font = .boldSystemFont(ofSize: 13 * fs)
+        bylineLabel.font = .systemFont(ofSize: 11 * fs)
+        timeLabel.font = .monospacedDigitSystemFont(ofSize: 10 * fs, weight: .regular)
+        titleBtn.frame = NSRect(x: textX - 2, y: 9, width: like.frame.minX - textX - 4, height: ceil(20 * fs))
+        bylineLabel.frame = NSRect(x: textX, y: titleBtn.frame.maxY + 1, width: like.frame.minX - textX - 4, height: ceil(16 * fs))
+        let ex = PlayerBar.extra
         // 2줄: 진행바
-        progress.frame = NSRect(x: pad, y: 58, width: w - pad * 2, height: 14)
+        progress.frame = NSRect(x: pad, y: 58 + ex, width: w - pad * 2, height: 14)
         // 3줄: 시간 · [셔플 이전 재생 다음 반복] · 볼륨 · 재생 목록
-        let rowY: CGFloat = 78
+        let rowY: CGFloat = 78 + ex
         timeLabel.sizeToFit()
         timeLabel.frame.origin = NSPoint(x: pad, y: rowY + 12)
         let cw: CGFloat = 30

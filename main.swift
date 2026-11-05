@@ -54,8 +54,11 @@ func popUp(_ menu: NSMenu, under view: NSView) {
 // MARK: - 앱 하나를 나타내는 칸
 
 final class Tile: NSView {
+    /// 앱 이름 글자 크기 배율 (설정에서 바꿈)
+    static var fontScale: CGFloat = 1
+
     static func size(icon: CGFloat) -> NSSize {
-        NSSize(width: max(icon + 32, 76), height: icon + 42)
+        NSSize(width: max(icon + 32, 76 * min(1.2, fontScale)), height: icon + 26 + ceil(16 * fontScale))
     }
 
     var onClick: (() -> Void)?
@@ -72,16 +75,16 @@ final class Tile: NSView {
                         : "\(name) — 앱을 찾을 수 없음"
 
         // 칸 안쪽은 아래에서 위로: 초록 점 → 이름 → 아이콘
-        let iv = NSImageView(frame: NSRect(x: (s.width - iconSize) / 2, y: 30, width: iconSize, height: iconSize))
+        let iv = NSImageView(frame: NSRect(x: (s.width - iconSize) / 2, y: 14 + ceil(16 * Tile.fontScale), width: iconSize, height: iconSize))
         iv.image = icon
         iv.imageScaling = .scaleProportionallyUpOrDown
         if !found { iv.alphaValue = 0.35 }
         addSubview(iv)
 
         let label = NSTextField(labelWithString: name)
-        label.frame = NSRect(x: 2, y: 10, width: s.width - 4, height: 16)
+        label.frame = NSRect(x: 2, y: 10, width: s.width - 4, height: ceil(16 * Tile.fontScale))
         label.alignment = .center
-        label.font = .systemFont(ofSize: iconSize < 40 ? 10 : 12)
+        label.font = .systemFont(ofSize: (iconSize < 40 ? 10 : 12) * Tile.fontScale)
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
 
@@ -281,7 +284,7 @@ final class HeaderView: NSView {
             x += 14
         }
         let l = NSTextField(labelWithString: title)
-        l.font = .boldSystemFont(ofSize: 12)
+        l.font = .boldSystemFont(ofSize: 12 * Tile.fontScale)
         l.textColor = .secondaryLabelColor
         l.sizeToFit()
         l.setFrameOrigin(NSPoint(x: x, y: (frame.height - l.frame.height) / 2))
@@ -390,7 +393,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // YouTube Music 미니 플레이어
     var playerEnabled = true
     var playerCheck: NSButton!
-    let playerH: CGFloat = PlayerBar.height
+    var playerH: CGFloat { PlayerBar.height }
+    /// 도구함 글자 크기 배율 (앱 이름 · 카테고리 제목 · 플레이어 곡 정보)
+    var uiScale: CGFloat = 1 {
+        didSet { Tile.fontScale = uiScale; PlayerBar.fontScale = uiScale }
+    }
+    var lockCheck: NSButton!
+    var uiScaleLabel: NSTextField!
     var lastSong = ""
     lazy var music: YTMusic = {
         let m = YTMusic()
@@ -437,6 +446,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         widget = d.bool(forKey: "widget")
         widgetLevel = min(d.integer(forKey: "widgetLevel"), widgetLevels.count - 1)
         locked = d.bool(forKey: "locked")
+        if d.object(forKey: "uiScale") != nil { uiScale = CGFloat(d.double(forKey: "uiScale")) }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🧰"
@@ -491,6 +501,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w = NSWindow(contentRect: rect, styleMask: [.titled, .closable, .miniaturizable],
                          backing: .buffered, defer: false)
             w.title = "도구함"
+            w.isMovable = !locked      // 위치 고정이면 제목 막대를 끌어도 안 움직임
         }
         w.isReleasedWhenClosed = false
         w.setFrameAutosaveName(autosave)
@@ -527,8 +538,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildStatusMenu()
     }
 
+    func setUIScale(_ v: CGFloat) {
+        uiScale = min(1.4, max(0.8, (v * 10).rounded() / 10))
+        d.set(Double(uiScale), forKey: "uiScale")
+        if settings != nil { syncSettings() }
+        playerBar.needsLayout = true
+        refresh()
+    }
+
+    @objc func lockChecked(_ b: NSButton) { if (b.state == .on) != locked { toggleLocked() } }
+
     func toggleLocked() {
         locked.toggle()
+        if settings != nil { syncSettings() }
         d.set(locked, forKey: "locked")
         window.isMovableByWindowBackground = !locked
         window.isMovable = !locked
@@ -546,10 +568,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 it.state = i == widgetLevel ? .on : .off
                 items.append(it)
             }
-            let lock = Item("    위치 고정") { [unowned self] in toggleLocked() }
-            lock.state = locked ? .on : .off
-            items.append(lock)
         }
+        let lock = Item(widget ? "    위치 고정" : "창 위치 고정") { [unowned self] in toggleLocked() }
+        lock.state = locked ? .on : .off
+        items.append(lock)
         return items
     }
 
@@ -1372,7 +1394,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 292),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 352),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -1411,6 +1433,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.addSubview(n)
             return (f, s)
         }
+
+        label("창 위치", y: 312)
+        lockCheck = NSButton(checkboxWithTitle: "위치 고정 (끌어도 안 움직임)", target: self, action: #selector(lockChecked(_:)))
+        lockCheck.frame = NSRect(x: 106, y: 311, width: 250, height: 22)
+        v.addSubview(lockCheck)
+
+        label("글자 크기", y: 282)
+        var fx: CGFloat = 108
+        for (t, d) in [("A−", -0.1), ("A+", 0.1)] {
+            let b = ActionButton(title: t, symbol: nil) { [unowned self] _ in setUIScale(uiScale + CGFloat(d)) }
+            b.controlSize = .small
+            b.sizeToFit()
+            b.setFrameOrigin(NSPoint(x: fx, y: 280))
+            v.addSubview(b)
+            fx = b.frame.maxX + 4
+        }
+        uiScaleLabel = NSTextField(labelWithString: "100%")
+        uiScaleLabel.frame = NSRect(x: fx + 4, y: 283, width: 50, height: 16)
+        v.addSubview(uiScaleLabel)
+        let reset = ActionButton(title: "기본", symbol: nil) { [unowned self] _ in setUIScale(1) }
+        reset.controlSize = .small
+        reset.sizeToFit()
+        reset.setFrameOrigin(NSPoint(x: fx + 56, y: 280))
+        v.addSubview(reset)
 
         label("음악", y: 252)
         playerCheck = NSButton(checkboxWithTitle: "YouTube Music 미니 플레이어", target: self, action: #selector(playerChecked(_:)))
@@ -1470,6 +1516,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         widgetCheck.state = widget ? .on : .off
         dockCheck.state = hideDock ? .on : .off
         playerCheck.state = playerEnabled ? .on : .off
+        lockCheck.state = locked ? .on : .off
+        uiScaleLabel.stringValue = "\(Int((uiScale * 100).rounded()))%"
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
         sizeSlider.doubleValue = Double(iconSize)
