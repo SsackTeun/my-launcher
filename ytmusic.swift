@@ -91,6 +91,7 @@ final class YTMusic {
         if t.pid != buttonsPID { buttons = [:]; buttonsPID = t.pid; scanButtons(then: nil) }
         readPlaying()
         onUpdate?(Self.songTitle(t.rawTitle), playing)
+        dumpIfAsked()
     }
 
     /// "곡 | YouTube Music" → "곡"
@@ -183,6 +184,41 @@ final class YTMusic {
         let l = YTMusic.label(b)
         if l.isEmpty { buttons[.playPause] = nil; playing = nil; return }
         playing = Self.pauseLabels.contains { l.hasPrefix($0) }
+    }
+
+    // MARK: 진단 (설정값 dumpYTM 이 켜져 있으면 창 구조를 파일로 저장)
+
+    nonisolated static func dump(pid: pid_t, window: AXUIElement, to path: String) {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+        AXUIElementSetMessagingTimeout(window, 0.5)
+        var out = ""
+        var stack: [(AXUIElement, Int)] = [(window, 0)]
+        var n = 0
+        while let (el, depth) = stack.popLast(), n < 12000 {
+            n += 1
+            let role = AX.str(el, kAXRoleAttribute) ?? "?"
+            let sub = AX.str(el, kAXSubroleAttribute) ?? ""
+            let desc = AX.str(el, kAXDescriptionAttribute) ?? ""
+            let title = AX.str(el, kAXTitleAttribute) ?? ""
+            var value = ""
+            if let v = AX.attr(el, kAXValueAttribute) { value = String(String(describing: v).prefix(60)) }
+            let yy = y(el)
+            var size = CGSize.zero
+            if let sv = AX.attr(el, kAXSizeAttribute) { AXValueGetValue(sv as! AXValue, .cgSize, &size) }
+            out += String(repeating: " ", count: min(depth, 40)) + "\(role) \(sub) d=\"\(desc)\" t=\"\(title)\" v=\"\(value)\" y=\(Int(yy)) h=\(Int(size.height))\n"
+            for c in AX.children(el).reversed() { stack.append((c, depth + 1)) }
+        }
+        try? out.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    func dumpIfAsked() {
+        guard UserDefaults.standard.bool(forKey: "dumpYTM"), let t = target else { return }
+        UserDefaults.standard.set(false, forKey: "dumpYTM")
+        let pid = t.pid, w = t.window
+        DispatchQueue.global().async {
+            YTMusic.dump(pid: pid, window: w, to: NSHomeDirectory() + "/MyLauncher/ytm-ax-dump.txt")
+        }
     }
 
     // MARK: 조작

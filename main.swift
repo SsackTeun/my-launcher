@@ -403,6 +403,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if d.object(forKey: "previews") != nil { previews = d.bool(forKey: "previews") }
         if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
         if playerEnabled { music.start() }
+        // 창 목록·앱 메뉴·미니 플레이어에 필요한 권한이 없으면 처음에 한 번 물어봄
+        if (playerEnabled || previews) && !AX.trusted { AX.askTrust() }
         hideDock = d.bool(forKey: "hideDock")
         if hideDock {
             applyDockHiding()
