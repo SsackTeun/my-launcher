@@ -1,0 +1,18 @@
+[
+  {
+    "name": "엑셀자",
+    "bundleId": "local.jaeyeong.excelruler",
+    "repo": "SsackTeun/excel-ruler",
+    "asset": "ExcelRuler.zip",
+    "app": "엑셀자.app",
+    "summary": "엑셀처럼 셀이 많은 화면에서 지금 보는 행/열을 반투명 띠로 표시"
+  },
+  {
+    "name": "도구함",
+    "bundleId": "local.jaeyeong.launcher",
+    "repo": "SsackTeun/my-launcher",
+    "asset": "Launcher.zip",
+    "app": "도구함.app",
+    "summary": "이 런처 (업데이트하면 다시 시작돼요)"
+  }
+]

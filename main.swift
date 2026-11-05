@@ -66,7 +66,7 @@ final class Tile: NSView {
     private let editing: Bool
 
     init(name: String, icon: NSImage, iconSize: CGFloat, running: Bool, found: Bool,
-         editing: Bool, menu m: NSMenu?, onRemove: (() -> Void)?) {
+         editing: Bool, menu m: NSMenu?, onRemove: (() -> Void)?, badge: String? = nil) {
         self.editing = editing
         let s = Tile.size(icon: iconSize)
         super.init(frame: NSRect(origin: .zero, size: s))
@@ -88,6 +88,20 @@ final class Tile: NSView {
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
 
+        if let badge {
+            let b = NSTextField(labelWithString: badge)
+            b.font = .systemFont(ofSize: 10, weight: .semibold)
+            b.textColor = .white
+            b.alignment = .center
+            b.wantsLayer = true
+            b.drawsBackground = false
+            b.layer?.backgroundColor = (badge == "업데이트" ? NSColor.systemOrange : NSColor.controlAccentColor).cgColor
+            b.layer?.cornerRadius = 7
+            b.sizeToFit()
+            let bw = b.frame.width + 10
+            b.frame = NSRect(x: min(s.width - bw - 2, (s.width + iconSize) / 2 - bw / 2), y: s.height - 18, width: bw, height: 15)
+            addSubview(b)
+        }
         if running {
             let dot = NSView(frame: NSRect(x: s.width / 2 - 3, y: 1, width: 6, height: 6))
             dot.wantsLayer = true
@@ -359,8 +373,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     // 앱 목록 접기 (전체 / 카테고리별)
     var listCollapsed = false
-    /// 앱 목록 탭: 0 전체 · 1 실행 중
+    /// 앱 목록 탭: 0 전체 · 1 실행 중 · 2 개발자 앱
     var tab = 0
+    lazy var devApps: DevApps = {
+        let a = DevApps()
+        a.onChange = { [unowned self] in refresh() }
+        return a
+    }()
     var foldedCats: Set<String> = []
     lazy var collapseButton: ActionButton = {
         let b = ActionButton(title: "", symbol: "chevron.up") { [unowned self] _ in
@@ -462,6 +481,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
         listCollapsed = d.bool(forKey: "listCollapsed")
         tab = d.integer(forKey: "listTab")
+        devApps.load()
         foldedCats = Set(d.stringArray(forKey: "foldedCats") ?? [])
         if playerEnabled { music.start(); lyrics.start() }
         hideDock = d.bool(forKey: "hideDock")
@@ -705,11 +725,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSRunningApplication.runningApplications(withBundleIdentifier: id).first
     }
     func name(_ id: String) -> String {
-        guard let u = url(id) else { return id }
+        guard let u = url(id) else { return devApps.app(id)?.name ?? id }
         return FileManager.default.displayName(atPath: u.path).replacingOccurrences(of: ".app", with: "")
     }
     func icon(_ id: String) -> NSImage {
         if let u = url(id) { return NSWorkspace.shared.icon(forFile: u.path) }
+        if devApps.app(id) != nil { return NSImage(systemSymbolName: "arrow.down.app", accessibilityDescription: nil) ?? NSImage() }
         return NSImage(systemSymbolName: "questionmark.app", accessibilityDescription: nil) ?? NSImage()
     }
     func locate(_ id: String) -> (Int, Int)? {
@@ -852,6 +873,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func displaySections() -> [(title: String, cat: Int?, ids: [String])] {
         let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty && tab == 2 {
+            return [("GitHub 에서 받는 개발자 앱", nil, devApps.ids)]
+        }
         if q.isEmpty && tab == 1 {
             // 실행 중 탭: 도구함 앱 중 켜진 것 + 그 밖에 켜진 앱
             let run = runningIDs()
@@ -1109,7 +1133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let w = max(gridW, (showBar || allFolded) ? 340 : 0)
         let left = (w - gridW) / 2 + pad
         let sections = allFolded ? [] : displaySections()
-        let runningTab = tab == 1 && !searching
+        let runningTab = (tab == 1 || tab == 2) && !searching
+        let devTab = tab == 2 && !searching
         let showHeaders = searching || runningTab || cats.count > 1
 
         // 1) 카테고리마다: 제목 줄 → 열 × 행 격자(앱이 많으면 행이 늘어남)
@@ -1118,7 +1143,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var y = pad
         // 탭: [전체 | 실행 중 N]
         if !allFolded && !searching {
-            let seg = NSSegmentedControl(labels: ["전체", "실행 중 \(runningIDs().count)"], trackingMode: .selectOne,
+            let ups = devApps.updateCount
+            let seg = NSSegmentedControl(labels: ["전체", "실행 중 \(runningIDs().count)", ups > 0 ? "개발자 앱 ●\(ups)" : "개발자 앱"], trackingMode: .selectOne,
                                          target: self, action: #selector(tabChanged(_:)))
             seg.selectedSegment = tab
             seg.controlSize = .small
@@ -1126,6 +1152,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seg.setFrameOrigin(NSPoint(x: left, y: y))
             views.append(seg)
             // 실행 중 탭: 골라서 종료 · 모두 종료
+            if tab == 2 {
+                // 개발자 앱 탭: 모두 업데이트 · 새로 고침
+                var bx = seg.frame.maxX + 8
+                var buttons: [(String, () -> Void)] = [("새로 고침", { [unowned self] in devApps.load(force: true) })]
+                if ups > 0 {
+                    buttons.insert(("모두 업데이트 \(ups)", { [unowned self] in
+                        // 도구함 자신은 맨 마지막에 (다시 시작되므로)
+                        let me = Bundle.main.bundleIdentifier
+                        devApps.ids.filter { devApps.hasUpdate($0) && $0 != me }.forEach { devApps.install($0) }
+                        if let me, devApps.hasUpdate(me) { devApps.install(me) }
+                    }), at: 0)
+                }
+                for (title, action) in buttons {
+                    let b = ActionButton(title: title, symbol: nil) { _ in action() }
+                    b.controlSize = .small
+                    b.font = .systemFont(ofSize: 11)
+                    b.sizeToFit()
+                    b.setFrameOrigin(NSPoint(x: bx, y: y + (seg.frame.height - b.frame.height) / 2))
+                    if b.frame.maxX <= w - 6 { views.append(b) }
+                    bx = b.frame.maxX + 4
+                }
+            }
             if tab == 1 {
                 var bx = seg.frame.maxX + 8
                 for (title, action) in [("골라서 종료", { QuitPicker.shared.show() }), ("모두 종료", { BulkWindows.confirmAndRun(.quit) })] as [(String, () -> Void)] {
@@ -1173,13 +1221,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let mine = locate(id) != nil
                 let t = Tile(name: name(id), icon: icon(id), iconSize: iconSize,
                              running: running(id) != nil, found: url(id) != nil,
-                             editing: editing && mine,
-                             menu: mine ? tileMenu(id) : (running(id) != nil ? otherRunningMenu(id) : installedTileMenu(id)),
-                             onRemove: { [unowned self] in remove(id) })
+                             editing: editing && mine && !devTab,
+                             menu: devTab ? devTileMenu(id) : (mine ? tileMenu(id) : (running(id) != nil ? otherRunningMenu(id) : installedTileMenu(id))),
+                             onRemove: { [unowned self] in remove(id) },
+                             badge: devTab ? devApps.badge(id) : nil)
+                if devTab, let a = devApps.app(id) {
+                    let have = devApps.installedVersion(id).map { "설치된 버전 \($0)" } ?? "아직 안 받음"
+                    let new = devApps.latest[id].map { " · 최신 \($0)" } ?? ""
+                    t.toolTip = "\(a.name) — \(a.summary ?? a.repo)\n\(have)\(new)"
+                }
                 // GridView 는 위→아래 좌표라 칸의 위쪽 모서리 기준으로 놓음
                 t.setFrameOrigin(NSPoint(x: left + CGFloat(i % cols) * (tile.width + gap),
                                          y: y + CGFloat(i / cols) * (tile.height + gap)))
-                t.onClick = { [unowned self] in launch(id) }
+                t.onClick = { [unowned self] in
+                    // 개발자 앱 탭에서 아직 안 받은 앱은 누르면 받기
+                    if devTab && url(id) == nil { devApps.install(id) } else { launch(id) }
+                }
                 t.appID = (mine && !searching) ? id : ""   // 검색 결과에선 끌어 옮기기 안 함
                 views.append(t)
             }
@@ -1382,8 +1439,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 설정 창 (열 · 행 · 아이콘 크기)
 
+    /// 개발자 앱 우클릭: 실행 · 받기/업데이트 · 다시 받기 · GitHub · 도구함에 넣기
+    func devTileMenu(_ id: String) -> NSMenu {
+        LiveMenu { [unowned self] m in
+            let installed = url(id) != nil
+            if installed { m.addItem(Item("실행") { [unowned self] in launch(id) }) }
+            if !installed {
+                m.addItem(Item("받기 (설치)") { [unowned self] in devApps.install(id) })
+            } else if devApps.hasUpdate(id) {
+                m.addItem(Item("업데이트 → \(devApps.latest[id] ?? "")") { [unowned self] in devApps.install(id) })
+            } else {
+                m.addItem(Item("다시 받기") { [unowned self] in devApps.install(id) })
+            }
+            m.addItem(.separator())
+            m.addItem(Item("GitHub 에서 보기") { [unowned self] in devApps.openRepo(id) })
+            if installed, locate(id) == nil {
+                let addTo = NSMenuItem(title: "도구함에 넣기", action: nil, keyEquivalent: "")
+                let sub = NSMenu()
+                for (c, cat) in cats.enumerated() {
+                    sub.addItem(Item(cat.name) { [unowned self] in if let u = url(id) { add([u], to: c) } })
+                }
+                addTo.submenu = sub
+                m.addItem(addTo)
+            }
+            if let u = url(id) { m.addItem(Item("Finder 에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) }) }
+        }
+    }
+
     @objc func tabChanged(_ s: NSSegmentedControl) {
         tab = s.selectedSegment
+        if tab == 2 { devApps.load(force: true) }
         d.set(tab, forKey: "listTab")
         refresh()
     }
