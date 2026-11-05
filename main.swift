@@ -354,11 +354,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // YouTube Music 미니 플레이어
     var playerEnabled = true
     var playerCheck: NSButton!
-    let playerH: CGFloat = 34
+    let playerH: CGFloat = PlayerBar.height
+    var lastSong = ""
     lazy var music: YTMusic = {
         let m = YTMusic()
         m.onFoundChange = { [unowned self] in refresh() }
-        m.onUpdate = { [unowned self] title, playing in playerBar.update(title: title, playing: playing) }
+        m.onUpdate = { [unowned self] st, art in
+            playerBar.update(st, art: art)
+            if d.bool(forKey: "ytmDebug") {   // 진단용: 읽은 상태를 파일로
+                let line = "title=\(st.title) | byline=\(st.byline) | time=\(st.time) | pos=\(st.position)/\(st.duration) | playing=\(String(describing: st.playing)) | like=\(st.liked) | repeat=\(st.repeatLabel) | vol=\(st.volume) | muted=\(st.muted) | page=\(st.pageOpen) | art=\(art != nil) | artRect=\(String(describing: st.artRect))\n"
+                try? line.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-status.txt", atomically: true, encoding: .utf8)
+            }
+            // 곡이 바뀌면 메뉴바 메뉴의 곡 제목도 새로
+            if st.title != lastSong { lastSong = st.title; buildStatusMenu() }
+        }
         return m
     }()
     lazy var playerBar = PlayerBar(music: music)
@@ -1202,11 +1211,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
         m.addItem(.separator())
-        if showPlayer, let t = music.target {
-            m.addItem(headerItem("♪ " + YTMusic.songTitle(t.rawTitle)))
-            m.addItem(Item("    재생 / 일시정지") { [unowned self] in music.press(.playPause) })
-            m.addItem(Item("    다음 곡") { [unowned self] in music.press(.next) })
-            m.addItem(Item("    이전 곡") { [unowned self] in music.press(.prev) })
+        if showPlayer, let st = music.state {
+            m.addItem(headerItem("♪ " + (st.title.isEmpty ? "YouTube Music" : st.title)))
+            m.addItem(Item("    재생 / 일시정지") { [unowned self] in music.press("playPause") })
+            m.addItem(Item("    다음 곡") { [unowned self] in music.press("next") })
+            m.addItem(Item("    이전 곡") { [unowned self] in music.press("prev") })
             m.addItem(.separator())
         }
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
