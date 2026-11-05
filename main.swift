@@ -265,14 +265,26 @@ let widgetLevels: [(String, NSWindow.Level)] = [
 
 /// 카테고리 제목 줄 (이름 + 구분선). 우클릭하면 카테고리 메뉴
 final class HeaderView: NSView {
-    init(frame: NSRect, title: String, count: Int, menu m: NSMenu, lineStart: CGFloat) {
+    var onClick: (() -> Void)?
+
+    init(frame: NSRect, title: String, count: Int, menu m: NSMenu, lineStart: CGFloat, folded: Bool? = nil) {
         super.init(frame: frame)
         menu = m
+        var x = lineStart
+        // 접을 수 있는 카테고리면 ▸ / ▾ 표시
+        if let folded {
+            let chev = NSImageView(frame: NSRect(x: x - 2, y: (frame.height - 12) / 2, width: 12, height: 12))
+            chev.image = NSImage(systemSymbolName: folded ? "chevron.right" : "chevron.down", accessibilityDescription: nil)
+            chev.symbolConfiguration = .init(pointSize: 10, weight: .bold)
+            chev.contentTintColor = .secondaryLabelColor
+            addSubview(chev)
+            x += 14
+        }
         let l = NSTextField(labelWithString: title)
         l.font = .boldSystemFont(ofSize: 12)
         l.textColor = .secondaryLabelColor
         l.sizeToFit()
-        l.setFrameOrigin(NSPoint(x: lineStart, y: (frame.height - l.frame.height) / 2))
+        l.setFrameOrigin(NSPoint(x: x, y: (frame.height - l.frame.height) / 2))
         addSubview(l)
         let c = NSTextField(labelWithString: "\(count)")
         c.font = .systemFont(ofSize: 11)
@@ -284,9 +296,16 @@ final class HeaderView: NSView {
         let line = NSBox(frame: NSRect(x: lineX, y: frame.height / 2, width: max(0, frame.width - lineStart - lineX), height: 1))
         line.boxType = .separator
         addSubview(line)
-        toolTip = "우클릭: 이름 바꾸기 · 순서 · 삭제 · 여기에 앱 추가"
+        toolTip = folded == nil ? "우클릭: 이름 바꾸기 · 순서 · 삭제 · 여기에 앱 추가"
+                                : "클릭: 접기/펼치기 · 우클릭: 이름 바꾸기 · 순서 · 삭제 · 여기에 앱 추가"
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override var mouseDownCanMoveWindow: Bool { onClick == nil }
+    override func mouseDown(with event: NSEvent) { if onClick == nil { super.mouseDown(with: event) } }
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
 }
 
 // MARK: - 앱
@@ -335,10 +354,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.sizeToFit()
         return b
     }()
+    // 앱 목록 접기 (전체 / 카테고리별)
+    var listCollapsed = false
+    var foldedCats: Set<String> = []
+    lazy var collapseButton: ActionButton = {
+        let b = ActionButton(title: "", symbol: "chevron.up") { [unowned self] _ in
+            listCollapsed.toggle()
+            d.set(listCollapsed, forKey: "listCollapsed")
+            refresh()
+        }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+        b.frame.size = NSSize(width: 24, height: 24)
+        return b
+    }()
     lazy var topBar: NSView = {
         let v = NSView(frame: .zero)
         v.addSubview(searchField)
         v.addSubview(finderButton)
+        v.addSubview(collapseButton)
         return v
     }()
     var installed: [(id: String, name: String)]?
@@ -395,6 +429,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         makeWindow()
 
         if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
+        listCollapsed = d.bool(forKey: "listCollapsed")
+        foldedCats = Set(d.stringArray(forKey: "foldedCats") ?? [])
         if playerEnabled { music.start() }
         hideDock = d.bool(forKey: "hideDock")
         if hideDock {
@@ -831,6 +867,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func renameCategory(_ c: Int) {
         guard let n = ask("카테고리 이름 바꾸기", value: cats[c].name) else { return }
+        if foldedCats.remove(cats[c].name) != nil {   // 접어 둔 상태는 새 이름으로 옮김
+            foldedCats.insert(n)
+            d.set(Array(foldedCats), forKey: "foldedCats")
+        }
         cats[c].name = n
         save()
     }
@@ -972,12 +1012,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tile = Tile.size(icon: iconSize)
         let gridW = pad * 2 + CGFloat(cols) * tile.width + CGFloat(cols - 1) * gap
         // 위젯에선 아래 버튼 줄을 숨기고(빼기 편집 중일 때만 보임) 우클릭 메뉴로 대신함
-        let showBar = !widget || editing
-        let bottom = showBar ? barH : 0
-        let w = max(gridW, showBar ? 340 : 0)
-        let left = (w - gridW) / 2 + pad
         let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
-        let sections = displaySections()
+        // 전체 접기: 검색 중이 아니면 앱 목록과 아래 버튼 줄을 숨겨 검색 줄 + 플레이어만
+        let allFolded = listCollapsed && !searching && !editing
+        let showBar = (!widget || editing) && !allFolded
+        let bottom = showBar ? barH : 0
+        let w = max(gridW, (showBar || allFolded) ? 340 : 0)
+        let left = (w - gridW) / 2 + pad
+        let sections = allFolded ? [] : displaySections()
         let showHeaders = searching || cats.count > 1
 
         // 1) 카테고리마다: 제목 줄 → 열 × 행 격자(앱이 많으면 행이 늘어남)
@@ -986,14 +1028,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var y = pad
         for sec in sections {
             let top = y
+            let foldable = showHeaders && !searching && sec.cat != nil
+            let folded = foldable && foldedCats.contains(sec.title)
             if showHeaders {
                 let hm = sec.cat.map { categoryMenu($0) } ?? NSMenu()
-                views.append(HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
-                                        title: sec.title, count: sec.ids.count,
-                                        menu: hm, lineStart: left))
+                let hv = HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
+                                    title: sec.title, count: sec.ids.count,
+                                    menu: hm, lineStart: left, folded: foldable ? folded : nil)
+                if foldable {
+                    let name = sec.title
+                    hv.onClick = { [unowned self] in
+                        if foldedCats.contains(name) { foldedCats.remove(name) } else { foldedCats.insert(name) }
+                        d.set(Array(foldedCats), forKey: "foldedCats")
+                        refresh()
+                    }
+                }
+                views.append(hv)
                 y += headerH
             }
             let tilesTop = y
+            if folded {
+                // 접힌 카테고리: 제목 줄만
+                if let c = sec.cat { sectionYs.append((c, top, tilesTop, y)) }
+                y += sectionGap
+                continue
+            }
             let minRows = searching ? 1 : rows
             let catRows = max(minRows, Int(ceil(Double(sec.ids.count) / Double(cols))))
             for (i, id) in sec.ids.enumerated() {
@@ -1021,7 +1080,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let c = sec.cat { sectionYs.append((c, top, tilesTop, y)) }
             y += sectionGap
         }
-        let docH = y - sectionGap + pad
+        let docH = allFolded ? 0 : y - sectionGap + pad
 
         // 2) 창 높이: 전부 보이게 하되 화면보다 크면 스크롤
         let screenH = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
@@ -1134,7 +1193,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         topBar.frame = NSRect(x: 0, y: h - topH, width: w, height: topH)
         let fb = finderButton.frame.size
         finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 10, y: (topH - fb.height) / 2))
-        searchField.frame = NSRect(x: 10, y: (topH - 24) / 2, width: w - fb.width - 26, height: 24)
+        collapseButton.image = NSImage(systemSymbolName: allFolded ? "chevron.down" : "chevron.up", accessibilityDescription: nil)
+        collapseButton.toolTip = allFolded ? "앱 목록 펼치기" : "앱 목록 접기"
+        collapseButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 28, y: (topH - 24) / 2))
+        searchField.frame = NSRect(x: 10, y: (topH - 24) / 2, width: collapseButton.frame.minX - 16, height: 24)
         scroll.contentView.scroll(to: .zero)
 
         buildStatusMenu()
