@@ -107,6 +107,9 @@ final class Tile: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { false }
+    /// 위젯을 끌어 옮길 때 앱 아이콘 위에서 누르면 창이 아니라 클릭으로 처리
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) {}
 
     override func updateTrackingAreas() {
         trackingAreas.forEach(removeTrackingArea)
@@ -167,6 +170,31 @@ final class GridView: NSView {
     }
 }
 
+/// 위젯 모드 창: 제목 막대가 없어도 키 입력(이름 입력 등)을 받을 수 있게
+final class WidgetWindow: NSWindow {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+}
+
+/// 둥근 모서리 마스크 (위젯 카드 모양)
+func roundedMask(_ r: CGFloat) -> NSImage {
+    let img = NSImage(size: NSSize(width: r * 2 + 1, height: r * 2 + 1), flipped: false) { rect in
+        NSColor.black.setFill()
+        NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).fill()
+        return true
+    }
+    img.capInsets = NSEdgeInsets(top: r, left: r, bottom: r, right: r)
+    img.resizingMode = .stretch
+    return img
+}
+
+/// 위젯 높이: 0 바탕화면(다른 창 뒤) · 1 일반 창처럼 · 2 항상 위
+let widgetLevels: [(String, NSWindow.Level)] = [
+    ("바탕화면에 붙이기 (다른 창 뒤)", NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)),
+    ("일반 창처럼", .normal),
+    ("항상 위에", .floating),
+]
+
 /// 카테고리 제목 줄 (이름 + 구분선). 우클릭하면 카테고리 메뉴
 final class HeaderView: NSView {
     init(frame: NSRect, title: String, count: Int, menu m: NSMenu, lineStart: CGFloat) {
@@ -202,6 +230,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var rows = 1
     var iconSize: CGFloat = 64
     var editing = false
+    var widget = false
+    var widgetLevel = 0
+    var locked = false
     /// 드롭 위치로 카테고리를 찾기 위한 각 카테고리의 세로 범위
     var sectionYs: [(cat: Int, top: CGFloat, bottom: CGFloat)] = []
 
@@ -226,14 +257,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             rows = max(1, d.integer(forKey: "rows"))
             iconSize = CGFloat(d.double(forKey: "iconSize"))
         }
-
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 150),
-                          styleMask: [.titled, .closable, .miniaturizable],
-                          backing: .buffered, defer: false)
-        window.title = "도구함"
-        window.isReleasedWhenClosed = false
-        let firstRun = d.string(forKey: "NSWindow Frame LauncherWindow") == nil
-        window.setFrameAutosaveName("LauncherWindow")
+        widget = d.bool(forKey: "widget")
+        widgetLevel = min(d.integer(forKey: "widgetLevel"), widgetLevels.count - 1)
+        locked = d.bool(forKey: "locked")
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🧰"
@@ -244,9 +270,127 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refresh() }
         }
 
+        makeWindow()
+    }
+
+    // MARK: 창 / 위젯 모드
+
+    /// 모드에 맞는 창을 새로 만든다. 일반 창과 위젯은 각자 마지막 위치를 따로 기억
+    func makeWindow() {
+        if let old = window {
+            old.setFrameAutosaveName("")
+            old.orderOut(nil)
+        }
+        let autosave = widget ? "LauncherWidget" : "LauncherWindow"
+        let firstRun = d.string(forKey: "NSWindow Frame \(autosave)") == nil
+        let rect = NSRect(x: 0, y: 0, width: 300, height: 150)
+        let w: NSWindow
+        if widget {
+            w = WidgetWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
+            w.isOpaque = false
+            w.backgroundColor = .clear
+            w.hasShadow = true
+            w.isMovableByWindowBackground = !locked
+            w.isMovable = !locked
+            w.level = widgetLevels[widgetLevel].1
+            w.collectionBehavior = [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone]
+        } else {
+            w = NSWindow(contentRect: rect, styleMask: [.titled, .closable, .miniaturizable],
+                         backing: .buffered, defer: false)
+            w.title = "도구함"
+        }
+        w.isReleasedWhenClosed = false
+        w.setFrameAutosaveName(autosave)
+        window = w
+
+        // 위젯은 Dock 에 안 보이게, 일반 창은 Dock 에 보이게
+        NSApp.setActivationPolicy(widget ? .accessory : .regular)
         refresh()
-        if firstRun { window.center() }
-        showWindow()
+        if firstRun {
+            if widget, let s = NSScreen.main?.visibleFrame {
+                w.setFrameTopLeftPoint(NSPoint(x: s.minX + 40, y: s.maxY - 40))
+            } else {
+                w.center()
+            }
+        }
+        if widget { w.orderFrontRegardless() } else { showWindow() }
+    }
+
+    func setWidget(_ on: Bool) {
+        widget = on
+        editing = false
+        d.set(widget, forKey: "widget")
+        makeWindow()
+    }
+
+    func setWidgetLevel(_ l: Int) {
+        widgetLevel = l
+        d.set(l, forKey: "widgetLevel")
+        window.level = widgetLevels[l].1
+        window.orderFrontRegardless()
+        buildStatusMenu()
+    }
+
+    func toggleLocked() {
+        locked.toggle()
+        d.set(locked, forKey: "locked")
+        window.isMovableByWindowBackground = !locked
+        window.isMovable = !locked
+        buildStatusMenu()
+    }
+
+    /// 위젯 관련 메뉴 항목들 (메뉴바 메뉴와 위젯 우클릭 메뉴에서 같이 씀)
+    func widgetItems() -> [NSMenuItem] {
+        var items: [NSMenuItem] = []
+        let toggle = Item(widget ? "위젯 모드 끄기 (일반 창으로)" : "위젯 모드로 바꾸기") { [unowned self] in setWidget(!widget) }
+        items.append(toggle)
+        if widget {
+            for (i, l) in widgetLevels.enumerated() {
+                let it = Item("    " + l.0) { [unowned self] in setWidgetLevel(i) }
+                it.state = i == widgetLevel ? .on : .off
+                items.append(it)
+            }
+            let lock = Item("    위치 고정") { [unowned self] in toggleLocked() }
+            lock.state = locked ? .on : .off
+            items.append(lock)
+        }
+        return items
+    }
+
+    /// 위젯 빈 곳을 우클릭했을 때 나오는 메뉴 (위젯엔 아래 버튼 줄이 없으므로)
+    func backgroundMenu() -> NSMenu {
+        let m = NSMenu()
+        m.autoenablesItems = false
+        if cats.count == 1 {
+            m.addItem(Item("앱 추가…") { [unowned self] in addApp(to: 0) })
+        } else {
+            let add = NSMenuItem(title: "앱 추가", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for (c, cat) in cats.enumerated() { sub.addItem(Item(cat.name) { [unowned self] in addApp(to: c) }) }
+            add.submenu = sub
+            m.addItem(add)
+        }
+        m.addItem(Item(editing ? "빼기 끝내기" : "앱 빼기 (편집)") { [unowned self] in editing.toggle(); refresh() })
+        let cat = NSMenuItem(title: "카테고리", action: nil, keyEquivalent: "")
+        cat.submenu = categoriesMenu()
+        m.addItem(cat)
+        m.addItem(Item("설정…") { [unowned self] in openSettings() })
+        m.addItem(.separator())
+        widgetItems().forEach(m.addItem)
+        return m
+    }
+
+    func categoriesMenu() -> NSMenu {
+        let m = NSMenu()
+        m.autoenablesItems = false
+        m.addItem(Item("새 카테고리…") { [unowned self] in newCategory() })
+        m.addItem(.separator())
+        for (c, cat) in cats.enumerated() {
+            let i = NSMenuItem(title: cat.name, action: nil, keyEquivalent: "")
+            i.submenu = categoryMenu(c)
+            m.addItem(i)
+        }
+        return m
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -478,7 +622,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func refresh() {
         let tile = Tile.size(icon: iconSize)
         let gridW = pad * 2 + CGFloat(cols) * tile.width + CGFloat(cols - 1) * gap
-        let w = max(gridW, 340)
+        // 위젯에선 아래 버튼 줄을 숨기고(빼기 편집 중일 때만 보임) 우클릭 메뉴로 대신함
+        let showBar = !widget || editing
+        let bottom = showBar ? barH : 0
+        let w = max(gridW, showBar ? 340 : 0)
         let left = (w - gridW) / 2 + pad
         let showHeaders = cats.count > 1
 
@@ -522,8 +669,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2) 창 높이: 전부 보이게 하되 화면보다 크면 스크롤
         let screenH = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
-        let viewH = min(docH, screenH - barH - 80)
-        let h = viewH + barH
+        let viewH = min(docH, screenH - bottom - 80)
+        let h = viewH + bottom
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
         grid.onDropApps = { [unowned self] urls, p in
@@ -531,8 +678,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             add(urls, to: c)
         }
         views.forEach(grid.addSubview)
+        if widget { grid.menu = backgroundMenu() }
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: barH, width: w, height: viewH))
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: bottom, width: w, height: viewH))
         scroll.documentView = grid
         scroll.hasVerticalScroller = docH > viewH
         scroll.drawsBackground = false
@@ -552,16 +700,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if editing { edit.keyEquivalent = "\r" }
         let catBtn = ActionButton(title: "카테고리", symbol: "folder") { [unowned self] b in
-            let m = NSMenu()
-            m.autoenablesItems = false
-            m.addItem(Item("새 카테고리…") { [unowned self] in newCategory() })
-            m.addItem(.separator())
-            for (c, cat) in cats.enumerated() {
-                let i = NSMenuItem(title: cat.name, action: nil, keyEquivalent: "")
-                i.submenu = categoryMenu(c)
-                m.addItem(i)
-            }
-            popUp(m, under: b)
+            popUp(categoriesMenu(), under: b)
         }
         let gear = ActionButton(title: "", symbol: "gearshape") { [unowned self] _ in openSettings() }
         gear.toolTip = "열 · 행 · 아이콘 크기 설정 (⌘,)"
@@ -587,9 +726,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         info.setFrameOrigin(NSPoint(x: gear.frame.minX - info.frame.width - 8, y: (barH - info.frame.height) / 2))
         if info.frame.minX > x { bar.addSubview(info) }
 
-        let content = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        let content: NSView
+        if widget {
+            // 위젯 카드: 뒤 배경이 비치는 반투명 + 둥근 모서리
+            let fx = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+            fx.material = .hudWindow
+            fx.blendingMode = .behindWindow
+            fx.state = .active
+            fx.maskImage = roundedMask(20)
+            fx.menu = backgroundMenu()
+            content = fx
+        } else {
+            content = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+        }
         content.addSubview(scroll)
-        content.addSubview(bar)
+        if showBar { content.addSubview(bar) }
 
         // 창 크기를 먼저 맞춘 뒤 내용을 넣어야 잘리지 않음. 창 위쪽 위치는 그대로 유지
         let topEdge = window.frame.maxY
@@ -630,6 +781,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(Item("모두 실행") { [unowned self] in allIds.forEach(launch) })
         m.addItem(Item("런처 창 열기") { [unowned self] in showWindow() })
         m.addItem(Item("설정…") { [unowned self] in openSettings() })
+        m.addItem(.separator())
+        widgetItems().forEach(m.addItem)
+        m.addItem(.separator())
         let login = Item("로그인 시 자동 실행") { [unowned self] in toggleLogin() }
         login.state = loginEnabled ? .on : .off
         m.addItem(login)
