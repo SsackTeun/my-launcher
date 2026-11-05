@@ -356,6 +356,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     // 앱 목록 접기 (전체 / 카테고리별)
     var listCollapsed = false
+    /// 앱 목록 탭: 0 전체 · 1 실행 중
+    var tab = 0
     var foldedCats: Set<String> = []
     lazy var collapseButton: ActionButton = {
         let b = ActionButton(title: "", symbol: "chevron.up") { [unowned self] _ in
@@ -449,6 +451,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
         listCollapsed = d.bool(forKey: "listCollapsed")
+        tab = d.integer(forKey: "listTab")
         foldedCats = Set(d.stringArray(forKey: "foldedCats") ?? [])
         if playerEnabled { music.start(); lyrics.start() }
         hideDock = d.bool(forKey: "hideDock")
@@ -813,8 +816,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 화면에 보여 줄 묶음들. 검색 중이면 "도구함에서" + "설치된 앱"
+    /// 실행 중인 일반 앱 (도구함 자신은 빼고)
+    func runningIDs() -> [String] {
+        var seen = Set<String>()
+        return NSWorkspace.shared.runningApplications.compactMap { a in
+            guard a.activationPolicy == .regular, a.processIdentifier != ProcessInfo.processInfo.processIdentifier,
+                  let id = a.bundleIdentifier, seen.insert(id).inserted else { return nil }
+            return id
+        }
+    }
+
     func displaySections() -> [(title: String, cat: Int?, ids: [String])] {
         let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty && tab == 1 {
+            // 실행 중 탭: 도구함 앱 중 켜진 것 + 그 밖에 켜진 앱
+            let run = runningIDs()
+            let mine = allIds.filter { run.contains($0) }
+            let others = run.filter { locate($0) == nil }
+            var out: [(String, Int?, [String])] = [("실행 중인 도구함 앱", nil, mine)]
+            if !others.isEmpty { out.append(("그 밖에 실행 중", nil, others)) }
+            return out
+        }
         if q.isEmpty { return cats.enumerated().map { ($0.element.name, $0.offset, $0.element.ids) } }
         let mine = allIds.filter { matches($0, q) }
         let others = installedApps().filter { locate($0.id) == nil && ($0.name.localizedCaseInsensitiveContains(q) || $0.id.localizedCaseInsensitiveContains(q)) }
@@ -822,6 +844,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var out: [(String, Int?, [String])] = [("도구함에서", nil, mine)]
         if !others.isEmpty { out.append(("설치된 앱", nil, Array(others))) }
         return out
+    }
+
+    /// 도구함에 없는 실행 중 앱: Dock 처럼 [창 · 앱 메뉴] + 도구함에 넣기 + 가리기 · 종료
+    func otherRunningMenu(_ id: String) -> NSMenu {
+        LiveMenu { [unowned self] m in
+            guard let r = running(id) else { return }
+            fillAppMenu(m, pid: r.processIdentifier)
+            let addTo = NSMenuItem(title: "도구함에 넣기", action: nil, keyEquivalent: "")
+            let sub = NSMenu()
+            for (c, cat) in cats.enumerated() {
+                sub.addItem(Item(cat.name) { [unowned self] in if let u = url(id) { add([u], to: c) } })
+            }
+            addTo.submenu = sub
+            m.addItem(addTo)
+            if let u = url(id) { m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) }) }
+            m.addItem(.separator())
+            m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
+            m.addItem(Item("종료") { r.terminate() })
+        }
     }
 
     func installedTileMenu(_ id: String) -> NSMenu {
@@ -1044,12 +1085,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let w = max(gridW, (showBar || allFolded) ? 340 : 0)
         let left = (w - gridW) / 2 + pad
         let sections = allFolded ? [] : displaySections()
-        let showHeaders = searching || cats.count > 1
+        let runningTab = tab == 1 && !searching
+        let showHeaders = searching || runningTab || cats.count > 1
 
         // 1) 카테고리마다: 제목 줄 → 열 × 행 격자(앱이 많으면 행이 늘어남)
         var views: [NSView] = []
         sectionYs = []
         var y = pad
+        // 탭: [전체 | 실행 중 N]
+        if !allFolded && !searching {
+            let seg = NSSegmentedControl(labels: ["전체", "실행 중 \(runningIDs().count)"], trackingMode: .selectOne,
+                                         target: self, action: #selector(tabChanged(_:)))
+            seg.selectedSegment = tab
+            seg.controlSize = .small
+            seg.sizeToFit()
+            seg.setFrameOrigin(NSPoint(x: left, y: y))
+            views.append(seg)
+            y += seg.frame.height + 8
+        }
         for sec in sections {
             let top = y
             let foldable = showHeaders && !searching && sec.cat != nil
@@ -1077,13 +1130,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 y += sectionGap
                 continue
             }
-            let minRows = searching ? 1 : rows
+            let minRows = (searching || runningTab) ? 1 : rows
             let catRows = max(minRows, Int(ceil(Double(sec.ids.count) / Double(cols))))
             for (i, id) in sec.ids.enumerated() {
                 let mine = locate(id) != nil
                 let t = Tile(name: name(id), icon: icon(id), iconSize: iconSize,
                              running: running(id) != nil, found: url(id) != nil,
-                             editing: editing && mine, menu: mine ? tileMenu(id) : installedTileMenu(id),
+                             editing: editing && mine,
+                             menu: mine ? tileMenu(id) : (running(id) != nil ? otherRunningMenu(id) : installedTileMenu(id)),
                              onRemove: { [unowned self] in remove(id) })
                 // GridView 는 위→아래 좌표라 칸의 위쪽 모서리 기준으로 놓음
                 t.setFrameOrigin(NSPoint(x: left + CGFloat(i % cols) * (tile.width + gap),
@@ -1093,7 +1147,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 views.append(t)
             }
             if sec.ids.isEmpty {
-                let hint = NSTextField(labelWithString: searching ? "‘\(query)’와 맞는 앱이 없어요" : "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요")
+                let hint = NSTextField(labelWithString: searching ? "‘\(query)’와 맞는 앱이 없어요" : (runningTab ? "실행 중인 도구함 앱이 없어요" : "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요"))
                 hint.font = .systemFont(ofSize: 11)
                 hint.textColor = .tertiaryLabelColor
                 hint.frame = NSRect(x: left, y: y + tile.height / 2 - 8, width: gridW - pad * 2, height: 16)
@@ -1290,6 +1344,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: 설정 창 (열 · 행 · 아이콘 크기)
+
+    @objc func tabChanged(_ s: NSSegmentedControl) {
+        tab = s.selectedSegment
+        d.set(tab, forKey: "listTab")
+        refresh()
+    }
 
     @objc func openSettings() {
         if settings == nil { buildSettings() }

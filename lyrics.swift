@@ -106,15 +106,13 @@ final class LyricsModel: ObservableObject {
         didSet { UserDefaults.standard.set(pronStyle.rawValue, forKey: "lyricsPron"); makePron(); onStripToggle?() }
     }
     @Published var prons: [Int: String] = [:]
-    /// 발음을 보여 줄 수 있는 가사인지 (일본어 · 중국어)
-    var pronAvailable: Bool {
-        let code = sourceLang?.languageCode?.identifier ?? ""
-        return code == "ja" || code == "zh"
-    }
+    /// 발음을 보여 줄 수 있는 가사인지 (라틴 문자가 아닌 글자가 있으면)
+    @Published private(set) var pronAvailable = false
     var showsPron: Bool { pronStyle != .off && pronAvailable }
 
     func makePron() {
         let code = sourceLang?.languageCode?.identifier ?? ""
+        pronAvailable = lines.contains { Pronounce.line($0, lang: code, style: .latin) != nil }
         var out: [Int: String] = [:]
         if pronStyle != .off {
             for (i, l) in lines.enumerated() {
@@ -418,8 +416,8 @@ struct PronMenu: View {
         Menu {
             Picker("발음", selection: $model.pronStyle) {
                 Text("발음 안 보기").tag(Pronounce.Style.off)
-                Text(model.sourceLang?.languageCode?.identifier == "zh" ? "병음 (pīnyīn)" : "로마자 (romaji)").tag(Pronounce.Style.latin)
-                Text("한글 발음").tag(Pronounce.Style.hangul)
+                Text(latinLabel).tag(Pronounce.Style.latin)
+                Text(hangulOK ? "한글 발음" : "한글 발음 (이 언어는 로마자로)").tag(Pronounce.Style.hangul)
             }
             .pickerStyle(.inline)
         } label: {
@@ -428,8 +426,19 @@ struct PronMenu: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
-        .help(model.pronAvailable ? "따라 부르기용 발음 표시" : "일본어·중국어 가사에서 발음을 보여 줘요")
+        .help(model.pronAvailable ? "따라 부르기용 발음 표시" : "라틴 문자가 아닌 가사(일본어·중국어·러시아어 등)에서 발음을 보여 줘요")
     }
+
+    private var code: String { model.sourceLang?.languageCode?.identifier ?? "" }
+    private var latinLabel: String {
+        switch code {
+        case "zh": return "병음 (pīnyīn)"
+        case "ja": return "로마자 (romaji)"
+        default: return "로마자"
+        }
+    }
+    /// 한글 발음이 되는 언어: 일본어 · 중국어
+    private var hangulOK: Bool { code == "ja" || code == "zh" }
 }
 
 /// A− / A+ 버튼

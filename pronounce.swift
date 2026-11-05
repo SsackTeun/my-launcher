@@ -42,13 +42,127 @@ enum Pronounce {
             }
             return join(parts)
         }
-        if lang.hasPrefix("zh"), hasHan(text) {
-            // 중국어는 병음으로 (한글 발음 표기는 하지 않음)
+        if lang.hasPrefix("zh") || (hasHan(text) && !hasKana(text)) {
+            guard hasHan(text) else { return nil }
+            // 중국어: 로마자면 성조 붙은 병음, 한글이면 병음을 한글로
             let m = NSMutableString(string: text)
             CFStringTransform(m, nil, kCFStringTransformMandarinLatin, false)
-            return m as String
+            let pinyin = m as String
+            return style == .latin ? pinyin : pinyinToHangul(pinyin)
         }
-        return nil
+        // 그 밖에 라틴 문자가 아닌 글자(키릴 · 태국 · 그리스 · 아랍 · 히브리 · 힌디 · 한글 …): 로마자로.
+        // 한글 발음 방식은 이 언어들엔 없어서 로마자로 대신 (원래 한글인 가사는 그대로 둠)
+        guard hasNonLatinLetters(text) else { return nil }
+        if style == .hangul, isMostlyHangul(text) { return nil }
+        let out = readableLatin(text)
+        return out == text ? nil : out
+    }
+
+    /// 읽기 쉬운 로마자: 러시아어 등 키릴 문자는 영어식 표기(BGN), 나머지는 일반 로마자 뒤 기호 빼기
+    static func readableLatin(_ text: String) -> String {
+        let m = NSMutableString(string: text)
+        let cyrillic = text.unicodeScalars.contains { (0x0400...0x04FF).contains($0.value) }
+        if cyrillic, CFStringTransform(m, nil, "Russian-Latin/BGN" as CFString, false) {
+            // 됨
+        } else {
+            CFStringTransform(m, nil, kCFStringTransformToLatin, false)
+        }
+        // 학술용 기호(â · ṭ · ạ̉ …)를 빼서 바로 읽을 수 있게
+        CFStringTransform(m, nil, "Latin-ASCII" as CFString, false)
+        // 키릴 Я → YA 처럼 두 글자가 모두 대문자가 되면 Ya 로
+        let words = (m as String).replacingOccurrences(of: "  ", with: " ").components(separatedBy: " ")
+        return words.map { w in
+            (w.count == 2 && w == w.uppercased() && w != w.lowercased()) ? w.prefix(1) + w.dropFirst().lowercased() : w
+        }.joined(separator: " ")
+    }
+
+    static func hasNonLatinLetters(_ s: String) -> Bool {
+        s.unicodeScalars.contains { CharacterSet.letters.contains($0) && !($0.isASCII || (0x00C0...0x024F).contains($0.value) || (0x1E00...0x1EFF).contains($0.value)) }
+    }
+
+    static func isMostlyHangul(_ s: String) -> Bool {
+        let letters = s.unicodeScalars.filter { CharacterSet.letters.contains($0) }
+        guard !letters.isEmpty else { return false }
+        let hangul = letters.filter { (0xAC00...0xD7A3).contains($0.value) || (0x1100...0x11FF).contains($0.value) || (0x3130...0x318F).contains($0.value) }
+        return hangul.count * 2 >= letters.count
+    }
+
+    // MARK: 중국어 병음 → 한글 발음 (zhōng guó → 중궈)
+
+    /// 성모 → 한글 초성 번호 (ㄱ0 ㄲ1 ㄴ2 ㄷ3 ㄸ4 ㄹ5 ㅁ6 ㅂ7 ㅃ8 ㅅ9 ㅆ10 ㅇ11 ㅈ12 ㅉ13 ㅊ14 ㅋ15 ㅌ16 ㅍ17 ㅎ18)
+    private static let initials: [(String, Int)] = [
+        ("zh", 12), ("ch", 14), ("sh", 9),
+        ("b", 7), ("p", 17), ("m", 6), ("f", 17), ("d", 3), ("t", 16), ("n", 2), ("l", 5),
+        ("g", 0), ("k", 15), ("h", 18), ("j", 12), ("q", 14), ("x", 9), ("r", 5), ("z", 13), ("c", 14), ("s", 10),
+    ]
+    /// 운모 → 한글 (ㅇ으로 시작, 앞 글자에 성모를 얹음)
+    private static let finals: [String: String] = [
+        "a": "아", "o": "오", "e": "어", "ai": "아이", "ei": "에이", "ao": "아오", "ou": "어우",
+        "an": "안", "en": "언", "ang": "앙", "eng": "엉", "ong": "웅", "er": "얼",
+        "i": "이", "ia": "야", "ie": "예", "iao": "야오", "iu": "유", "iou": "유", "ian": "옌", "in": "인",
+        "iang": "양", "ing": "잉", "iong": "융",
+        "u": "우", "ua": "와", "uo": "워", "uai": "와이", "ui": "웨이", "uei": "웨이", "uan": "완", "un": "운",
+        "uen": "원", "uang": "왕", "ueng": "웡",
+        "v": "위", "ve": "웨", "van": "위안", "vn": "윈",
+    ]
+    /// y · w 로 시작하는 음절은 표준 운모로 바꿔서
+    private static let yw: [String: String] = [
+        "yi": "i", "ya": "ia", "ye": "ie", "yao": "iao", "you": "iu", "yan": "ian", "yin": "in",
+        "yang": "iang", "ying": "ing", "yong": "iong", "yu": "v", "yue": "ve", "yuan": "van", "yun": "vn",
+        "wu": "u", "wa": "ua", "wo": "uo", "wai": "uai", "wei": "ui", "wan": "uan", "wen": "uen",
+        "wang": "uang", "weng": "ueng",
+    ]
+
+    static func pinyinSyllableToHangul(_ syl: String) -> String? {
+        let s0 = syl.lowercased()
+        if let f = yw[s0] { return finals[f] }
+        var cho = 11
+        var rest = s0
+        for (ini, c) in initials where s0.hasPrefix(ini) && s0.count > ini.count {
+            cho = c
+            rest = String(s0.dropFirst(ini.count))
+            let ini0 = ini
+            // j · q · x 뒤의 u 는 ü
+            if ["j", "q", "x"].contains(ini0), rest.hasPrefix("u") { rest = "v" + rest.dropFirst() }
+            // zh · ch · sh · r · z · c · s 뒤의 i 는 '으' 소리 (즈 · 츠 · 스 · 르 · 쯔 · 쓰)
+            if ["zh", "ch", "sh", "r", "z", "c", "s"].contains(ini0), rest == "i" {
+                return compose(cho, jung: 18, jong: 0).map { String($0) }
+            }
+            guard let fin = finals[rest], var scalars = Optional(Array(fin.unicodeScalars)), let first = scalars.first else { return nil }
+            let idx = Int(first.value) - 0xAC00
+            var jung = (idx / 28) % 21
+            let jong = idx % 28
+            // j · q 뒤에서는 ㅑㅕㅛㅠㅒㅖ 를 ㅏㅓㅗㅜㅐㅔ 로 (jia 자 · jiu 주 · qian 첸)
+            if ["j", "q"].contains(ini0) {
+                jung = [2: 0, 3: 1, 6: 4, 7: 5, 12: 8, 17: 13][jung] ?? jung
+            }
+            guard let c = compose(cho, jung: jung, jong: jong) else { return nil }
+            scalars[0] = c
+            var out = String.UnicodeScalarView()
+            out.append(contentsOf: scalars)
+            return String(out)
+        }
+        return cho == 11 ? finals[rest] : nil
+    }
+
+    private static func compose(_ cho: Int, jung: Int, jong: Int) -> Unicode.Scalar? {
+        Unicode.Scalar(UInt32(0xAC00 + (cho * 21 + jung) * 28 + jong))
+    }
+
+    static func pinyinToHangul(_ pinyin: String) -> String {
+        // ü 를 v 로 바꾼 뒤 성조 표시를 지움 (lǚ → lv)
+        // 글자 단위로 비교해야 uā · uó 같은 다른 글자가 같이 바뀌지 않음
+        let uu: Set<Character> = ["ǖ", "ǘ", "ǚ", "ǜ", "ü"]
+        let p = String(pinyin.precomposedStringWithCanonicalMapping.map { uu.contains($0) ? "v" : $0 })
+        let m = NSMutableString(string: p)
+        CFStringTransform(m, nil, kCFStringTransformStripDiacritics, false)
+        let words = (m as String).components(separatedBy: " ")
+        return words.map { w -> String in
+            // 문장부호가 붙어 있으면 떼어서
+            let core = w.trimmingCharacters(in: CharacterSet.letters.inverted)
+            guard !core.isEmpty, let h = pinyinSyllableToHangul(core) else { return w }
+            return w.replacingOccurrences(of: core, with: h)
+        }.joined(separator: " ")
     }
 
     // MARK: 일본어 읽기
