@@ -101,6 +101,29 @@ final class LyricsModel: ObservableObject {
         didSet { UserDefaults.standard.set(fontScale, forKey: "lyricsFontScale"); onStripToggle?() }
     }
     func retranslate() { if config != nil { translations = [:]; makeConfig() } }
+    /// 발음 표시: off · latin(로마자/병음) · hangul(한글 발음)
+    @Published var pronStyle: Pronounce.Style = Pronounce.Style(rawValue: UserDefaults.standard.string(forKey: "lyricsPron") ?? "off") ?? .off {
+        didSet { UserDefaults.standard.set(pronStyle.rawValue, forKey: "lyricsPron"); makePron(); onStripToggle?() }
+    }
+    @Published var prons: [Int: String] = [:]
+    /// 발음을 보여 줄 수 있는 가사인지 (일본어 · 중국어)
+    var pronAvailable: Bool {
+        let code = sourceLang?.languageCode?.identifier ?? ""
+        return code == "ja" || code == "zh"
+    }
+    var showsPron: Bool { pronStyle != .off && pronAvailable }
+
+    func makePron() {
+        let code = sourceLang?.languageCode?.identifier ?? ""
+        var out: [Int: String] = [:]
+        if pronStyle != .off {
+            for (i, l) in lines.enumerated() {
+                if let p = Pronounce.line(l, lang: code, style: pronStyle), p != l { out[i] = p }
+            }
+        }
+        prons = out
+    }
+
     func bumpFont(_ d: Double) { fontScale = min(1.8, max(0.8, (fontScale + d) * 10).rounded() / 10) }
     var onOpenFull: (() -> Void)?
     @Published var target: String {
@@ -203,7 +226,9 @@ final class LyricsModel: ObservableObject {
             sourceLang = nil
             sourceLangName = ""
         }
+        makePron()
         makeConfig()
+        onStripToggle?()     // 발음 줄이 생기거나 없어지면 가사 줄 높이도 바뀜
     }
 
     private var translateTask: Task<Void, Never>?
@@ -295,6 +320,7 @@ struct LyricsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
+            PronMenu(model: model)
             FontSizeButtons(model: model)
             if model.times != nil {
                 Toggle(isOn: $model.follow) { Image(systemName: "arrow.down.to.line") }
@@ -357,6 +383,9 @@ struct LyricsView: View {
                 Text(line)
                     .font(.system(size: (isCur ? 17 : 15) * model.fontScale, weight: isCur ? .bold : .medium))
                     .foregroundStyle(isCur ? Color.primary : (synced ? (passed ? Color.secondary.opacity(0.7) : Color.secondary) : Color.primary))
+                if model.showsPron, let p = model.prons[i] {
+                    Text(p).font(.system(size: (isCur ? 13 : 12) * model.fontScale)).foregroundStyle(.secondary).italic()
+                }
                 if let t = model.translation(for: i), t != line {
                     Text(t).font(.system(size: (isCur ? 14 : 13) * model.fontScale))
                         .foregroundStyle(isCur ? Color.accentColor : Color.secondary.opacity(synced ? 0.8 : 1))
@@ -382,6 +411,27 @@ struct LyricsView: View {
     }
 }
 
+/// 발음 표시 고르기
+struct PronMenu: View {
+    @ObservedObject var model: LyricsModel
+    var body: some View {
+        Menu {
+            Picker("발음", selection: $model.pronStyle) {
+                Text("발음 안 보기").tag(Pronounce.Style.off)
+                Text(model.sourceLang?.languageCode?.identifier == "zh" ? "병음 (pīnyīn)" : "로마자 (romaji)").tag(Pronounce.Style.latin)
+                Text("한글 발음").tag(Pronounce.Style.hangul)
+            }
+            .pickerStyle(.inline)
+        } label: {
+            Text(model.pronStyle == .off ? "발음" : (model.pronStyle == .latin ? "발음: Aa" : "발음: 가"))
+                .font(.system(size: 11))
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(model.pronAvailable ? "따라 부르기용 발음 표시" : "일본어·중국어 가사에서 발음을 보여 줘요")
+    }
+}
+
 /// A− / A+ 버튼
 struct FontSizeButtons: View {
     @ObservedObject var model: LyricsModel
@@ -403,7 +453,9 @@ struct LyricsStrip: View {
     @ObservedObject var model: LyricsModel
     static let collapsedHeight: CGFloat = 30
     /// 펼쳤을 때 높이: 지금 줄 + 번역 + 다음 줄이 들어가도록 글자 크기에 맞춤
-    static func expandedHeight(_ scale: Double) -> CGFloat { collapsedHeight + CGFloat(ceil(66 * scale)) + 8 }
+    static func expandedHeight(_ scale: Double, pron: Bool = false) -> CGFloat {
+        collapsedHeight + CGFloat(ceil((66 + (pron ? 16 : 0)) * scale)) + 8
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -424,7 +476,7 @@ struct LyricsStrip: View {
                     }
                 }
                 Spacer(minLength: 4)
-                if model.stripExpanded { FontSizeButtons(model: model) }
+                if model.stripExpanded { PronMenu(model: model); FontSizeButtons(model: model) }
                 Button { model.onOpenFull?() } label: {
                     Text("전체 가사").font(.system(size: 11))
                 }
@@ -440,7 +492,7 @@ struct LyricsStrip: View {
                     let cur = model.currentIndex(at: model.now)
                     lines(cur)
                 }
-                .frame(height: Self.expandedHeight(model.fontScale) - Self.collapsedHeight)
+                .frame(height: Self.expandedHeight(model.fontScale, pron: model.showsPron) - Self.collapsedHeight)
                 .clipped()
             }
         }
@@ -499,6 +551,9 @@ struct LyricsStrip: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(currentText(cur) ?? "♪")
                         .font(.system(size: 15 * model.fontScale, weight: .bold)).lineLimit(1).minimumScaleFactor(0.8)
+                    if model.showsPron, let c = cur, let p = model.prons[c] {
+                        Text(p).font(.system(size: 12 * model.fontScale)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
+                    }
                     if let c = cur, let t = model.translation(for: c), t != model.lines[c] {
                         Text(t).font(.system(size: 12 * model.fontScale)).foregroundStyle(Color.accentColor).lineLimit(1)
                     }
@@ -534,7 +589,7 @@ final class LyricsController: NSObject, NSWindowDelegate {
 
     /// 플레이어 아래에 붙이는 가사 줄
     lazy var stripView: NSView = NSHostingView(rootView: LyricsStrip(model: model))
-    var stripHeight: CGFloat { model.stripExpanded ? LyricsStrip.expandedHeight(model.fontScale) : LyricsStrip.collapsedHeight }
+    var stripHeight: CGFloat { model.stripExpanded ? LyricsStrip.expandedHeight(model.fontScale, pron: model.showsPron) : LyricsStrip.collapsedHeight }
 
     init(music: YTMusic) {
         self.music = music
