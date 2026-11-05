@@ -361,7 +361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w = WidgetWindow(contentRect: rect, styleMask: [.borderless], backing: .buffered, defer: false)
             w.isOpaque = false
             w.backgroundColor = .clear
-            w.hasShadow = true
+            w.hasShadow = false   // 그림자를 켜면 가장자리에 검은 테두리 선이 생김
             w.isMovableByWindowBackground = !locked
             w.isMovable = !locked
             w.level = widgetLevels[widgetLevel].1
