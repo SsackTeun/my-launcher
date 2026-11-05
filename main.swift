@@ -576,9 +576,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 위젯 빈 곳을 우클릭했을 때 나오는 메뉴 (위젯엔 아래 버튼 줄이 없으므로)
+    /// 열 때마다 새로 만들어서 체크 표시(위젯 높이 · 위치 고정 등)가 늘 지금 상태와 맞게
     func backgroundMenu() -> NSMenu {
-        let m = NSMenu()
-        m.autoenablesItems = false
+        LiveMenu { [unowned self] m in fillBackgroundMenu(m) }
+    }
+
+    func fillBackgroundMenu(_ m: NSMenu) {
         if cats.count == 1 {
             m.addItem(Item("앱 추가…") { [unowned self] in addApp(to: 0) })
         } else {
@@ -599,7 +602,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(bulk)
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
-        return m
     }
 
     func categoriesMenu() -> NSMenu {
