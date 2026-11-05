@@ -158,6 +158,9 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         if UserDefaults.standard.bool(forKey: "ytmWebDump") {
             UserDefaults.standard.set(false, forKey: "ytmWebDump")
             debugDump()
+            wv.evaluateJavaScript(Self.queueJS) { r, _ in
+                try? ((r as? String) ?? "nil").write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-queue-debug.txt", atomically: true, encoding: .utf8)
+            }
         }
         wv.evaluateJavaScript(Self.stateJS) { [weak self] result, _ in
             MainActor.assumeIsolated {
@@ -197,7 +200,9 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     private func loadArt(_ url: String) {
         guard url != artURL else { return }
         artURL = url
-        guard !url.isEmpty, let u = URL(string: url) else { art = nil; return }
+        // 페이지엔 60px 짜리 주소가 있어 큰 사진으로 바꿔 받음
+        let big = url.replacingOccurrences(of: #"=w\d+-h\d+"#, with: "=w240-h240", options: .regularExpression)
+        guard !url.isEmpty, let u = URL(string: big) else { art = nil; return }
         URLSession.shared.dataTask(with: u) { data, _, _ in
             guard let data, let img = NSImage(data: data) else { return }
             DispatchQueue.main.async {
@@ -228,7 +233,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         (() => { const L = [\(arr)];
           const bs = [...document.querySelectorAll('\(scope) button, \(scope) tp-yt-paper-icon-button')];
           const ok = b => { const a = (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
-                            return \(prefix ? "L.some(x => a.startsWith(x))" : "L.includes(a)"); };
+                            return \(prefix ? "L.some(x => a.includes(x))" : "L.includes(a)"); };
           const b = bs.find(b => ok(b) && b.offsetParent !== null) || bs.find(ok);
           if (b) b.click(); return !!b; })()
         """
@@ -240,7 +245,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         "prev": clickJS(["이전", "Previous"]),
         "like": clickJS(["좋아요", "Like"]),
         "dislike": clickJS(["싫어요", "Dislike"]),
-        "repeat": clickJS(["반복", "모두 반복", "한 곡 반복", "Repeat"], prefix: true),
+        "repeat": clickJS(["반복", "Repeat"], prefix: true),
         "shuffle": clickJS(["셔플", "Shuffle"]),
         "mute": "(() => { const mp = document.getElementById('movie_player'); if (mp && mp.isMuted) { mp.isMuted() ? mp.unMute() : mp.mute(); } else { const v = document.querySelector('video'); if (v) v.muted = !v.muted; } })()",
     ]
