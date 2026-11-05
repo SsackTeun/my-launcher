@@ -443,6 +443,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             add.submenu = sub
             m.addItem(add)
         }
+        m.addItem(Item("Dock 앱 가져오기") { [unowned self] in importDock() })
         m.addItem(Item(editing ? "빼기 끝내기" : "앱 빼기 (편집)") { [unowned self] in editing.toggle(); refresh() })
         let cat = NSMenuItem(title: "카테고리", action: nil, keyEquivalent: "")
         cat.submenu = categoriesMenu()
@@ -457,6 +458,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let m = NSMenu()
         m.autoenablesItems = false
         m.addItem(Item("새 카테고리…") { [unowned self] in newCategory() })
+        m.addItem(Item("Dock 앱 가져오기") { [unowned self] in importDock() })
         m.addItem(.separator())
         for (c, cat) in cats.enumerated() {
             let i = NSMenuItem(title: cat.name, action: nil, keyEquivalent: "")
@@ -585,6 +587,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard p.runModal() == .OK else { return }
         add(p.urls, to: c)
+    }
+
+    // MARK: Dock 앱 가져오기
+
+    /// Dock 에 고정된 앱들의 번들 ID (Dock 순서 그대로)
+    func dockAppIDs() -> [String] {
+        guard let items = CFPreferencesCopyAppValue("persistent-apps" as CFString, "com.apple.dock" as CFString)
+                as? [[String: Any]] else { return [] }
+        var result: [String] = []
+        for item in items {
+            guard let tile = item["tile-data"] as? [String: Any] else { continue }
+            var id = tile["bundle-identifier"] as? String
+            if id == nil, let file = tile["file-data"] as? [String: Any],
+               let str = file["_CFURLString"] as? String, let u = URL(string: str) {
+                id = Bundle(url: u)?.bundleIdentifier
+            }
+            if let id, !result.contains(id) { result.append(id) }
+        }
+        return result
+    }
+
+    /// Dock 앱들을 "Dock" 카테고리에 넣기. 이미 런처에 있는 앱은 건너뜀 (여러 번 눌러도 새로 생긴 것만 추가)
+    func importDock() {
+        let dock = dockAppIDs()
+        guard !dock.isEmpty else { alert("Dock 앱 목록을 읽지 못했어요."); return }
+        let c: Int
+        if let i = cats.firstIndex(where: { $0.name == "Dock" }) {
+            c = i
+        } else {
+            cats.append(Category(name: "Dock", ids: []))
+            c = cats.count - 1
+        }
+        var added = 0, skipped = 0
+        for id in dock {
+            if locate(id) != nil { skipped += 1 } else { cats[c].ids.append(id); added += 1 }
+        }
+        if cats[c].ids.isEmpty && added == 0 { cats.remove(at: c) }
+        save()
+        alert("Dock 앱 \(added)개를 ‘Dock’ 카테고리에 넣었어요." + (skipped > 0 ? "\n이미 런처에 있던 \(skipped)개는 건너뛰었어요." : ""))
     }
 
     // MARK: 카테고리 동작
@@ -792,10 +833,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 3) 아래쪽 버튼 줄
         let add = ActionButton(title: "추가", symbol: "plus") { [unowned self] b in
-            if cats.count == 1 { addApp(to: 0); return }
             let m = NSMenu()
-            m.addItem(headerItem("어느 카테고리에 넣을까요?"))
-            for (c, cat) in cats.enumerated() { m.addItem(Item(cat.name) { [unowned self] in addApp(to: c) }) }
+            if cats.count == 1 {
+                m.addItem(Item("앱 고르기…") { [unowned self] in addApp(to: 0) })
+            } else {
+                m.addItem(headerItem("어느 카테고리에 넣을까요?"))
+                for (c, cat) in cats.enumerated() { m.addItem(Item(cat.name) { [unowned self] in addApp(to: c) }) }
+            }
+            m.addItem(.separator())
+            m.addItem(Item("Dock 앱 가져오기") { [unowned self] in importDock() })
             popUp(m, under: b)
         }
         let edit = ActionButton(title: editing ? "완료" : "빼기", symbol: editing ? "checkmark" : "minus") { [unowned self] _ in
@@ -890,6 +936,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if cats.count == 1 { m.addItem(.separator()) }
         m.addItem(Item("모두 실행") { [unowned self] in allIds.forEach(launch) })
         m.addItem(Item("런처 창 열기") { [unowned self] in showWindow() })
+        m.addItem(Item("Dock 앱 가져오기") { [unowned self] in importDock() })
         m.addItem(Item("설정…") { [unowned self] in openSettings() })
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
