@@ -311,6 +311,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var colsStepper: NSStepper!, rowsStepper: NSStepper!
     var sizeSlider: NSSlider!, sizeLabel: NSTextField!
     var widgetCheck: NSButton!
+    var dockCheck: NSButton!
+    var hideDock = false
 
     let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44, headerH: CGFloat = 28, sectionGap: CGFloat = 10
 
@@ -340,6 +342,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         makeWindow()
+
+        hideDock = d.bool(forKey: "hideDock")
+        if hideDock {
+            applyDockHiding()
+        } else {
+            restoreDock()   // 지난번에 비정상 종료돼 못 되돌린 경우
+        }
+        buildStatusMenu()
     }
 
     // MARK: 창 / 위젯 모드
@@ -466,6 +476,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(i)
         }
         return m
+    }
+
+    // MARK: Dock 가리기 (도구함이 켜져 있는 동안만 Dock 자동 가리기)
+
+    /// 시스템 Dock 의 "자동으로 가리기" 를 읽고/바꿈. 처음 한 번 macOS 가 System Events 제어 허용을 물어봄
+    @discardableResult
+    func dockAutohide(set value: Bool? = nil) -> Bool? {
+        let src = value.map { "tell application \"System Events\" to set autohide of dock preferences to \($0)" }
+            ?? "tell application \"System Events\" to get autohide of dock preferences"
+        var err: NSDictionary?
+        let r = NSAppleScript(source: src)?.executeAndReturnError(&err)
+        if err != nil { return nil }
+        return value ?? r?.booleanValue
+    }
+
+    func applyDockHiding() {
+        guard hideDock else { return }
+        // 원래 설정을 한 번만 기억해 두고(앱이 비정상 종료돼도 다음에 되돌릴 수 있게) 자동 가리기 켜기
+        if d.object(forKey: "dockWasAutohide") == nil {
+            guard let was = dockAutohide() else { dockPermissionFailed(); return }
+            d.set(was, forKey: "dockWasAutohide")
+        }
+        if dockAutohide(set: true) == nil { dockPermissionFailed() }
+    }
+
+    func restoreDock() {
+        guard d.object(forKey: "dockWasAutohide") != nil else { return }
+        let was = d.bool(forKey: "dockWasAutohide")
+        if !was { dockAutohide(set: false) }
+        d.removeObject(forKey: "dockWasAutohide")
+    }
+
+    func dockPermissionFailed() {
+        hideDock = false
+        d.set(false, forKey: "hideDock")
+        d.removeObject(forKey: "dockWasAutohide")
+        if settings != nil { syncSettings() }
+        buildStatusMenu()
+        alert("Dock 을 가리지 못했어요.\n시스템 설정 → 개인정보 보호 및 보안 → 자동화 에서 ‘도구함’이 ‘System Events’를 제어하도록 허용한 뒤 다시 켜 주세요.")
+    }
+
+    func setHideDock(_ on: Bool) {
+        hideDock = on
+        d.set(on, forKey: "hideDock")
+        if on { applyDockHiding() } else { restoreDock() }
+        if settings != nil { syncSettings() }
+        buildStatusMenu()
+    }
+
+    @objc func dockChecked(_ b: NSButton) { setHideDock(b.state == .on) }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        if hideDock { restoreDock() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -941,6 +1004,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
         m.addItem(.separator())
+        let dockItem = Item("켜져 있는 동안 Dock 가리기") { [unowned self] in setHideDock(!hideDock) }
+        dockItem.state = hideDock ? .on : .off
+        m.addItem(dockItem)
         let login = Item("로그인 시 자동 실행") { [unowned self] in toggleLogin() }
         login.state = loginEnabled ? .on : .off
         m.addItem(login)
@@ -959,7 +1025,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 232),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 262),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -998,6 +1064,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.addSubview(n)
             return (f, s)
         }
+
+        label("Dock", y: 222)
+        dockCheck = NSButton(checkboxWithTitle: "켜져 있는 동안 Dock 가리기", target: self, action: #selector(dockChecked(_:)))
+        dockCheck.frame = NSRect(x: 106, y: 221, width: 240, height: 22)
+        v.addSubview(dockCheck)
 
         label("모양", y: 192)
         widgetCheck = NSButton(checkboxWithTitle: "바탕화면 위젯으로 쓰기", target: self, action: #selector(widgetChecked(_:)))
@@ -1045,6 +1116,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func syncSettings() {
         widgetCheck.state = widget ? .on : .off
+        dockCheck.state = hideDock ? .on : .off
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
         sizeSlider.doubleValue = Double(iconSize)

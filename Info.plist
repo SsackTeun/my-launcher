@@ -1,12 +1,24 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>CFBundleName</key><string>도구함</string>
-<key>CFBundleDisplayName</key><string>도구함</string>
-<key>CFBundleIdentifier</key><string>local.jaeyeong.launcher</string>
-<key>CFBundleExecutable</key><string>Launcher</string>
-<key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>1.0</string>
-<key>LSMinimumSystemVersion</key><string>13.0</string>
-<key>NSHighResolutionCapable</key><true/>
-</dict></plist>
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>도구함</string>
+	<key>CFBundleExecutable</key>
+	<string>Launcher</string>
+	<key>CFBundleIdentifier</key>
+	<string>local.jaeyeong.launcher</string>
+	<key>CFBundleName</key>
+	<string>도구함</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Dock 자동 가리기를 켜고 끄기 위해 System Events 를 사용해요.</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+</dict>
+</plist>
