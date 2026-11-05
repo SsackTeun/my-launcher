@@ -100,6 +100,7 @@ final class LyricsModel: ObservableObject {
     @Published var fontScale: Double = UserDefaults.standard.object(forKey: "lyricsFontScale") as? Double ?? 1.0 {
         didSet { UserDefaults.standard.set(fontScale, forKey: "lyricsFontScale"); onStripToggle?() }
     }
+    func retranslate() { if config != nil { translations = [:]; makeConfig() } }
     func bumpFont(_ d: Double) { fontScale = min(1.8, max(0.8, (fontScale + d) * 10).rounded() / 10) }
     var onOpenFull: (() -> Void)?
     @Published var target: String {
@@ -205,14 +206,42 @@ final class LyricsModel: ObservableObject {
         makeConfig()
     }
 
-    /// 원래 언어와 번역 언어가 다를 때만 번역 준비
+    private var translateTask: Task<Void, Never>?
+
+    /// 원래 언어와 번역 언어가 다를 때만 번역.
+    /// 번역 데이터가 깔려 있으면 화면과 상관없이 바로 번역하고, 없을 때만 화면 쪽에서 내려받기를 물어봄
     private func makeConfig() {
         note = ""
-        guard !target.isEmpty, !lines.isEmpty, let src = sourceLang else { config = nil; return }
+        config = nil
+        translateTask?.cancel()
+        guard !target.isEmpty, !lines.isEmpty, let src = sourceLang else { return }
         let tgt = Locale.Language(identifier: target)
-        if src.languageCode == tgt.languageCode && !target.hasPrefix("zh") { config = nil; return }
-        if config?.source == src && config?.target == tgt { config?.invalidate() }
-        else { config = TranslationSession.Configuration(source: src, target: tgt) }
+        if src.languageCode == tgt.languageCode && !target.hasPrefix("zh") { return }
+        let reqs = requests()
+        guard !reqs.isEmpty else { return }
+        translateTask = Task { [weak self] in
+            let status = await LanguageAvailability().status(from: src, to: tgt)
+            guard !Task.isCancelled, let self else { return }
+            switch status {
+            case .installed:
+                do {
+                    let session = TranslationSession(installedSource: src, target: tgt)
+                    let results = try await session.translations(from: reqs)
+                    guard !Task.isCancelled else { return }
+                    for r in results {
+                        if let id = r.clientIdentifier, let i = Int(id) { self.translations[i] = r.targetText }
+                    }
+                } catch {
+                    if !Task.isCancelled { self.note = "번역하지 못했어요: \(error.localizedDescription)" }
+                }
+            case .supported:
+                // 번역 데이터가 아직 없음 → 화면의 translationTask 가 내려받을지 물어봄
+                self.config = TranslationSession.Configuration(source: src, target: tgt)
+                self.note = "번역 언어 데이터를 내려받는 중이거나 허용이 필요해요"
+            default:
+                self.note = "이 언어 조합은 번역할 수 없어요"
+            }
+        }
     }
 
     /// 번역할 줄: 빈 줄 · 같은 문장 반복 · 이미 번역 언어로 된 줄은 건너뜀
@@ -428,6 +457,8 @@ struct LyricsStrip: View {
             } catch {
                 await MainActor.run { model.note = "번역하지 못했어요: \(error.localizedDescription)" }
             }
+            // 내려받은 뒤엔 바로 번역하는 방식으로 다시
+            await MainActor.run { model.retranslate() }
         }
     }
 
