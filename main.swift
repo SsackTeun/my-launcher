@@ -13,7 +13,7 @@ struct Category: Codable {
 // MARK: - 작은 도우미
 
 /// 클로저로 동작하는 버튼
-final class ActionButton: NSButton {
+class ActionButton: NSButton {
     private var handler: ((ActionButton) -> Void)?
     convenience init(title: String, symbol: String?, _ action: @escaping (ActionButton) -> Void) {
         self.init(frame: .zero)

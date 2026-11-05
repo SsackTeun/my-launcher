@@ -31,6 +31,59 @@ final class ProgressBar: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
 }
 
+/// 위에서 휠을 굴리면 볼륨이 바뀌는 스피커 버튼
+final class ScrollButton: ActionButton {
+    var onScroll: ((CGFloat) -> Void)?
+    override func scrollWheel(with event: NSEvent) {
+        let d = event.scrollingDeltaY != 0 ? event.scrollingDeltaY : event.deltaY
+        if d != 0 { onScroll?(d) } else { super.scrollWheel(with: event) }
+    }
+}
+
+/// 볼륨 팝업: 슬라이더 · % · 음소거
+@MainActor
+final class VolumeViewController: NSViewController {
+    weak var music: YTMusic?
+    let slider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
+    let label = NSTextField(labelWithString: "100%")
+    var muteBtn: ActionButton!
+
+    override func loadView() {
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: 230, height: 40))
+        muteBtn = ActionButton(title: "", symbol: "speaker.wave.2.fill") { [weak self] _ in
+            self?.music?.press("mute")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self?.sync() }
+        }
+        muteBtn.isBordered = false
+        muteBtn.toolTip = "음소거 / 해제"
+        muteBtn.frame = NSRect(x: 8, y: 8, width: 24, height: 24)
+        v.addSubview(muteBtn)
+        slider.frame = NSRect(x: 36, y: 10, width: 140, height: 20)
+        slider.target = self
+        slider.action = #selector(changed)
+        slider.isContinuous = true
+        v.addSubview(slider)
+        label.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        label.alignment = .right
+        label.frame = NSRect(x: 178, y: 12, width: 42, height: 16)
+        v.addSubview(label)
+        view = v
+        sync()
+    }
+
+    @objc private func changed() {
+        label.stringValue = "\(Int(slider.doubleValue))%"
+        music?.setVolume(slider.doubleValue)
+    }
+
+    func sync() {
+        guard let st = music?.state else { return }
+        if NSEvent.pressedMouseButtons == 0 { slider.doubleValue = st.muted ? 0 : st.volume }
+        label.stringValue = st.muted ? "음소거" : "\(Int(st.volume))%"
+        muteBtn?.image = NSImage(systemSymbolName: st.muted ? "speaker.slash.fill" : "speaker.wave.2.fill", accessibilityDescription: nil)
+    }
+}
+
 @MainActor
 final class PlayerBar: NSView {
     static let height: CGFloat = 118
@@ -102,7 +155,14 @@ final class PlayerBar: NSView {
         play = btn("play.fill", "재생 / 일시정지", size: 18, "playPause")
         next = btn("forward.fill", "다음 곡", "next")
         rep = btn("repeat", "반복", "repeat")
-        mute = btn("speaker.wave.2.fill", "음소거", size: 11, "mute")
+        // 스피커: 누르면 볼륨 팝업, 위에서 휠을 굴리면 볼륨 조절
+        let sp = ScrollButton(title: "", symbol: "speaker.wave.2.fill") { [weak self] b in self?.showVolume(from: b) }
+        sp.isBordered = false
+        sp.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
+        sp.toolTip = "볼륨 (누르면 조절 · 휠로 바로 조절)"
+        sp.onScroll = { [weak self] d in self?.nudgeVolume(d) }
+        addSubview(sp)
+        mute = sp
         queueBtn = ActionButton(title: "", symbol: "list.bullet") { [weak self] b in self?.showQueue(from: b) }
         queueBtn.isBordered = false
         queueBtn.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
@@ -145,6 +205,31 @@ final class PlayerBar: NSView {
     }
     @objc private func volumeChanged() { music?.setVolume(volume.doubleValue) }
 
+    private var volumePopover: NSPopover?
+    private var volumeVC: VolumeViewController?
+
+    private func showVolume(from b: NSView) {
+        if volumePopover?.isShown == true { volumePopover?.close(); return }
+        let vc = VolumeViewController()
+        vc.music = music
+        let p = NSPopover()
+        p.behavior = .transient
+        p.contentViewController = vc
+        p.show(relativeTo: b.bounds, of: b, preferredEdge: .maxY)
+        volumePopover = p
+        volumeVC = vc
+    }
+
+    /// 휠 한 칸에 볼륨 조금씩
+    private func nudgeVolume(_ delta: CGFloat) {
+        guard let st = music?.state else { return }
+        let step = delta > 0 ? 4.0 : -4.0
+        let v = max(0, min(100, (st.muted ? 0 : st.volume) + step))
+        music?.setVolume(v)
+        volume.doubleValue = v
+        mute.toolTip = "볼륨 \(Int(v))% (누르면 조절 · 휠로 바로 조절)"
+    }
+
     func update(_ st: PlayerState, art: NSImage?) {
         titleBtn.title = st.title.isEmpty ? "재생 중인 곡 없음" : st.title
         if Date() >= flashUntil { bylineLabel.stringValue = st.byline }
@@ -168,6 +253,7 @@ final class PlayerBar: NSView {
         rep.toolTip = st.repeatLabel.isEmpty ? "반복" : st.repeatLabel
         sym(mute, st.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
         if volume.currentEditor() == nil, NSEvent.pressedMouseButtons == 0 { volume.doubleValue = st.volume }
+        if volumePopover?.isShown == true { volumeVC?.sync() }
         limited = st.limited
         has = st.limited ? [] : st.has
         narrowHint = !st.limited && !st.has.contains("progress")
@@ -197,29 +283,31 @@ final class PlayerBar: NSView {
         timeLabel.sizeToFit()
         timeLabel.frame.origin = NSPoint(x: pad, y: rowY + 12)
         let cw: CGFloat = 30
-        let center = w / 2
+        // 오른쪽 묶음은 늘 보이게: [🔈 스피커] [💬 가사] [☰ 재생 목록]
+        queueBtn.frame = NSRect(x: w - pad - 24, y: rowY + 6, width: 24, height: 24)
+        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX - 26, y: rowY + 6, width: 24, height: 24)
+        mute.frame = NSRect(x: lyricsBtn.frame.minX - 26, y: rowY + 6, width: 24, height: 24)
+        // 가운데 묶음 [셔플 이전 재생 다음 반복]: 창 가운데, 오른쪽 묶음과 겹치면 왼쪽으로 비킴
+        let clusterW = cw * 4 + 36
+        var center = w / 2
+        if center + clusterW / 2 > mute.frame.minX - 6 { center = mute.frame.minX - 6 - clusterW / 2 }
         play.frame = NSRect(x: center - 18, y: rowY + 2, width: 36, height: 32)
         prev.frame = NSRect(x: play.frame.minX - cw, y: rowY + 6, width: cw, height: 24)
         shuffle.frame = NSRect(x: prev.frame.minX - cw, y: rowY + 6, width: cw, height: 24)
         next.frame = NSRect(x: play.frame.maxX, y: rowY + 6, width: cw, height: 24)
         rep.frame = NSRect(x: next.frame.maxX, y: rowY + 6, width: cw, height: 24)
-        queueBtn.frame = NSRect(x: w - pad - 24, y: rowY + 6, width: 24, height: 24)
-        // 볼륨은 자리가 있을 때만
+        // 볼륨 슬라이더는 반복 버튼과 스피커 사이에 자리가 있을 때만 (없으면 스피커를 눌러 팝업으로)
         let volW: CGFloat = 56
-        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX - 26, y: rowY + 6, width: 24, height: 24)
-        let volX = lyricsBtn.frame.minX - 4 - volW
-        let room = volX - rep.frame.maxX
-        volume.isHidden = room < 30
-        mute.isHidden = room < 4
-        volume.frame = NSRect(x: volX, y: rowY + 10, width: volW, height: 16)
-        mute.frame = NSRect(x: (volume.isHidden ? lyricsBtn.frame.minX - 4 : volX) - 22, y: rowY + 6, width: 22, height: 24)
+        volume.frame = NSRect(x: mute.frame.minX - 2 - volW, y: rowY + 10, width: volW, height: 16)
+        volume.isHidden = volume.frame.minX < rep.frame.maxX + 6
+        mute.isHidden = false
         timeLabel.isHidden = limited || timeLabel.frame.maxX > shuffle.frame.minX - 2
         // YouTube Music 화면에 없는 조작은 숨김 (창이 좁거나 다른 탭 뒤에 있을 때)
         like.isHidden = !has.contains("like")
         dislike.isHidden = !has.contains("dislike")
         shuffle.isHidden = !has.contains("shuffle")
         rep.isHidden = !has.contains("repeat")
-        mute.isHidden = mute.isHidden || !has.contains("mute")
+        mute.isHidden = limited
         volume.isHidden = volume.isHidden || !has.contains("volume")
         progress.isHidden = !has.contains("progress")
         if progress.isHidden { timeLabel.isHidden = true }
