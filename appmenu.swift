@@ -166,3 +166,87 @@ func mirror(_ axMenu: AXUIElement, into m: NSMenu, pid: pid_t, depth: Int) {
     }
     if m.items.last?.isSeparatorItem == true { m.removeItem(at: m.items.count - 1) }
 }
+
+// MARK: - 열린 창 한꺼번에 정리 (도구함 자신은 빼고)
+
+enum BulkWindows {
+    enum Kind { case close, minimize, quit }
+
+    /// 도구함을 뺀, 화면에 창이 있는 일반 앱들
+    static func apps(includeFinder: Bool) -> [NSRunningApplication] {
+        NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy == .regular && $0.processIdentifier != ProcessInfo.processInfo.processIdentifier
+                && (includeFinder || $0.bundleIdentifier != "com.apple.finder")
+        }
+    }
+
+    static func windows(_ app: NSRunningApplication) -> [AXUIElement] {
+        let ax = AXUIElementCreateApplication(app.processIdentifier)
+        AXUIElementSetMessagingTimeout(ax, 0.5)
+        return (AX.attr(ax, kAXWindowsAttribute) as? [AXUIElement] ?? [])
+            .filter { (AX.str($0, kAXSubroleAttribute) ?? "") == (kAXStandardWindowSubrole as String) }
+    }
+
+    /// 몇 개의 창/앱이 대상인지 (확인 창에 보여 주려고)
+    @MainActor
+    static func count(_ kind: Kind) -> Int {
+        switch kind {
+        case .quit: return apps(includeFinder: false).count
+        case .close, .minimize: return apps(includeFinder: true).reduce(0) { $0 + windows($1).count }
+        }
+    }
+
+    @MainActor
+    static func run(_ kind: Kind) {
+        switch kind {
+        case .quit:
+            apps(includeFinder: false).forEach { $0.terminate() }
+        case .close:
+            for app in apps(includeFinder: true) {
+                for w in windows(app) {
+                    if let b = AX.element(w, kAXCloseButtonAttribute) { AXUIElementPerformAction(b, kAXPressAction as CFString) }
+                }
+            }
+        case .minimize:
+            for app in apps(includeFinder: true) {
+                for w in windows(app) { AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanTrue) }
+            }
+        }
+    }
+
+    /// 확인을 받고 실행
+    @MainActor
+    static func confirmAndRun(_ kind: Kind) {
+        if kind != .quit && !AX.trusted {
+            AX.askTrust()
+            return
+        }
+        let n = count(kind)
+        guard n > 0 else {
+            let a = NSAlert(); a.messageText = kind == .quit ? "종료할 앱이 없어요." : "열린 창이 없어요."; a.runModal()
+            return
+        }
+        if kind != .minimize {
+            let a = NSAlert()
+            a.messageText = kind == .quit ? "앱 \(n)개를 모두 종료할까요?" : "열린 창 \(n)개를 모두 닫을까요?"
+            a.informativeText = kind == .quit
+                ? "도구함과 Finder 는 빼고 종료해요. 저장 안 한 문서가 있으면 각 앱이 저장할지 물어봐요."
+                : "앱은 켜 둔 채 창만 닫아요. 저장 안 한 문서가 있으면 각 앱이 저장할지 물어봐요."
+            a.addButton(withTitle: kind == .quit ? "모두 종료" : "모두 닫기")
+            a.addButton(withTitle: "취소")
+            NSApp.activate(ignoringOtherApps: true)
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+        }
+        run(kind)
+    }
+
+    @MainActor
+    static func menu() -> NSMenu {
+        let m = NSMenu()
+        m.addItem(Item("열린 창 모두 닫기") { confirmAndRun(.close) })
+        m.addItem(Item("열린 창 모두 최소화") { confirmAndRun(.minimize) })
+        m.addItem(.separator())
+        m.addItem(Item("앱 모두 종료 (도구함·Finder 제외)") { confirmAndRun(.quit) })
+        return m
+    }
+}

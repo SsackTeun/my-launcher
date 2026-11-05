@@ -90,7 +90,18 @@ final class LyricsModel: ObservableObject {
     @Published var translations: [Int: String] = [:]
     @Published var source = ""
     @Published var sourceLangName = ""
-    @Published var follow = true
+    @Published var follow = false
+    /// 플레이어 아래 가사 줄 펼침 (기본 켜짐)
+    @Published var stripExpanded: Bool = UserDefaults.standard.object(forKey: "lyricsStrip") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(stripExpanded, forKey: "lyricsStrip"); onStripToggle?() }
+    }
+    var onStripToggle: (() -> Void)?
+    /// 가사 글자 크기 배율 (0.8 ~ 1.8)
+    @Published var fontScale: Double = UserDefaults.standard.object(forKey: "lyricsFontScale") as? Double ?? 1.0 {
+        didSet { UserDefaults.standard.set(fontScale, forKey: "lyricsFontScale"); onStripToggle?() }
+    }
+    func bumpFont(_ d: Double) { fontScale = min(1.8, max(0.8, (fontScale + d) * 10).rounded() / 10) }
+    var onOpenFull: (() -> Void)?
     @Published var target: String {
         didSet {
             UserDefaults.standard.set(target, forKey: "lyricsTarget")
@@ -243,21 +254,7 @@ struct LyricsView: View {
             }
         }
         .frame(minWidth: 320, minHeight: 300)
-        // 번역: 언어 데이터가 없으면 macOS 가 내려받을지 물어봄
-        .translationTask(model.config) { session in
-            let reqs = await MainActor.run { model.requests() }
-            guard !reqs.isEmpty else { return }
-            do {
-                for try await resp in session.translate(batch: reqs) {
-                    guard let id = resp.clientIdentifier, let i = Int(id) else { continue }
-                    await MainActor.run { model.translations[i] = resp.targetText }
-                }
-            } catch {
-                await MainActor.run { model.note = "번역하지 못했어요: \(error.localizedDescription)" }
-            }
-        }
     }
-
     private var header: some View {
         HStack(alignment: .center, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
@@ -269,6 +266,7 @@ struct LyricsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
+            FontSizeButtons(model: model)
             if model.times != nil {
                 Toggle(isOn: $model.follow) { Image(systemName: "arrow.down.to.line") }
                     .toggleStyle(.button)
@@ -328,10 +326,10 @@ struct LyricsView: View {
         } else {
             VStack(alignment: .leading, spacing: 2) {
                 Text(line)
-                    .font(.system(size: isCur ? 17 : 15, weight: isCur ? .bold : .medium))
+                    .font(.system(size: (isCur ? 17 : 15) * model.fontScale, weight: isCur ? .bold : .medium))
                     .foregroundStyle(isCur ? Color.primary : (synced ? (passed ? Color.secondary.opacity(0.7) : Color.secondary) : Color.primary))
                 if let t = model.translation(for: i), t != line {
-                    Text(t).font(.system(size: isCur ? 14 : 13))
+                    Text(t).font(.system(size: (isCur ? 14 : 13) * model.fontScale))
                         .foregroundStyle(isCur ? Color.accentColor : Color.secondary.opacity(synced ? 0.8 : 1))
                 }
             }
@@ -355,30 +353,188 @@ struct LyricsView: View {
     }
 }
 
-// MARK: - 창
+/// A− / A+ 버튼
+struct FontSizeButtons: View {
+    @ObservedObject var model: LyricsModel
+    var body: some View {
+        HStack(spacing: 2) {
+            Button { model.bumpFont(-0.1) } label: { Text("A−").font(.system(size: 10, weight: .semibold)) }
+                .help("가사 글자 작게").disabled(model.fontScale <= 0.8)
+            Button { model.bumpFont(0.1) } label: { Text("A+").font(.system(size: 12, weight: .semibold)) }
+                .help("가사 글자 크게").disabled(model.fontScale >= 1.8)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+    }
+}
 
-/// 가사 창 (닫으면 숨기기만, 곡이 바뀌면 자동으로 새 가사)
+// MARK: - 플레이어 아래 가사 줄 (지금 줄 + 다음 줄)
+
+struct LyricsStrip: View {
+    @ObservedObject var model: LyricsModel
+    static let collapsedHeight: CGFloat = 30
+    /// 펼쳤을 때 높이: 지금 줄 + 번역 + 다음 줄이 들어가도록 글자 크기에 맞춤
+    static func expandedHeight(_ scale: Double) -> CGFloat { collapsedHeight + CGFloat(ceil(66 * scale)) + 8 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // 머리줄: ⌃/⌄ · 접혔을 땐 지금 줄 한 줄 · 전체 가사
+            HStack(spacing: 6) {
+                Button { withAnimation(.easeInOut(duration: 0.2)) { model.stripExpanded.toggle() } } label: {
+                    Image(systemName: model.stripExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 16, height: 16)
+                }
+                .buttonStyle(.plain)
+                .help(model.stripExpanded ? "가사 접기" : "가사 펼치기")
+                Text("가사").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                if !model.stripExpanded {
+                    TimelineView(.periodic(from: .now, by: 0.25)) { _ in
+                        Text(currentText(model.currentIndex(at: model.now)) ?? statusText)
+                            .font(.system(size: 11)).lineLimit(1).foregroundStyle(.primary)
+                    }
+                }
+                Spacer(minLength: 4)
+                if model.stripExpanded { FontSizeButtons(model: model) }
+                Button { model.onOpenFull?() } label: {
+                    Text("전체 가사").font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.accentColor)
+                .help("전체 가사 창 열기")
+            }
+            .padding(.horizontal, 14)
+            .frame(height: Self.collapsedHeight)
+
+            if model.stripExpanded {
+                TimelineView(.periodic(from: .now, by: 0.2)) { _ in
+                    let cur = model.currentIndex(at: model.now)
+                    lines(cur)
+                }
+                .frame(height: Self.expandedHeight(model.fontScale) - Self.collapsedHeight)
+                .clipped()
+            }
+        }
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)).padding(.horizontal, 8).padding(.vertical, 2))
+        // 번역: 언어 데이터가 없으면 macOS 가 내려받을지 물어봄 (가사 줄과 전체 가사 창이 함께 씀)
+        .translationTask(model.config) { session in
+            let reqs = await MainActor.run { model.requests() }
+            guard !reqs.isEmpty else { return }
+            do {
+                for try await resp in session.translate(batch: reqs) {
+                    guard let id = resp.clientIdentifier, let i = Int(id) else { continue }
+                    await MainActor.run { model.translations[i] = resp.targetText }
+                }
+            } catch {
+                await MainActor.run { model.note = "번역하지 못했어요: \(error.localizedDescription)" }
+            }
+        }
+    }
+
+    private var statusText: String {
+        switch model.status {
+        case "none": return "이 곡은 가사가 없어요"
+        case "ok": return model.times == nil ? "시간 맞춤 가사가 없어요 · 전체 가사에서 볼 수 있어요" : "♪"
+        default: return "가사 불러오는 중…"
+        }
+    }
+
+    private func text(_ i: Int) -> String? {
+        guard i >= 0, i < model.lines.count else { return nil }
+        let t = model.lines[i].trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? "♪" : t
+    }
+    private func currentText(_ cur: Int?) -> String? { cur.flatMap { text($0) } }
+
+    /// 다음에 나올 (빈 줄이 아닌) 줄
+    private func nextIndex(after cur: Int?) -> Int? {
+        var i = (cur ?? -1) + 1
+        while i < model.lines.count {
+            if !model.lines[i].trimmingCharacters(in: .whitespaces).isEmpty { return i }
+            i += 1
+        }
+        return nil
+    }
+
+    @ViewBuilder
+    private func lines(_ cur: Int?) -> some View {
+        if model.status != "ok" || model.times == nil {
+            Text(statusText).font(.system(size: 12)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            let next = nextIndex(after: cur)
+            VStack(alignment: .leading, spacing: 3) {
+                // 지금 줄 + 번역
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(currentText(cur) ?? "♪")
+                        .font(.system(size: 15 * model.fontScale, weight: .bold)).lineLimit(1).minimumScaleFactor(0.8)
+                    if let c = cur, let t = model.translation(for: c), t != model.lines[c] {
+                        Text(t).font(.system(size: 12 * model.fontScale)).foregroundStyle(Color.accentColor).lineLimit(1)
+                    }
+                }
+                .id(cur ?? -1)
+                .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity),
+                                        removal: .move(edge: .top).combined(with: .opacity)))
+                // 다음 줄 (대기)
+                if let n = next {
+                    Text(text(n) ?? "")
+                        .font(.system(size: 12 * model.fontScale)).foregroundStyle(.secondary).lineLimit(1)
+                        .id("next-\(n)")
+                        .transition(.opacity)
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .animation(.easeOut(duration: 0.3), value: cur)
+            .contentShape(Rectangle())
+            .onTapGesture { model.onOpenFull?() }
+        }
+    }
+}
+
+// MARK: - 가사 관리 (플레이어가 켜져 있으면 늘 가사를 불러옴) · 전체 가사 창
+
 @MainActor
-final class LyricsWindow: NSObject, NSWindowDelegate {
-    private let model = LyricsModel()
+final class LyricsController: NSObject, NSWindowDelegate {
+    let model = LyricsModel()
     private var window: NSWindow?
     private var timer: Timer?
     private weak var music: YTMusic?
+
+    /// 플레이어 아래에 붙이는 가사 줄
+    lazy var stripView: NSView = NSHostingView(rootView: LyricsStrip(model: model))
+    var stripHeight: CGFloat { model.stripExpanded ? LyricsStrip.expandedHeight(model.fontScale) : LyricsStrip.collapsedHeight }
 
     init(music: YTMusic) {
         self.music = music
         super.init()
         model.onSeek = { [weak music] f in music?.seek(f) }
+        model.onOpenFull = { [weak self] in self?.show() }
+    }
+
+    func start() {
+        guard timer == nil else { return }
+        refresh()
+        let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
+        RunLoop.main.add(t, forMode: .common)
+        timer = t
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        window?.orderOut(nil)
     }
 
     var isVisible: Bool { window?.isVisible == true }
 
+    /// 전체 가사 창
     func show() {
         if window == nil {
             let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 420, height: 600),
                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
                              backing: .buffered, defer: false)
-            w.title = "가사"
+            w.title = "전체 가사"
             w.contentView = NSHostingView(rootView: LyricsView(model: model))
             w.isReleasedWhenClosed = false
             w.delegate = self
@@ -388,28 +544,18 @@ final class LyricsWindow: NSObject, NSWindowDelegate {
         }
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        refresh()
-        timer?.invalidate()
-        let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
-        RunLoop.main.add(t, forMode: .common)
-        timer = t
+        start()
     }
 
     func toggle() { isVisible ? window?.orderOut(nil) : show() }
 
     /// 미니 플레이어가 1초마다 주는 재생 위치
     func playerUpdated(_ st: PlayerState) {
-        guard isVisible else { return }
         model.setPosition(st.position, playing: st.playing ?? false, duration: st.duration)
     }
 
     private func refresh() {
-        guard isVisible, let music else { return }
+        guard let music, music.isActive else { return }
         music.fetchLyrics { [weak self] l in self?.model.update(l, player: music.state) }
-    }
-
-    func windowWillClose(_ notification: Notification) {
-        timer?.invalidate()
-        timer = nil
     }
 }

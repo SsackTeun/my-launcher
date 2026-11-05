@@ -368,11 +368,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.frame.size = NSSize(width: 24, height: 24)
         return b
     }()
+    lazy var bulkButton: ActionButton = {
+        let b = ActionButton(title: "", symbol: "rectangle.stack.badge.minus") { b in popUp(BulkWindows.menu(), under: b) }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+        b.toolTip = "열린 창 모두 닫기 · 최소화 · 앱 모두 종료"
+        b.frame.size = NSSize(width: 24, height: 24)
+        return b
+    }()
     lazy var topBar: NSView = {
         let v = NSView(frame: .zero)
         v.addSubview(searchField)
         v.addSubview(finderButton)
         v.addSubview(collapseButton)
+        v.addSubview(bulkButton)
         return v
     }()
     var installed: [(id: String, name: String)]?
@@ -396,7 +405,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return m
     }()
-    lazy var lyrics = LyricsWindow(music: music)
+    lazy var lyrics: LyricsController = {
+        let c = LyricsController(music: music)
+        c.model.onStripToggle = { [unowned self] in refresh() }   // 가사 줄 펼치기/접기 → 창 높이 다시
+        return c
+    }()
     lazy var playerBar: PlayerBar = {
         let b = PlayerBar(music: music)
         b.onLyrics = { [unowned self] in lyrics.toggle() }
@@ -437,7 +450,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
         listCollapsed = d.bool(forKey: "listCollapsed")
         foldedCats = Set(d.stringArray(forKey: "foldedCats") ?? [])
-        if playerEnabled { music.start() }
+        if playerEnabled { music.start(); lyrics.start() }
         hideDock = d.bool(forKey: "hideDock")
         if hideDock {
             applyDockHiding()
@@ -556,6 +569,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         cat.submenu = categoriesMenu()
         m.addItem(cat)
         m.addItem(Item("설정…") { [unowned self] in openSettings() })
+        let bulk = NSMenuItem(title: "창 정리", action: nil, keyEquivalent: "")
+        bulk.submenu = BulkWindows.menu()
+        m.addItem(bulk)
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
         return m
@@ -629,8 +645,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         d.set(on, forKey: "player")
         if on {
             music.showWindow()     // 처음 켜면 YouTube Music 창을 열어 로그인할 수 있게
+            lyrics.start()
         } else {
             music.stop()
+            lyrics.stop()
         }
         refresh()
         if settings != nil { syncSettings() }
@@ -1090,7 +1108,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 2) 창 높이: 전부 보이게 하되 화면보다 크면 스크롤
         let screenH = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
-        let ph = showPlayer ? playerH : 0
+        // 플레이어 + 그 아래 가사 줄
+        let lh = showPlayer ? lyrics.stripHeight : 0
+        let ph = showPlayer ? playerH + lh : 0
         let viewH = min(docH, screenH - bottom - topH - ph - 80)
         let h = viewH + bottom + topH + ph
 
@@ -1190,9 +1210,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content.addSubview(scroll)
         if showBar { content.addSubview(bar) }
         if ph > 0 {
-            playerBar.frame = NSRect(x: 0, y: h - topH - ph, width: w, height: ph)
+            playerBar.frame = NSRect(x: 0, y: h - topH - playerH, width: w, height: playerH)
             content.addSubview(playerBar)
             playerBar.needsLayout = true
+            lyrics.stripView.frame = NSRect(x: 0, y: h - topH - ph, width: w, height: lh)
+            content.addSubview(lyrics.stripView)
         }
 
         // 위쪽 줄: [🔍 앱 찾기 ........] [Finder]
@@ -1202,7 +1224,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         collapseButton.image = NSImage(systemSymbolName: allFolded ? "chevron.down" : "chevron.up", accessibilityDescription: nil)
         collapseButton.toolTip = allFolded ? "앱 목록 펼치기" : "앱 목록 접기"
         collapseButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 28, y: (topH - 24) / 2))
-        searchField.frame = NSRect(x: 10, y: (topH - 24) / 2, width: collapseButton.frame.minX - 16, height: 24)
+        bulkButton.setFrameOrigin(NSPoint(x: collapseButton.frame.minX - 26, y: (topH - 24) / 2))
+        searchField.frame = NSRect(x: 10, y: (topH - 24) / 2, width: bulkButton.frame.minX - 14, height: 24)
         scroll.contentView.scroll(to: .zero)
 
         buildStatusMenu()
@@ -1234,6 +1257,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if cats.count == 1 { m.addItem(.separator()) }
         m.addItem(Item("모두 실행") { [unowned self] in allIds.forEach(launch) })
+        let bulk = NSMenuItem(title: "창 정리", action: nil, keyEquivalent: "")
+        bulk.submenu = BulkWindows.menu()
+        m.addItem(bulk)
         m.addItem(Item("런처 창 열기") { [unowned self] in showWindow() })
         m.addItem(Item("Dock 앱 가져오기") { [unowned self] in importDock() })
         m.addItem(Item("설정…") { [unowned self] in openSettings() })
@@ -1245,7 +1271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(Item("    재생 / 일시정지") { [unowned self] in music.press("playPause") })
             m.addItem(Item("    다음 곡") { [unowned self] in music.press("next") })
             m.addItem(Item("    이전 곡") { [unowned self] in music.press("prev") })
-            m.addItem(Item("    가사 보기") { [unowned self] in lyrics.show() })
+            m.addItem(Item("    전체 가사 보기") { [unowned self] in lyrics.show() })
             m.addItem(Item("    YouTube Music 창 열기") { [unowned self] in music.showWindow() })
             m.addItem(.separator())
         }
