@@ -1,29 +1,32 @@
-// 도구함 — 내가 만든 앱들을 한곳에 모아 각자 따로 실행하는 런처
+// 도구함 — 내가 만든 앱들을 카테고리별로 모아 각자 따로 실행하는 런처
 import Cocoa
 import ServiceManagement
 import UniformTypeIdentifiers
 
 let defaultApps = ["local.jaeyeong.excelruler", "com.jaeyeong.listcalendartodo"]
 
+struct Category: Codable {
+    var name: String
+    var ids: [String]
+}
+
 // MARK: - 작은 도우미
 
 /// 클로저로 동작하는 버튼
 final class ActionButton: NSButton {
-    private var handler: (() -> Void)?
-    convenience init(title: String, symbol: String?, _ action: @escaping () -> Void) {
+    private var handler: ((ActionButton) -> Void)?
+    convenience init(title: String, symbol: String?, _ action: @escaping (ActionButton) -> Void) {
         self.init(frame: .zero)
         self.title = title
         if let symbol { image = NSImage(systemSymbolName: symbol, accessibilityDescription: title) }
         imagePosition = title.isEmpty ? .imageOnly : .imageLeading
         bezelStyle = .rounded
-        controlSize = .regular
         handler = action
         target = self
         self.action = #selector(run)
         sizeToFit()
     }
-    func setHandler(_ h: @escaping () -> Void) { handler = h; target = self; action = #selector(run) }
-    @objc private func run() { handler?() }
+    @objc private func run() { handler?(self) }
 }
 
 final class Item: NSMenuItem {
@@ -35,6 +38,17 @@ final class Item: NSMenuItem {
     }
     required init(coder: NSCoder) { fatalError() }
     @objc private func run() { handler() }
+}
+
+func headerItem(_ t: String) -> NSMenuItem {
+    if #available(macOS 14.0, *) { return NSMenuItem.sectionHeader(title: t) }
+    let i = NSMenuItem(title: t, action: nil, keyEquivalent: "")
+    i.isEnabled = false
+    return i
+}
+
+func popUp(_ menu: NSMenu, under view: NSView) {
+    menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
 }
 
 // MARK: - 앱 하나를 나타내는 칸
@@ -57,6 +71,7 @@ final class Tile: NSView {
         toolTip = found ? (running ? "\(name) — 실행 중 (클릭하면 앞으로)" : "\(name) — 클릭해서 실행")
                         : "\(name) — 앱을 찾을 수 없음"
 
+        // 칸 안쪽은 아래에서 위로: 초록 점 → 이름 → 아이콘
         let iv = NSImageView(frame: NSRect(x: (s.width - iconSize) / 2, y: 30, width: iconSize, height: iconSize))
         iv.image = icon
         iv.imageScaling = .scaleProportionallyUpOrDown
@@ -80,7 +95,7 @@ final class Tile: NSView {
 
         // 편집 모드: 왼쪽 위에 빨간 ⊖ 버튼
         if editing, let onRemove {
-            let b = ActionButton(title: "", symbol: "minus.circle.fill", onRemove)
+            let b = ActionButton(title: "", symbol: "minus.circle.fill") { _ in onRemove() }
             b.isBordered = false
             b.contentTintColor = .systemRed
             b.symbolConfiguration = .init(pointSize: 18, weight: .bold)
@@ -90,6 +105,8 @@ final class Tile: NSView {
         }
     }
     required init?(coder: NSCoder) { fatalError() }
+
+    override var isFlipped: Bool { false }
 
     override func updateTrackingAreas() {
         trackingAreas.forEach(removeTrackingArea)
@@ -112,7 +129,7 @@ final class Tile: NSView {
 /// 아이콘 격자. 위에서 아래로 쌓이도록 좌표를 뒤집고, Finder에서 .app 을 끌어다 놓으면 추가
 final class GridView: NSView {
     override var isFlipped: Bool { true }
-    var onDropApps: (([URL]) -> Void)?
+    var onDropApps: (([URL], NSPoint) -> Void)?
     private var dropHighlight = false { didSet { needsDisplay = true } }
 
     override init(frame: NSRect) {
@@ -136,7 +153,7 @@ final class GridView: NSView {
         dropHighlight = false
         let urls = appURLs(sender)
         guard !urls.isEmpty else { return false }
-        onDropApps?(urls)
+        onDropApps?(urls, convert(sender.draggingLocation, from: nil))
         return true
     }
     override func draw(_ dirtyRect: NSRect) {
@@ -150,15 +167,43 @@ final class GridView: NSView {
     }
 }
 
+/// 카테고리 제목 줄 (이름 + 구분선). 우클릭하면 카테고리 메뉴
+final class HeaderView: NSView {
+    init(frame: NSRect, title: String, count: Int, menu m: NSMenu, lineStart: CGFloat) {
+        super.init(frame: frame)
+        menu = m
+        let l = NSTextField(labelWithString: title)
+        l.font = .boldSystemFont(ofSize: 12)
+        l.textColor = .secondaryLabelColor
+        l.sizeToFit()
+        l.setFrameOrigin(NSPoint(x: lineStart, y: (frame.height - l.frame.height) / 2))
+        addSubview(l)
+        let c = NSTextField(labelWithString: "\(count)")
+        c.font = .systemFont(ofSize: 11)
+        c.textColor = .tertiaryLabelColor
+        c.sizeToFit()
+        c.setFrameOrigin(NSPoint(x: l.frame.maxX + 6, y: (frame.height - c.frame.height) / 2))
+        addSubview(c)
+        let lineX = c.frame.maxX + 8
+        let line = NSBox(frame: NSRect(x: lineX, y: frame.height / 2, width: max(0, frame.width - lineStart - lineX), height: 1))
+        line.boxType = .separator
+        addSubview(line)
+        toolTip = "우클릭: 이름 바꾸기 · 순서 · 삭제 · 여기에 앱 추가"
+    }
+    required init?(coder: NSCoder) { fatalError() }
+}
+
 // MARK: - 앱
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let d = UserDefaults.standard
-    var ids: [String] = []
+    var cats: [Category] = []
     var cols = 4
-    var rows = 2
+    var rows = 1
     var iconSize: CGFloat = 64
     var editing = false
+    /// 드롭 위치로 카테고리를 찾기 위한 각 카테고리의 세로 범위
+    var sectionYs: [(cat: Int, top: CGFloat, bottom: CGFloat)] = []
 
     var window: NSWindow!
     var statusItem: NSStatusItem!
@@ -167,10 +212,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var colsStepper: NSStepper!, rowsStepper: NSStepper!
     var sizeSlider: NSSlider!, sizeLabel: NSTextField!
 
-    let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44
+    let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44, headerH: CGFloat = 28, sectionGap: CGFloat = 10
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        ids = d.stringArray(forKey: "apps") ?? defaultApps
+        if let data = d.data(forKey: "categories"), let c = try? JSONDecoder().decode([Category].self, from: data), !c.isEmpty {
+            cats = c
+        } else {
+            // 예전 버전(카테고리 없음)에서 넘어오면 전부 "기본" 카테고리로
+            cats = [Category(name: "기본", ids: d.stringArray(forKey: "apps") ?? defaultApps)]
+        }
         if d.object(forKey: "cols") != nil {
             cols = max(1, d.integer(forKey: "cols"))
             rows = max(1, d.integer(forKey: "rows"))
@@ -211,6 +261,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 앱 정보
 
+    var allIds: [String] { cats.flatMap(\.ids) }
     func url(_ id: String) -> URL? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) }
     func running(_ id: String) -> NSRunningApplication? {
         NSRunningApplication.runningApplications(withBundleIdentifier: id).first
@@ -223,8 +274,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let u = url(id) { return NSWorkspace.shared.icon(forFile: u.path) }
         return NSImage(systemSymbolName: "questionmark.app", accessibilityDescription: nil) ?? NSImage()
     }
+    func locate(_ id: String) -> (Int, Int)? {
+        for (c, cat) in cats.enumerated() {
+            if let i = cat.ids.firstIndex(of: id) { return (c, i) }
+        }
+        return nil
+    }
 
-    // MARK: 동작
+    // MARK: 앱 동작
 
     func launch(_ id: String) {
         if let r = running(id) { r.activate(); return }
@@ -242,44 +299,107 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func quit(_ id: String) { running(id)?.terminate() }
 
     func remove(_ id: String) {
-        ids.removeAll { $0 == id }
+        guard let (c, i) = locate(id) else { return }
+        cats[c].ids.remove(at: i)
         save()
     }
 
     func move(_ id: String, by delta: Int) {
-        guard let i = ids.firstIndex(of: id) else { return }
+        guard let (c, i) = locate(id) else { return }
         let j = i + delta
-        guard ids.indices.contains(j) else { return }
-        ids.swapAt(i, j)
+        guard cats[c].ids.indices.contains(j) else { return }
+        cats[c].ids.swapAt(i, j)
         save()
     }
 
-    func add(_ urls: [URL]) {
+    func moveApp(_ id: String, toCategory target: Int) {
+        guard let (c, i) = locate(id), c != target else { return }
+        cats[c].ids.remove(at: i)
+        cats[target].ids.append(id)
+        save()
+    }
+
+    func add(_ urls: [URL], to c: Int) {
         var skipped: [String] = []
         for u in urls {
-            if let id = Bundle(url: u)?.bundleIdentifier {
-                if !ids.contains(id) { ids.append(id) }
-            } else {
-                skipped.append(u.lastPathComponent)
-            }
+            guard let id = Bundle(url: u)?.bundleIdentifier else { skipped.append(u.lastPathComponent); continue }
+            if locate(id) == nil { cats[c].ids.append(id) }
         }
         save()
         if !skipped.isEmpty { alert("앱 정보를 읽지 못해 추가하지 못했어요: \(skipped.joined(separator: ", "))") }
     }
 
-    func addApp() {
+    func addApp(to c: Int) {
         let p = NSOpenPanel()
-        p.title = "런처에 넣을 앱 고르기"
+        p.title = "‘\(cats[c].name)’에 넣을 앱 고르기"
         p.allowedContentTypes = [.application]
         p.allowsMultipleSelection = true
         p.directoryURL = URL(fileURLWithPath: "/Applications")
         NSApp.activate(ignoringOtherApps: true)
         guard p.runModal() == .OK else { return }
-        add(p.urls)
+        add(p.urls, to: c)
     }
 
+    // MARK: 카테고리 동작
+
+    func newCategory(thenMove id: String? = nil) {
+        guard let n = ask("새 카테고리 이름", value: "") else { return }
+        cats.append(Category(name: n, ids: []))
+        if let id { moveApp(id, toCategory: cats.count - 1) } else { save() }
+    }
+
+    func renameCategory(_ c: Int) {
+        guard let n = ask("카테고리 이름 바꾸기", value: cats[c].name) else { return }
+        cats[c].name = n
+        save()
+    }
+
+    func moveCategory(_ c: Int, by delta: Int) {
+        let j = c + delta
+        guard cats.indices.contains(j) else { return }
+        cats.swapAt(c, j)
+        save()
+    }
+
+    func deleteCategory(_ c: Int) {
+        guard cats.count > 1 else { alert("카테고리는 최소 하나는 있어야 해요."); return }
+        let dest = c == 0 ? 1 : c - 1
+        if !cats[c].ids.isEmpty {
+            let a = NSAlert()
+            a.messageText = "‘\(cats[c].name)’ 카테고리를 삭제할까요?"
+            a.informativeText = "안에 있는 앱 \(cats[c].ids.count)개는 ‘\(cats[dest].name)’로 옮겨져요. 앱 자체는 지워지지 않아요."
+            a.addButton(withTitle: "삭제")
+            a.addButton(withTitle: "취소")
+            guard a.runModal() == .alertFirstButtonReturn else { return }
+        }
+        cats[dest].ids.append(contentsOf: cats[c].ids)
+        cats.remove(at: c)
+        save()
+    }
+
+    func categoryMenu(_ c: Int) -> NSMenu {
+        let m = NSMenu()
+        m.autoenablesItems = false
+        m.addItem(Item("여기에 앱 추가…") { [unowned self] in addApp(to: c) })
+        m.addItem(Item("이름 바꾸기…") { [unowned self] in renameCategory(c) })
+        m.addItem(.separator())
+        let up = Item("위로 옮기기") { [unowned self] in moveCategory(c, by: -1) }
+        up.isEnabled = c > 0
+        m.addItem(up)
+        let down = Item("아래로 옮기기") { [unowned self] in moveCategory(c, by: 1) }
+        down.isEnabled = c < cats.count - 1
+        m.addItem(down)
+        m.addItem(.separator())
+        let del = Item("카테고리 삭제…") { [unowned self] in deleteCategory(c) }
+        del.isEnabled = cats.count > 1
+        m.addItem(del)
+        return m
+    }
+
+    // MARK: 저장 · 알림
+
     func save() {
-        d.set(ids, forKey: "apps")
+        if let data = try? JSONEncoder().encode(cats) { d.set(data, forKey: "categories") }
         d.set(cols, forKey: "cols")
         d.set(rows, forKey: "rows")
         d.set(Double(iconSize), forKey: "iconSize")
@@ -290,6 +410,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let a = NSAlert()
         a.messageText = msg
         a.runModal()
+    }
+
+    func ask(_ title: String, value: String) -> String? {
+        let a = NSAlert()
+        a.messageText = title
+        let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 220, height: 24))
+        f.stringValue = value
+        f.placeholderString = "예: 업무, 개인, 개발"
+        a.accessoryView = f
+        a.addButton(withTitle: "확인")
+        a.addButton(withTitle: "취소")
+        a.window.initialFirstResponder = f
+        NSApp.activate(ignoringOtherApps: true)
+        guard a.runModal() == .alertFirstButtonReturn else { return nil }
+        let t = f.stringValue.trimmingCharacters(in: .whitespaces)
+        return t.isEmpty ? nil : t
     }
 
     // MARK: 로그인 시 자동 실행
@@ -316,6 +452,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         q.isEnabled = isRunning
         m.addItem(q)
         m.addItem(.separator())
+
+        let moveTo = NSMenuItem(title: "카테고리 옮기기", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        let here = locate(id)?.0
+        for (c, cat) in cats.enumerated() {
+            let i = Item(cat.name) { [unowned self] in moveApp(id, toCategory: c) }
+            i.state = c == here ? .on : .off
+            sub.addItem(i)
+        }
+        sub.addItem(.separator())
+        sub.addItem(Item("새 카테고리…") { [unowned self] in newCategory(thenMove: id) })
+        moveTo.submenu = sub
+        m.addItem(moveTo)
         m.addItem(Item("앞으로 옮기기") { [unowned self] in move(id, by: -1) })
         m.addItem(Item("뒤로 옮기기") { [unowned self] in move(id, by: 1) })
         if let u = url(id) {
@@ -328,52 +477,97 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func refresh() {
         let tile = Tile.size(icon: iconSize)
-        // 창 크기는 설정한 열 × 행 에 맞춤. 앱이 칸보다 많으면 아래로 스크롤
         let gridW = pad * 2 + CGFloat(cols) * tile.width + CGFloat(cols - 1) * gap
-        let gridH = pad * 2 + CGFloat(rows) * tile.height + CGFloat(rows - 1) * gap
-        let neededRows = max(rows, Int(ceil(Double(ids.count) / Double(cols))))
-        let docH = pad * 2 + CGFloat(neededRows) * tile.height + CGFloat(neededRows - 1) * gap
-        let w = max(gridW, 300)
-        let h = gridH + barH
-
-        let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, gridH)))
-        grid.onDropApps = { [unowned self] urls in add(urls) }
+        let w = max(gridW, 340)
         let left = (w - gridW) / 2 + pad
-        for (i, id) in ids.enumerated() {
-            let t = Tile(name: name(id), icon: icon(id), iconSize: iconSize,
-                         running: running(id) != nil, found: url(id) != nil,
-                         editing: editing, menu: tileMenu(id),
-                         onRemove: { [unowned self] in remove(id) })
-            let c = i % cols, r = i / cols
-            t.setFrameOrigin(NSPoint(x: left + CGFloat(c) * (tile.width + gap),
-                                     y: pad + CGFloat(r) * (tile.height + gap)))
-            t.onClick = { [unowned self] in launch(id) }
-            grid.addSubview(t)
-        }
-        if ids.isEmpty {
-            let hint = NSTextField(labelWithString: "＋ 추가를 누르거나 Finder에서 앱을 끌어다 놓으세요")
-            hint.textColor = .secondaryLabelColor
-            hint.alignment = .center
-            hint.frame = NSRect(x: 0, y: gridH / 2 - 10, width: w, height: 20)
-            grid.addSubview(hint)
-        }
+        let showHeaders = cats.count > 1
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: barH, width: w, height: gridH))
+        // 1) 카테고리마다: 제목 줄 → 열 × 행 격자(앱이 많으면 행이 늘어남)
+        var views: [NSView] = []
+        sectionYs = []
+        var y = pad
+        for (c, cat) in cats.enumerated() {
+            let top = y
+            if showHeaders {
+                views.append(HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
+                                        title: cat.name, count: cat.ids.count,
+                                        menu: categoryMenu(c), lineStart: left))
+                y += headerH
+            }
+            let catRows = max(rows, Int(ceil(Double(cat.ids.count) / Double(cols))))
+            for (i, id) in cat.ids.enumerated() {
+                let t = Tile(name: name(id), icon: icon(id), iconSize: iconSize,
+                             running: running(id) != nil, found: url(id) != nil,
+                             editing: editing, menu: tileMenu(id),
+                             onRemove: { [unowned self] in remove(id) })
+                // GridView 는 위→아래 좌표라 칸의 위쪽 모서리 기준으로 놓음
+                t.setFrameOrigin(NSPoint(x: left + CGFloat(i % cols) * (tile.width + gap),
+                                         y: y + CGFloat(i / cols) * (tile.height + gap)))
+                t.onClick = { [unowned self] in launch(id) }
+                views.append(t)
+            }
+            if cat.ids.isEmpty {
+                let hint = NSTextField(labelWithString: "비어 있음 — Finder에서 앱을 끌어다 놓거나, 앱 우클릭 → 카테고리 옮기기")
+                hint.font = .systemFont(ofSize: 11)
+                hint.textColor = .tertiaryLabelColor
+                hint.frame = NSRect(x: left, y: y + tile.height / 2 - 8, width: gridW - pad * 2, height: 16)
+                hint.lineBreakMode = .byTruncatingTail
+                views.append(hint)
+            }
+            y += CGFloat(catRows) * tile.height + CGFloat(catRows - 1) * gap
+            sectionYs.append((c, top, y))
+            y += sectionGap
+        }
+        let docH = y - sectionGap + pad
+
+        // 2) 창 높이: 전부 보이게 하되 화면보다 크면 스크롤
+        let screenH = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
+        let viewH = min(docH, screenH - barH - 80)
+        let h = viewH + barH
+
+        let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
+        grid.onDropApps = { [unowned self] urls, p in
+            let c = sectionYs.first { p.y < $0.bottom + sectionGap / 2 }?.cat ?? (cats.count - 1)
+            add(urls, to: c)
+        }
+        views.forEach(grid.addSubview)
+
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: barH, width: w, height: viewH))
         scroll.documentView = grid
-        scroll.hasVerticalScroller = docH > gridH
+        scroll.hasVerticalScroller = docH > viewH
         scroll.drawsBackground = false
         scroll.borderType = .noBorder
 
-        // 아래쪽 버튼 줄
-        let add = ActionButton(title: "추가", symbol: "plus") { [unowned self] in addApp() }
-        let edit = ActionButton(title: editing ? "완료" : "빼기", symbol: editing ? "checkmark" : "minus") { [unowned self] in
+        // 3) 아래쪽 버튼 줄
+        let add = ActionButton(title: "추가", symbol: "plus") { [unowned self] b in
+            if cats.count == 1 { addApp(to: 0); return }
+            let m = NSMenu()
+            m.addItem(headerItem("어느 카테고리에 넣을까요?"))
+            for (c, cat) in cats.enumerated() { m.addItem(Item(cat.name) { [unowned self] in addApp(to: c) }) }
+            popUp(m, under: b)
+        }
+        let edit = ActionButton(title: editing ? "완료" : "빼기", symbol: editing ? "checkmark" : "minus") { [unowned self] _ in
             editing.toggle()
             refresh()
         }
         if editing { edit.keyEquivalent = "\r" }
-        let gear = ActionButton(title: "", symbol: "gearshape") { [unowned self] in openSettings() }
-        gear.toolTip = "배치 · 아이콘 크기 설정 (⌘,)"
-        let info = NSTextField(labelWithString: editing ? "⊖ 를 눌러 빼기" : "\(ids.count)개 · \(cols)열 × \(rows)행")
+        let catBtn = ActionButton(title: "카테고리", symbol: "folder") { [unowned self] b in
+            let m = NSMenu()
+            m.autoenablesItems = false
+            m.addItem(Item("새 카테고리…") { [unowned self] in newCategory() })
+            m.addItem(.separator())
+            for (c, cat) in cats.enumerated() {
+                let i = NSMenuItem(title: cat.name, action: nil, keyEquivalent: "")
+                i.submenu = categoryMenu(c)
+                m.addItem(i)
+            }
+            popUp(m, under: b)
+        }
+        let gear = ActionButton(title: "", symbol: "gearshape") { [unowned self] _ in openSettings() }
+        gear.toolTip = "열 · 행 · 아이콘 크기 설정 (⌘,)"
+        let total = allIds.count
+        let info = NSTextField(labelWithString: editing ? "⊖ 를 눌러 빼기"
+                               : "\(total)개" + (showHeaders ? " · \(cats.count)카테고리" : "") + " · \(cols)열")
         info.textColor = .secondaryLabelColor
         info.font = .systemFont(ofSize: 11)
         info.sizeToFit()
@@ -383,7 +577,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         line.boxType = .separator
         bar.addSubview(line)
         var x: CGFloat = 10
-        for b in [add, edit] {
+        for b in [add, edit, catBtn] {
             b.setFrameOrigin(NSPoint(x: x, y: (barH - b.frame.height) / 2))
             bar.addSubview(b)
             x += b.frame.width + 6
@@ -398,9 +592,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content.addSubview(bar)
 
         // 창 크기를 먼저 맞춘 뒤 내용을 넣어야 잘리지 않음. 창 위쪽 위치는 그대로 유지
-        let top = window.frame.maxY
+        let topEdge = window.frame.maxY
         var f = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: w, height: h))
-        f.origin = NSPoint(x: window.frame.minX, y: top - f.height)
+        f.origin = NSPoint(x: window.frame.minX, y: topEdge - f.height)
         window.setFrame(f, display: false)
         window.contentView = content
         scroll.contentView.scroll(to: .zero)
@@ -413,25 +607,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func buildStatusMenu() {
         let m = NSMenu()
         m.autoenablesItems = false
-        for id in ids {
-            let r = running(id) != nil
-            let i = Item((r ? "● " : "    ") + name(id)) { [unowned self] in launch(id) }
-            let img = icon(id).copy() as! NSImage
-            img.size = NSSize(width: 16, height: 16)
-            i.image = img
-            i.isEnabled = url(id) != nil
-            if r {
-                let sub = NSMenu()
-                sub.addItem(Item("앞으로 가져오기") { [unowned self] in launch(id) })
-                sub.addItem(Item("종료") { [unowned self] in quit(id) })
-                i.submenu = sub
+        for cat in cats {
+            if cats.count > 1 { m.addItem(headerItem(cat.name)) }
+            for id in cat.ids {
+                let r = running(id) != nil
+                let i = Item((r ? "● " : "    ") + name(id)) { [unowned self] in launch(id) }
+                let img = icon(id).copy() as! NSImage
+                img.size = NSSize(width: 16, height: 16)
+                i.image = img
+                i.isEnabled = url(id) != nil
+                if r {
+                    let sub = NSMenu()
+                    sub.addItem(Item("앞으로 가져오기") { [unowned self] in launch(id) })
+                    sub.addItem(Item("종료") { [unowned self] in quit(id) })
+                    i.submenu = sub
+                }
+                m.addItem(i)
             }
-            m.addItem(i)
+            if cats.count > 1 { m.addItem(.separator()) }
         }
-        m.addItem(.separator())
-        m.addItem(Item("모두 실행") { [unowned self] in ids.forEach(launch) })
+        if cats.count == 1 { m.addItem(.separator()) }
+        m.addItem(Item("모두 실행") { [unowned self] in allIds.forEach(launch) })
         m.addItem(Item("런처 창 열기") { [unowned self] in showWindow() })
-        m.addItem(Item("앱 추가…") { [unowned self] in addApp() })
         m.addItem(Item("설정…") { [unowned self] in openSettings() })
         let login = Item("로그인 시 자동 실행") { [unowned self] in toggleLogin() }
         login.state = loginEnabled ? .on : .off
@@ -451,7 +648,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 196),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 196),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -463,7 +660,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             l.frame = NSRect(x: 10, y: y, width: 90, height: 20)
             v.addSubview(l)
         }
-        func numberRow(_ t: String, y: CGFloat, max: Int) -> (NSTextField, NSStepper) {
+        func numberRow(_ t: String, y: CGFloat, max: Int, note: String) -> (NSTextField, NSStepper) {
             label(t, y: y)
             let f = NSTextField(frame: NSRect(x: 108, y: y - 1, width: 50, height: 22))
             let nf = NumberFormatter()
@@ -483,26 +680,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             s.target = self
             s.action = #selector(stepperChanged(_:))
             v.addSubview(s)
+            let n = NSTextField(labelWithString: note)
+            n.font = .systemFont(ofSize: 11)
+            n.textColor = .secondaryLabelColor
+            n.frame = NSRect(x: 190, y: y + 1, width: 160, height: 16)
+            v.addSubview(n)
             return (f, s)
         }
 
-        (colsField, colsStepper) = numberRow("열 (가로 칸)", y: 150, max: 12)
-        (rowsField, rowsStepper) = numberRow("행 (세로 칸)", y: 116, max: 12)
+        (colsField, colsStepper) = numberRow("열 (가로 칸)", y: 150, max: 12, note: "한 줄에 놓을 앱 수")
+        (rowsField, rowsStepper) = numberRow("행 (세로 칸)", y: 116, max: 12, note: "카테고리마다 최소 줄 수")
 
         label("아이콘 크기", y: 80)
         sizeSlider = NSSlider(value: 64, minValue: 24, maxValue: 128, target: self, action: #selector(sliderChanged(_:)))
-        sizeSlider.frame = NSRect(x: 106, y: 78, width: 160, height: 24)
+        sizeSlider.frame = NSRect(x: 106, y: 78, width: 170, height: 24)
         sizeSlider.numberOfTickMarks = 14
         sizeSlider.allowsTickMarkValuesOnly = true
         v.addSubview(sizeSlider)
         sizeLabel = NSTextField(labelWithString: "64px")
-        sizeLabel.frame = NSRect(x: 272, y: 80, width: 56, height: 20)
+        sizeLabel.frame = NSRect(x: 282, y: 80, width: 60, height: 20)
         v.addSubview(sizeLabel)
 
         // 자주 쓰는 크기 바로가기
         var x: CGFloat = 108
         for (t, s) in [("작게", 32.0), ("보통", 48.0), ("크게", 64.0), ("아주 크게", 96.0)] {
-            let b = ActionButton(title: t, symbol: nil) { [unowned self] in
+            let b = ActionButton(title: t, symbol: nil) { [unowned self] _ in
                 iconSize = CGFloat(s)
                 syncSettings()
                 save()
@@ -515,10 +717,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             x += b.frame.width + 2
         }
 
-        let hint = NSTextField(labelWithString: "바꾸면 바로 적용돼요. 앱이 칸보다 많으면 아래로 스크롤돼요.")
+        let hint = NSTextField(labelWithString: "바꾸면 바로 적용돼요. 앱이 칸보다 많으면 그 카테고리의 줄이 늘어나요.")
         hint.font = .systemFont(ofSize: 11)
         hint.textColor = .secondaryLabelColor
-        hint.frame = NSRect(x: 16, y: 12, width: 310, height: 16)
+        hint.frame = NSRect(x: 16, y: 12, width: 330, height: 16)
         v.addSubview(hint)
 
         p.center()
@@ -564,6 +766,14 @@ func buildMainMenu(_ delegate: AppDelegate) {
     appMenu.addItem(.separator())
     appMenu.addItem(withTitle: "도구함 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     appItem.submenu = appMenu
+    let editItem = NSMenuItem()
+    main.addItem(editItem)
+    let editMenu = NSMenu(title: "편집")   // 이름 입력 칸에서 ⌘C/⌘V 가 되도록
+    editMenu.addItem(withTitle: "잘라내기", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    editMenu.addItem(withTitle: "복사", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    editMenu.addItem(withTitle: "붙여넣기", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    editMenu.addItem(withTitle: "전체 선택", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    editItem.submenu = editMenu
     let winItem = NSMenuItem()
     main.addItem(winItem)
     let winMenu = NSMenu(title: "윈도우")
