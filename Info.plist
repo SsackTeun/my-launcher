@@ -15,7 +15,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>LSMinimumSystemVersion</key>
-	<string>13.0</string>
+	<string>14.0</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Dock 자동 가리기를 켜고 끄기 위해 System Events 를 사용해요.</string>
 	<key>NSHighResolutionCapable</key>

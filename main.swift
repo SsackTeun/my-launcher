@@ -126,6 +126,7 @@ final class Tile: NSView {
         guard hypot(p.x - start.x, p.y - start.y) > 4 else { return }
         dragged = true
         hovering = false
+        onHover?(self, false)
         let item = NSPasteboardItem()
         item.setString(appID, forType: .launcherApp)
         let di = NSDraggingItem(pasteboardWriter: item)
@@ -145,8 +146,15 @@ final class Tile: NSView {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
     }
-    override func mouseEntered(with event: NSEvent) { hovering = true }
-    override func mouseExited(with event: NSEvent) { hovering = false }
+    var onHover: ((Tile, Bool) -> Void)?
+    override func mouseEntered(with event: NSEvent) { hovering = true; onHover?(self, true) }
+    override func mouseExited(with event: NSEvent) { hovering = false; onHover?(self, false) }
+
+    /// 이 칸의 화면 좌표 (미리보기 위치 계산용)
+    var screenRect: NSRect {
+        guard let w = window else { return .zero }
+        return w.convertToScreen(convert(bounds, to: nil))
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard hovering, !editing else { return }
@@ -291,6 +299,7 @@ final class HeaderView: NSView {
 
 // MARK: - 앱
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let d = UserDefaults.standard
     var cats: [Category] = []
@@ -313,6 +322,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var widgetCheck: NSButton!
     var dockCheck: NSButton!
     var hideDock = false
+    var previewCheck: NSButton!
+    // 검색 · 위쪽 줄 (창을 다시 그려도 검색칸은 그대로 유지해 입력이 끊기지 않게)
+    var query = ""
+    var root: NSView?
+    lazy var searchField: NSSearchField = {
+        let f = NSSearchField(frame: .zero)
+        f.placeholderString = "앱 찾기"
+        f.delegate = self
+        f.sendsSearchStringImmediately = true
+        f.focusRingType = .none
+        return f
+    }()
+    lazy var finderButton: ActionButton = {
+        let b = ActionButton(title: "Finder", symbol: nil) { [unowned self] _ in launch("com.apple.finder") }
+        let img = NSWorkspace.shared.icon(forFile: "/System/Library/CoreServices/Finder.app")
+        img.size = NSSize(width: 16, height: 16)
+        b.image = img
+        b.imagePosition = .imageLeading
+        b.toolTip = "Finder 열기"
+        b.sizeToFit()
+        return b
+    }()
+    lazy var topBar: NSView = {
+        let v = NSView(frame: .zero)
+        v.addSubview(searchField)
+        v.addSubview(finderButton)
+        return v
+    }()
+    var installed: [(id: String, name: String)]?
+    let topH: CGFloat = 40
+    var previews = true
+    lazy var preview: PreviewController = {
+        let p = PreviewController()
+        p.fallbackLaunch = { [unowned self] id in launch(id) }
+        return p
+    }()
 
     let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44, headerH: CGFloat = 28, sectionGap: CGFloat = 10
 
@@ -338,11 +383,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 앱이 켜지거나 꺼지면 초록 점을 바로 갱신
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
-            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in self?.refresh() }
+            nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
         }
 
         makeWindow()
 
+        if d.object(forKey: "previews") != nil { previews = d.bool(forKey: "previews") }
         hideDock = d.bool(forKey: "hideDock")
         if hideDock {
             applyDockHiding()
@@ -384,6 +430,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.isReleasedWhenClosed = false
         w.setFrameAutosaveName(autosave)
         window = w
+        topBar.removeFromSuperview()
+        root = nil
 
         // 위젯은 Dock 에 안 보이게, 일반 창은 Dock 에 보이게
         NSApp.setActivationPolicy(widget ? .accessory : .regular)
@@ -527,6 +575,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func dockChecked(_ b: NSButton) { setHideDock(b.state == .on) }
 
+    func setPreviews(_ on: Bool) {
+        previews = on
+        d.set(on, forKey: "previews")
+        if !on { preview.hide() }
+        if on && !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
+        if settings != nil { syncSettings() }
+        buildStatusMenu()
+    }
+
+    @objc func previewChecked(_ b: NSButton) { setPreviews(b.state == .on) }
+
     func applicationWillTerminate(_ notification: Notification) {
         if hideDock { restoreDock() }
     }
@@ -653,6 +712,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.activate(ignoringOtherApps: true)
         guard p.runModal() == .OK else { return }
         add(p.urls, to: c)
+    }
+
+    // MARK: 검색
+
+    /// /Applications 등에 설치된 앱 목록 (처음 검색할 때 한 번 읽음)
+    func installedApps() -> [(id: String, name: String)] {
+        if let installed { return installed }
+        let fm = FileManager.default
+        let dirs = ["/Applications", "/Applications/Utilities", "/System/Applications",
+                    "/System/Applications/Utilities", NSHomeDirectory() + "/Applications"]
+        var seen = Set<String>()
+        var list: [(String, String)] = []
+        for dir in dirs {
+            guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for item in items where item.hasSuffix(".app") {
+                let path = dir + "/" + item
+                guard let id = Bundle(path: path)?.bundleIdentifier, !seen.contains(id) else { continue }
+                seen.insert(id)
+                list.append((id, fm.displayName(atPath: path).replacingOccurrences(of: ".app", with: "")))
+            }
+        }
+        list.sort { $0.1.localizedStandardCompare($1.1) == .orderedAscending }
+        installed = list
+        return list
+    }
+
+    func matches(_ id: String, _ q: String) -> Bool {
+        name(id).localizedCaseInsensitiveContains(q) || id.localizedCaseInsensitiveContains(q)
+    }
+
+    /// 화면에 보여 줄 묶음들. 검색 중이면 "도구함에서" + "설치된 앱"
+    func displaySections() -> [(title: String, cat: Int?, ids: [String])] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty { return cats.enumerated().map { ($0.element.name, $0.offset, $0.element.ids) } }
+        let mine = allIds.filter { matches($0, q) }
+        let others = installedApps().filter { locate($0.id) == nil && ($0.name.localizedCaseInsensitiveContains(q) || $0.id.localizedCaseInsensitiveContains(q)) }
+            .prefix(40).map(\.id)
+        var out: [(String, Int?, [String])] = [("도구함에서", nil, mine)]
+        if !others.isEmpty { out.append(("설치된 앱", nil, Array(others))) }
+        return out
+    }
+
+    func installedTileMenu(_ id: String) -> NSMenu {
+        let m = NSMenu()
+        m.addItem(Item("실행") { [unowned self] in launch(id) })
+        let addTo = NSMenuItem(title: "도구함에 넣기", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        for (c, cat) in cats.enumerated() {
+            sub.addItem(Item(cat.name) { [unowned self] in
+                if let u = url(id) { add([u], to: c) }
+            })
+        }
+        addTo.submenu = sub
+        m.addItem(addTo)
+        if let u = url(id) {
+            m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) })
+        }
+        return m
     }
 
     // MARK: Dock 앱 가져오기
@@ -797,16 +914,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 메인 창 그리기
 
+    /// 앱 아이콘 우클릭: Dock 처럼 [열린 창들 · 새 창 · 앱 메뉴] + [도구함 정리] + [가리기 · 종료]
     func tileMenu(_ id: String) -> NSMenu {
+        LiveMenu { [unowned self] m in
+            preview.hide()
+            let r = running(id)
+            if let r { fillAppMenu(m, pid: r.processIdentifier) }
+            else { m.addItem(Item("열기") { [unowned self] in launch(id) }); m.addItem(.separator()) }
+
+            let tools = NSMenuItem(title: "도구함", action: nil, keyEquivalent: "")
+            tools.submenu = launcherMenu(id)
+            m.addItem(tools)
+            if let u = url(id) {
+                m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) })
+            }
+            if let r {
+                m.addItem(.separator())
+                m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
+                m.addItem(Item("종료") { r.terminate() })
+            }
+        }
+    }
+
+    /// 도구함 안에서의 정리 (카테고리 · 순서 · 빼기)
+    func launcherMenu(_ id: String) -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
-        let isRunning = running(id) != nil
-        m.addItem(Item(isRunning ? "앞으로 가져오기" : "실행") { [unowned self] in launch(id) })
-        let q = Item("종료") { [unowned self] in quit(id) }
-        q.isEnabled = isRunning
-        m.addItem(q)
-        m.addItem(.separator())
-
         let moveTo = NSMenuItem(title: "카테고리 옮기기", action: nil, keyEquivalent: "")
         let sub = NSMenu()
         let here = locate(id)?.0
@@ -821,15 +954,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(moveTo)
         m.addItem(Item("앞으로 옮기기") { [unowned self] in move(id, by: -1) })
         m.addItem(Item("뒤로 옮기기") { [unowned self] in move(id, by: 1) })
-        if let u = url(id) {
-            m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) })
-        }
         m.addItem(.separator())
         m.addItem(Item("런처에서 빼기") { [unowned self] in remove(id) })
         return m
     }
 
     func refresh() {
+        if editing { preview.hide() }
         let tile = Tile.size(icon: iconSize)
         let gridW = pad * 2 + CGFloat(cols) * tile.width + CGFloat(cols - 1) * gap
         // 위젯에선 아래 버튼 줄을 숨기고(빼기 편집 중일 때만 보임) 우클릭 메뉴로 대신함
@@ -837,36 +968,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let bottom = showBar ? barH : 0
         let w = max(gridW, showBar ? 340 : 0)
         let left = (w - gridW) / 2 + pad
-        let showHeaders = cats.count > 1
+        let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
+        let sections = displaySections()
+        let showHeaders = searching || cats.count > 1
 
         // 1) 카테고리마다: 제목 줄 → 열 × 행 격자(앱이 많으면 행이 늘어남)
         var views: [NSView] = []
         sectionYs = []
         var y = pad
-        for (c, cat) in cats.enumerated() {
+        for sec in sections {
             let top = y
             if showHeaders {
+                let hm = sec.cat.map { categoryMenu($0) } ?? NSMenu()
                 views.append(HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
-                                        title: cat.name, count: cat.ids.count,
-                                        menu: categoryMenu(c), lineStart: left))
+                                        title: sec.title, count: sec.ids.count,
+                                        menu: hm, lineStart: left))
                 y += headerH
             }
             let tilesTop = y
-            let catRows = max(rows, Int(ceil(Double(cat.ids.count) / Double(cols))))
-            for (i, id) in cat.ids.enumerated() {
+            let minRows = searching ? 1 : rows
+            let catRows = max(minRows, Int(ceil(Double(sec.ids.count) / Double(cols))))
+            for (i, id) in sec.ids.enumerated() {
+                let mine = locate(id) != nil
                 let t = Tile(name: name(id), icon: icon(id), iconSize: iconSize,
                              running: running(id) != nil, found: url(id) != nil,
-                             editing: editing, menu: tileMenu(id),
+                             editing: editing && mine, menu: mine ? tileMenu(id) : installedTileMenu(id),
                              onRemove: { [unowned self] in remove(id) })
                 // GridView 는 위→아래 좌표라 칸의 위쪽 모서리 기준으로 놓음
                 t.setFrameOrigin(NSPoint(x: left + CGFloat(i % cols) * (tile.width + gap),
                                          y: y + CGFloat(i / cols) * (tile.height + gap)))
-                t.onClick = { [unowned self] in launch(id) }
-                t.appID = id
+                t.onClick = { [unowned self] in preview.hide(); launch(id) }
+                t.appID = (mine && !searching) ? id : ""   // 검색 결과에선 끌어 옮기기 안 함
+                t.onHover = { [unowned self] tile, inside in
+                    guard previews, !editing, inside, let r = running(id) else {
+                        if !inside { preview.hoverEnded() }
+                        return
+                    }
+                    preview.hoverBegan(id: id, pid: r.processIdentifier, name: name(id), icon: icon(id), anchor: tile.screenRect)
+                }
                 views.append(t)
             }
-            if cat.ids.isEmpty {
-                let hint = NSTextField(labelWithString: "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요")
+            if sec.ids.isEmpty {
+                let hint = NSTextField(labelWithString: searching ? "‘\(query)’와 맞는 앱이 없어요" : "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요")
                 hint.font = .systemFont(ofSize: 11)
                 hint.textColor = .tertiaryLabelColor
                 hint.frame = NSRect(x: left, y: y + tile.height / 2 - 8, width: gridW - pad * 2, height: 16)
@@ -874,15 +1017,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 views.append(hint)
             }
             y += CGFloat(catRows) * tile.height + CGFloat(catRows - 1) * gap
-            sectionYs.append((c, top, tilesTop, y))
+            if let c = sec.cat { sectionYs.append((c, top, tilesTop, y)) }
             y += sectionGap
         }
         let docH = y - sectionGap + pad
 
         // 2) 창 높이: 전부 보이게 하되 화면보다 크면 스크롤
         let screenH = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
-        let viewH = min(docH, screenH - bottom - 80)
-        let h = viewH + bottom
+        let viewH = min(docH, screenH - bottom - topH - 80)
+        let h = viewH + bottom + topH
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
         grid.target = { [unowned self] p in dropTarget(at: p, left: left, gridW: gridW, tile: tile) }
@@ -948,28 +1091,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         info.setFrameOrigin(NSPoint(x: widgetBtn.frame.minX - info.frame.width - 8, y: (barH - info.frame.height) / 2))
         if info.frame.minX > x { bar.addSubview(info) }
 
+        // 바깥 틀(위젯 카드/일반 창 배경)과 위쪽 검색 줄은 한 번만 만들고, 아이콘 영역만 갈아 끼움
         let content: NSView
-        if widget {
+        if let r = root {
+            content = r
+        } else if widget {
             // 위젯 카드: 뒤 배경이 비치는 반투명 + 둥근 모서리
             let fx = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: w, height: h))
             fx.material = .hudWindow
             fx.blendingMode = .behindWindow
             fx.state = .active
             fx.maskImage = roundedMask(20)
-            fx.menu = backgroundMenu()
             content = fx
         } else {
             content = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
         }
-        content.addSubview(scroll)
-        if showBar { content.addSubview(bar) }
+        if widget { content.menu = backgroundMenu() }
+        content.subviews.filter { $0 !== topBar }.forEach { $0.removeFromSuperview() }
 
-        // 창 크기를 먼저 맞춘 뒤 내용을 넣어야 잘리지 않음. 창 위쪽 위치는 그대로 유지
+        // 창 크기를 먼저 맞춘 뒤 내용을 배치. 창 위쪽 위치는 그대로 유지
         let topEdge = window.frame.maxY
         var f = window.frameRect(forContentRect: NSRect(x: 0, y: 0, width: w, height: h))
         f.origin = NSPoint(x: window.frame.minX, y: topEdge - f.height)
         window.setFrame(f, display: false)
-        window.contentView = content
+        if root == nil {
+            window.contentView = content
+            content.addSubview(topBar)
+            root = content
+        }
+        content.frame = NSRect(x: 0, y: 0, width: w, height: h)
+        content.addSubview(scroll)
+        if showBar { content.addSubview(bar) }
+
+        // 위쪽 줄: [🔍 앱 찾기 ........] [Finder]
+        topBar.frame = NSRect(x: 0, y: h - topH, width: w, height: topH)
+        let fb = finderButton.frame.size
+        finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 10, y: (topH - fb.height) / 2))
+        searchField.frame = NSRect(x: 10, y: (topH - 24) / 2, width: w - fb.width - 26, height: 24)
         scroll.contentView.scroll(to: .zero)
 
         buildStatusMenu()
@@ -1007,6 +1165,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
         m.addItem(.separator())
+        let pv = Item("마우스를 올리면 열린 창 미리보기") { [unowned self] in setPreviews(!previews) }
+        pv.state = previews ? .on : .off
+        m.addItem(pv)
         let dockItem = Item("켜져 있는 동안 Dock 가리기") { [unowned self] in setHideDock(!hideDock) }
         dockItem.state = hideDock ? .on : .off
         m.addItem(dockItem)
@@ -1028,7 +1189,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 262),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 292),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -1067,6 +1228,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.addSubview(n)
             return (f, s)
         }
+
+        label("창 미리보기", y: 252)
+        previewCheck = NSButton(checkboxWithTitle: "아이콘에 마우스를 올리면 열린 창 보기", target: self, action: #selector(previewChecked(_:)))
+        previewCheck.frame = NSRect(x: 106, y: 251, width: 250, height: 22)
+        v.addSubview(previewCheck)
 
         label("Dock", y: 222)
         dockCheck = NSButton(checkboxWithTitle: "켜져 있는 동안 Dock 가리기", target: self, action: #selector(dockChecked(_:)))
@@ -1120,6 +1286,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func syncSettings() {
         widgetCheck.state = widget ? .on : .off
         dockCheck.state = hideDock ? .on : .off
+        previewCheck.state = previews ? .on : .off
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
         sizeSlider.doubleValue = Double(iconSize)
@@ -1148,7 +1315,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+// MARK: - 검색칸 입력
+
+extension AppDelegate: NSSearchFieldDelegate {
+    func controlTextDidChange(_ obj: Notification) {
+        guard (obj.object as? NSSearchField) === searchField else { return }
+        if query.isEmpty { installed = nil }     // 새로 찾기 시작할 때 설치된 앱 목록을 새로 읽음
+        query = searchField.stringValue
+        preview.hide()
+        refresh()
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
+        guard control === searchField else { return false }
+        if sel == #selector(NSResponder.insertNewline(_:)) {
+            // Enter: 첫 번째 결과 실행
+            if let first = displaySections().flatMap(\.ids).first {
+                launch(first)
+                clearSearch()
+            }
+            return true
+        }
+        if sel == #selector(NSResponder.cancelOperation(_:)) {
+            clearSearch()
+            return true
+        }
+        return false
+    }
+
+    func clearSearch() {
+        searchField.stringValue = ""
+        query = ""
+        refresh()
+    }
+
+    @objc func focusSearch() {
+        showWindow()
+        window.makeFirstResponder(searchField)
+    }
+}
+
 // 기본 메뉴 (⌘Q, ⌘W, ⌘, 가 동작하도록)
+@MainActor
 func buildMainMenu(_ delegate: AppDelegate) {
     let main = NSMenu()
     let appItem = NSMenuItem()
@@ -1157,6 +1365,9 @@ func buildMainMenu(_ delegate: AppDelegate) {
     let pref = NSMenuItem(title: "설정…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
     pref.target = delegate
     appMenu.addItem(pref)
+    let find = NSMenuItem(title: "앱 찾기", action: #selector(AppDelegate.focusSearch), keyEquivalent: "f")
+    find.target = delegate
+    appMenu.addItem(find)
     let wid = NSMenuItem(title: "위젯 모드로 바꾸기", action: #selector(AppDelegate.toggleWidgetAction), keyEquivalent: "W")
     wid.target = delegate
     appMenu.addItem(wid)
@@ -1179,9 +1390,11 @@ func buildMainMenu(_ delegate: AppDelegate) {
     NSApp.mainMenu = main
 }
 
-let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)
-buildMainMenu(delegate)
-app.run()
+MainActor.assumeIsolated {
+    let app = NSApplication.shared
+    let delegate = AppDelegate()
+    app.delegate = delegate
+    app.setActivationPolicy(.regular)
+    buildMainMenu(delegate)
+    app.run()
+}
