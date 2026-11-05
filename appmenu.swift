@@ -261,6 +261,7 @@ final class QuitPicker: NSObject, NSWindowDelegate {
     private var rows: [(NSRunningApplication, NSButton)] = []
     private var force: NSButton!
     private var quitBtn: NSButton!
+    private var cancelBtn: NSButton!
 
     func show() {
         let apps = BulkWindows.apps(includeFinder: true)
@@ -286,14 +287,27 @@ final class QuitPicker: NSObject, NSWindowDelegate {
         rows = []
         for (i, app) in apps.enumerated() {
             let name = app.localizedName ?? app.bundleIdentifier ?? "?"
-            let cb = NSButton(checkboxWithTitle: name, target: self, action: #selector(changed))
+            // ☑︎ 체크박스 · 아이콘 · 이름 (이름을 눌러도 체크가 바뀜)
+            let y = CGFloat(i) * rowH + 4
+            let cb = NSButton(checkboxWithTitle: "", target: self, action: #selector(changed))
             cb.state = app.bundleIdentifier == "com.apple.finder" ? .off : .on
-            let icon = (app.icon?.copy() as? NSImage) ?? NSImage()
-            icon.size = NSSize(width: 18, height: 18)
-            cb.image = icon
-            cb.imagePosition = .imageLeading
-            cb.frame = NSRect(x: 12, y: CGFloat(i) * rowH + 4, width: w - 44, height: 22)
+            cb.frame = NSRect(x: 12, y: y, width: 20, height: 22)
             doc.addSubview(cb)
+            let iv = NSImageView(frame: NSRect(x: 34, y: y + 2, width: 18, height: 18))
+            iv.image = app.icon
+            iv.imageScaling = .scaleProportionallyUpOrDown
+            doc.addSubview(iv)
+            let label = ActionButton(title: name, symbol: nil) { [weak self, weak cb] _ in
+                guard let cb else { return }
+                cb.state = cb.state == .on ? .off : .on
+                self?.changed()
+            }
+            label.isBordered = false
+            label.alignment = .left
+            label.font = .systemFont(ofSize: 13)
+            label.contentTintColor = .labelColor
+            label.frame = NSRect(x: 58, y: y, width: w - 90, height: 22)
+            doc.addSubview(label)
             rows.append((app, cb))
         }
         let scroll = NSScrollView(frame: NSRect(x: 4, y: 70, width: w - 8, height: listH))
@@ -316,14 +330,11 @@ final class QuitPicker: NSObject, NSWindowDelegate {
         force.setFrameOrigin(NSPoint(x: w - force.frame.width - 12, y: 42))
         v.addSubview(force)
 
-        let cancel = ActionButton(title: "취소", symbol: nil) { [weak self] _ in self?.window?.orderOut(nil) }
-        cancel.keyEquivalent = "\u{1b}"
+        cancelBtn = ActionButton(title: "취소", symbol: nil) { [weak self] _ in self?.window?.orderOut(nil) }
+        cancelBtn.keyEquivalent = "\u{1b}"
         quitBtn = ActionButton(title: "선택한 앱 종료", symbol: nil) { [weak self] _ in self?.quitSelected() }
         quitBtn.keyEquivalent = "\r"
-        quitBtn.sizeToFit()
-        quitBtn.setFrameOrigin(NSPoint(x: w - quitBtn.frame.width - 12, y: 8))
-        cancel.setFrameOrigin(NSPoint(x: quitBtn.frame.minX - cancel.frame.width - 6, y: 8))
-        v.addSubview(cancel)
+        v.addSubview(cancelBtn)
         v.addSubview(quitBtn)
 
         p.setContentSize(NSSize(width: w, height: h))
@@ -344,8 +355,12 @@ final class QuitPicker: NSObject, NSWindowDelegate {
         let n = rows.filter { $0.1.state == .on }.count
         quitBtn?.title = n > 0 ? "선택한 앱 \(n)개 종료" : "선택한 앱 종료"
         quitBtn?.isEnabled = n > 0
+        // 글자 길이가 바뀌므로 두 버튼 자리를 매번 다시 (겹치지 않게)
         quitBtn?.sizeToFit()
-        if let q = quitBtn, let v = q.superview { q.setFrameOrigin(NSPoint(x: v.bounds.width - q.frame.width - 12, y: 8)) }
+        if let q = quitBtn, let c = cancelBtn, let v = q.superview {
+            q.setFrameOrigin(NSPoint(x: v.bounds.width - q.frame.width - 12, y: 8))
+            c.setFrameOrigin(NSPoint(x: q.frame.minX - c.frame.width - 8, y: 8))
+        }
     }
 
     private func quitSelected() {
