@@ -126,7 +126,6 @@ final class Tile: NSView {
         guard hypot(p.x - start.x, p.y - start.y) > 4 else { return }
         dragged = true
         hovering = false
-        onHover?(self, false)
         let item = NSPasteboardItem()
         item.setString(appID, forType: .launcherApp)
         let di = NSDraggingItem(pasteboardWriter: item)
@@ -146,15 +145,8 @@ final class Tile: NSView {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
     }
-    var onHover: ((Tile, Bool) -> Void)?
-    override func mouseEntered(with event: NSEvent) { hovering = true; onHover?(self, true) }
-    override func mouseExited(with event: NSEvent) { hovering = false; onHover?(self, false) }
-
-    /// 이 칸의 화면 좌표 (미리보기 위치 계산용)
-    var screenRect: NSRect {
-        guard let w = window else { return .zero }
-        return w.convertToScreen(convert(bounds, to: nil))
-    }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
 
     override func draw(_ dirtyRect: NSRect) {
         guard hovering, !editing else { return }
@@ -322,7 +314,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var widgetCheck: NSButton!
     var dockCheck: NSButton!
     var hideDock = false
-    var previewCheck: NSButton!
     // 검색 · 위쪽 줄 (창을 다시 그려도 검색칸은 그대로 유지해 입력이 끊기지 않게)
     var query = ""
     var root: NSView?
@@ -373,12 +364,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var playerBar = PlayerBar(music: music)
     var showPlayer: Bool { playerEnabled && music.isActive }
     let topH: CGFloat = 40
-    var previews = true
-    lazy var preview: PreviewController = {
-        let p = PreviewController()
-        p.fallbackLaunch = { [unowned self] id in launch(id) }
-        return p
-    }()
 
     let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44, headerH: CGFloat = 28, sectionGap: CGFloat = 10
 
@@ -409,11 +394,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         makeWindow()
 
-        if d.object(forKey: "previews") != nil { previews = d.bool(forKey: "previews") }
         if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
         if playerEnabled { music.start() }
-        // 창 목록·앱 메뉴·미니 플레이어에 필요한 권한이 없으면 처음에 한 번 물어봄
-        if previews && !AX.trusted { AX.askTrust() }
         hideDock = d.bool(forKey: "hideDock")
         if hideDock {
             applyDockHiding()
@@ -599,17 +581,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func dockChecked(_ b: NSButton) { setHideDock(b.state == .on) }
-
-    func setPreviews(_ on: Bool) {
-        previews = on
-        d.set(on, forKey: "previews")
-        if !on { preview.hide() }
-        if on && !CGPreflightScreenCaptureAccess() { CGRequestScreenCaptureAccess() }
-        if settings != nil { syncSettings() }
-        buildStatusMenu()
-    }
-
-    @objc func previewChecked(_ b: NSButton) { setPreviews(b.state == .on) }
 
     func setPlayer(_ on: Bool) {
         playerEnabled = on
@@ -956,7 +927,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 앱 아이콘 우클릭: Dock 처럼 [열린 창들 · 새 창 · 앱 메뉴] + [도구함 정리] + [가리기 · 종료]
     func tileMenu(_ id: String) -> NSMenu {
         LiveMenu { [unowned self] m in
-            preview.hide()
             let r = running(id)
             if let r { fillAppMenu(m, pid: r.processIdentifier) }
             else { m.addItem(Item("열기") { [unowned self] in launch(id) }); m.addItem(.separator()) }
@@ -999,7 +969,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func refresh() {
-        if editing { preview.hide() }
         let tile = Tile.size(icon: iconSize)
         let gridW = pad * 2 + CGFloat(cols) * tile.width + CGFloat(cols - 1) * gap
         // 위젯에선 아래 버튼 줄을 숨기고(빼기 편집 중일 때만 보임) 우클릭 메뉴로 대신함
@@ -1036,15 +1005,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // GridView 는 위→아래 좌표라 칸의 위쪽 모서리 기준으로 놓음
                 t.setFrameOrigin(NSPoint(x: left + CGFloat(i % cols) * (tile.width + gap),
                                          y: y + CGFloat(i / cols) * (tile.height + gap)))
-                t.onClick = { [unowned self] in preview.hide(); launch(id) }
+                t.onClick = { [unowned self] in launch(id) }
                 t.appID = (mine && !searching) ? id : ""   // 검색 결과에선 끌어 옮기기 안 함
-                t.onHover = { [unowned self] tile, inside in
-                    guard previews, !editing, inside, let r = running(id) else {
-                        if !inside { preview.hoverEnded() }
-                        return
-                    }
-                    preview.hoverBegan(id: id, pid: r.processIdentifier, name: name(id), icon: icon(id), anchor: tile.screenRect)
-                }
                 views.append(t)
             }
             if sec.ids.isEmpty {
@@ -1221,9 +1183,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
         pl.state = playerEnabled ? .on : .off
         m.addItem(pl)
-        let pv = Item("마우스를 올리면 열린 창 미리보기") { [unowned self] in setPreviews(!previews) }
-        pv.state = previews ? .on : .off
-        m.addItem(pv)
         let dockItem = Item("켜져 있는 동안 Dock 가리기") { [unowned self] in setHideDock(!hideDock) }
         dockItem.state = hideDock ? .on : .off
         m.addItem(dockItem)
@@ -1245,7 +1204,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 322),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 292),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -1285,15 +1244,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return (f, s)
         }
 
-        label("음악", y: 282)
+        label("음악", y: 252)
         playerCheck = NSButton(checkboxWithTitle: "YouTube Music 미니 플레이어", target: self, action: #selector(playerChecked(_:)))
-        playerCheck.frame = NSRect(x: 106, y: 281, width: 250, height: 22)
+        playerCheck.frame = NSRect(x: 106, y: 251, width: 250, height: 22)
         v.addSubview(playerCheck)
-
-        label("창 미리보기", y: 252)
-        previewCheck = NSButton(checkboxWithTitle: "아이콘에 마우스를 올리면 열린 창 보기", target: self, action: #selector(previewChecked(_:)))
-        previewCheck.frame = NSRect(x: 106, y: 251, width: 250, height: 22)
-        v.addSubview(previewCheck)
 
         label("Dock", y: 222)
         dockCheck = NSButton(checkboxWithTitle: "켜져 있는 동안 Dock 가리기", target: self, action: #selector(dockChecked(_:)))
@@ -1347,7 +1301,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func syncSettings() {
         widgetCheck.state = widget ? .on : .off
         dockCheck.state = hideDock ? .on : .off
-        previewCheck.state = previews ? .on : .off
         playerCheck.state = playerEnabled ? .on : .off
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
@@ -1384,7 +1337,6 @@ extension AppDelegate: NSSearchFieldDelegate {
         guard (obj.object as? NSSearchField) === searchField else { return }
         if query.isEmpty { installed = nil }     // 새로 찾기 시작할 때 설치된 앱 목록을 새로 읽음
         query = searchField.stringValue
-        preview.hide()
         refresh()
     }
 

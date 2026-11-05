@@ -43,7 +43,7 @@ final class PlayerBar: NSView {
     private let progress = ProgressBar()
     private var like: ActionButton!, dislike: ActionButton!
     private var shuffle: ActionButton!, prev: ActionButton!, play: ActionButton!, next: ActionButton!, rep: ActionButton!
-    private var mute: ActionButton!, queueBtn: ActionButton!
+    private var mute: ActionButton!, queueBtn: ActionButton!, openBtn: ActionButton!
     private let volume = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private var popover: NSPopover?
 
@@ -108,6 +108,13 @@ final class PlayerBar: NSView {
         queueBtn.toolTip = "재생 목록"
         addSubview(queueBtn)
 
+        // YouTube Music 창(내장 브라우저) 열기
+        openBtn = ActionButton(title: "", symbol: "macwindow") { [weak self] _ in self?.music?.showWindow() }
+        openBtn.isBordered = false
+        openBtn.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
+        openBtn.toolTip = "YouTube Music 창 열기"
+        addSubview(openBtn)
+
         volume.controlSize = .mini
         volume.target = self
         volume.action = #selector(volumeChanged)
@@ -170,7 +177,8 @@ final class PlayerBar: NSView {
         let pad: CGFloat = 12
         // 1줄: 사진 · 제목/아티스트 · 좋아요/싫어요
         artView.frame = NSRect(x: pad, y: 8, width: 44, height: 44)
-        dislike.frame = NSRect(x: w - pad - 24, y: 16, width: 24, height: 24)
+        openBtn.frame = NSRect(x: w - pad - 24, y: 16, width: 24, height: 24)
+        dislike.frame = NSRect(x: openBtn.frame.minX - 28, y: 16, width: 24, height: 24)
         like.frame = NSRect(x: dislike.frame.minX - 26, y: 16, width: 24, height: 24)
         let textX = artView.frame.maxX + 10
         titleBtn.frame = NSRect(x: textX - 2, y: 9, width: like.frame.minX - textX - 4, height: 20)
