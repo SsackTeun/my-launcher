@@ -386,6 +386,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.onFoundChange = { [unowned self] in refresh() }
         m.onUpdate = { [unowned self] st, art in
             playerBar.update(st, art: art)
+            lyrics.playerUpdated(st)
             if d.bool(forKey: "ytmDebug") {   // 진단용: 읽은 상태를 파일로
                 let line = "title=\(st.title) | byline=\(st.byline) | time=\(st.time) | pos=\(st.position)/\(st.duration) | playing=\(String(describing: st.playing)) | like=\(st.liked) | repeat=\(st.repeatLabel) | vol=\(st.volume) | muted=\(st.muted) | page=\(st.pageOpen) | art=\(art != nil) | artURL=\(st.artURL)\n"
                 try? line.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-status.txt", atomically: true, encoding: .utf8)
