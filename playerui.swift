@@ -43,7 +43,8 @@ final class PlayerBar: NSView {
     private let progress = ProgressBar()
     private var like: ActionButton!, dislike: ActionButton!
     private var shuffle: ActionButton!, prev: ActionButton!, play: ActionButton!, next: ActionButton!, rep: ActionButton!
-    private var mute: ActionButton!, queueBtn: ActionButton!, openBtn: ActionButton!
+    private var mute: ActionButton!, queueBtn: ActionButton!, openBtn: ActionButton!, lyricsBtn: ActionButton!
+    var onLyrics: (() -> Void)?
     private let volume = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private var popover: NSPopover?
 
@@ -107,6 +108,12 @@ final class PlayerBar: NSView {
         queueBtn.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
         queueBtn.toolTip = "재생 목록"
         addSubview(queueBtn)
+
+        lyricsBtn = ActionButton(title: "", symbol: "quote.bubble") { [weak self] _ in self?.onLyrics?() }
+        lyricsBtn.isBordered = false
+        lyricsBtn.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
+        lyricsBtn.toolTip = "가사 (번역)"
+        addSubview(lyricsBtn)
 
         // YouTube Music 창(내장 브라우저) 열기
         openBtn = ActionButton(title: "", symbol: "macwindow") { [weak self] _ in self?.music?.showWindow() }
@@ -199,12 +206,13 @@ final class PlayerBar: NSView {
         queueBtn.frame = NSRect(x: w - pad - 24, y: rowY + 6, width: 24, height: 24)
         // 볼륨은 자리가 있을 때만
         let volW: CGFloat = 56
-        let volX = queueBtn.frame.minX - 4 - volW
+        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX - 26, y: rowY + 6, width: 24, height: 24)
+        let volX = lyricsBtn.frame.minX - 4 - volW
         let room = volX - rep.frame.maxX
         volume.isHidden = room < 30
         mute.isHidden = room < 4
         volume.frame = NSRect(x: volX, y: rowY + 10, width: volW, height: 16)
-        mute.frame = NSRect(x: (volume.isHidden ? queueBtn.frame.minX - 4 : volX) - 22, y: rowY + 6, width: 22, height: 24)
+        mute.frame = NSRect(x: (volume.isHidden ? lyricsBtn.frame.minX - 4 : volX) - 22, y: rowY + 6, width: 22, height: 24)
         timeLabel.isHidden = limited || timeLabel.frame.maxX > shuffle.frame.minX - 2
         // YouTube Music 화면에 없는 조작은 숨김 (창이 좁거나 다른 탭 뒤에 있을 때)
         like.isHidden = !has.contains("like")

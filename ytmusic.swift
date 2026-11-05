@@ -275,6 +275,47 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         run("(() => { const mp = document.getElementById('movie_player'); if (mp && mp.setVolume) { mp.setVolume(\(n)); if (mp.isMuted && mp.isMuted() && \(n) > 0) mp.unMute(); } const s = document.querySelector('ytmusic-player-bar #volume-slider'); if (s) { s.value = \(n); } })()")
     }
 
+    // MARK: 가사 (플레이어 페이지의 "가사" 탭 — 숨은 창 안에서 열기 때문에 화면엔 변화 없음)
+
+    struct Lyrics: Equatable {
+        var title = ""
+        var status = "loading"     // ok · none · loading
+        var text = ""
+        var source = ""
+    }
+
+    private static let lyricsJS = """
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+    const title = ((document.querySelector('ytmusic-player-bar .title') || {}).textContent || '').trim();
+    const layout = document.querySelector('ytmusic-app-layout');
+    if (layout && !layout.hasAttribute('player-page-open')) {
+      const b = [...document.querySelectorAll('ytmusic-player-bar button, ytmusic-player-bar tp-yt-paper-icon-button')]
+        .find(b => ['플레이어 페이지 열기', 'Open player page'].includes((b.getAttribute('aria-label') || '').trim()));
+      if (b) { b.click(); await sleep(800); }
+    }
+    const tab = [...document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab')]
+      .find(t => ['가사', 'Lyrics', 'LYRICS'].includes(t.textContent.trim()));
+    if (!tab || tab.hasAttribute('disabled') || tab.getAttribute('aria-disabled') === 'true') return {title, status: 'none'};
+    if (tab.getAttribute('aria-selected') !== 'true') { tab.click(); await sleep(1200); }
+    const tr = document.querySelector('ytmusic-player-page ytmusic-tab-renderer[page-type="MUSIC_PAGE_TYPE_TRACK_LYRICS"]');
+    const sh = tr && tr.querySelector('ytmusic-description-shelf-renderer');
+    const text = sh ? ((sh.querySelector('.description') || {}).innerText || '') : '';
+    const source = sh ? ((sh.querySelector('.footer') || {}).innerText || '') : '';
+    if (!text.trim()) return {title, status: (tr && tr.innerText.trim()) ? 'none' : 'loading'};
+    return {title, status: 'ok', text, source};
+    """
+
+    func fetchLyrics(_ done: @escaping (Lyrics) -> Void) {
+        guard let wv = webView else { done(Lyrics(status: "none")); return }
+        wv.callAsyncJavaScript(Self.lyricsJS, arguments: [:], in: nil, in: .page) { result in
+            MainActor.assumeIsolated {
+                guard case .success(let v) = result, let o = v as? [String: Any] else { done(Lyrics(status: "loading")); return }
+                done(Lyrics(title: o["title"] as? String ?? "", status: o["status"] as? String ?? "none",
+                            text: o["text"] as? String ?? "", source: o["source"] as? String ?? ""))
+            }
+        }
+    }
+
     // MARK: 재생 목록 ("다음 트랙")
 
     private static let queueJS = """

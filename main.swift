@@ -395,7 +395,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return m
     }()
-    lazy var playerBar = PlayerBar(music: music)
+    lazy var lyrics = LyricsWindow(music: music)
+    lazy var playerBar: PlayerBar = {
+        let b = PlayerBar(music: music)
+        b.onLyrics = { [unowned self] in lyrics.toggle() }
+        return b
+    }()
     var showPlayer: Bool { playerEnabled && music.isActive }
     let topH: CGFloat = 40
 
@@ -1239,6 +1244,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(Item("    재생 / 일시정지") { [unowned self] in music.press("playPause") })
             m.addItem(Item("    다음 곡") { [unowned self] in music.press("next") })
             m.addItem(Item("    이전 곡") { [unowned self] in music.press("prev") })
+            m.addItem(Item("    가사 보기") { [unowned self] in lyrics.show() })
             m.addItem(Item("    YouTube Music 창 열기") { [unowned self] in music.showWindow() })
             m.addItem(.separator())
         }
