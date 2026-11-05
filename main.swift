@@ -565,9 +565,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: 앱 동작
 
+    /// Dock 아이콘 클릭과 같은 동작: 꺼져 있으면 실행, 켜져 있으면 "다시 열기" 신호를 보내
+    /// 닫았거나 최소화·가린 창을 다시 보여 주고 앞으로 가져옴
     func launch(_ id: String) {
-        if let r = running(id) { r.activate(); return }
-        guard let u = url(id) else {
+        let r = running(id)
+        r?.unhide()
+        guard let u = url(id) ?? r?.bundleURL else {
             alert("\(id) 앱을 찾을 수 없어요. 앱을 다시 설치하거나 런처에서 빼 주세요.")
             return
         }
