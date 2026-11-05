@@ -109,7 +109,37 @@ final class Tile: NSView {
     override var isFlipped: Bool { false }
     /// 위젯을 끌어 옮길 때 앱 아이콘 위에서 누르면 창이 아니라 클릭으로 처리
     override var mouseDownCanMoveWindow: Bool { false }
-    override func mouseDown(with event: NSEvent) {}
+
+    // 클릭은 실행, 조금 끌면 아이콘을 다른 자리·카테고리로 옮기기
+    var appID = ""
+    private var downPoint: NSPoint?
+    private var dragged = false
+
+    override func mouseDown(with event: NSEvent) {
+        downPoint = event.locationInWindow
+        dragged = false
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard !dragged, let start = downPoint, !appID.isEmpty else { return }
+        let p = event.locationInWindow
+        guard hypot(p.x - start.x, p.y - start.y) > 4 else { return }
+        dragged = true
+        hovering = false
+        let item = NSPasteboardItem()
+        item.setString(appID, forType: .launcherApp)
+        let di = NSDraggingItem(pasteboardWriter: item)
+        di.setDraggingFrame(bounds, contents: snapshot())
+        beginDraggingSession(with: [di], event: event, source: self)
+    }
+
+    private func snapshot() -> NSImage {
+        let rep = bitmapImageRepForCachingDisplay(in: bounds)!
+        cacheDisplay(in: bounds, to: rep)
+        let img = NSImage(size: bounds.size)
+        img.addRepresentation(rep)
+        return img
+    }
 
     override func updateTrackingAreas() {
         trackingAreas.forEach(removeTrackingArea)
@@ -125,19 +155,41 @@ final class Tile: NSView {
     }
 
     override func mouseUp(with event: NSEvent) {
-        if !editing, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+        defer { downPoint = nil }
+        if !editing, !dragged, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
     }
 }
 
-/// 아이콘 격자. 위에서 아래로 쌓이도록 좌표를 뒤집고, Finder에서 .app 을 끌어다 놓으면 추가
+extension Tile: NSDraggingSource {
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+}
+
+extension NSPasteboard.PasteboardType {
+    static let launcherApp = NSPasteboard.PasteboardType("local.jaeyeong.launcher.app")
+}
+
+/// 끌어다 놓을 자리: 어느 카테고리의 몇 번째에 들어갈지 + 화면에 그릴 위치
+struct DropTarget {
+    var cat: Int
+    var index: Int
+    var section: NSRect
+    var caret: NSRect
+}
+
+/// 아이콘 격자. 위에서 아래로 쌓이도록 좌표를 뒤집음.
+/// 앱 아이콘을 끌어 다른 자리·카테고리로 옮기거나, Finder에서 .app 을 끌어다 놓으면 추가
 final class GridView: NSView {
     override var isFlipped: Bool { true }
-    var onDropApps: (([URL], NSPoint) -> Void)?
-    private var dropHighlight = false { didSet { needsDisplay = true } }
+    var target: ((NSPoint) -> DropTarget?)?
+    var onDropApps: (([URL], DropTarget) -> Void)?
+    var onMoveApp: ((String, DropTarget) -> Void)?
+    private var current: DropTarget? { didSet { needsDisplay = true } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        registerForDraggedTypes([.fileURL])
+        registerForDraggedTypes([.fileURL, .launcherApp])
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -146,27 +198,43 @@ final class GridView: NSView {
                                                        options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         return urls.filter { $0.pathExtension == "app" }
     }
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        let ok = !appURLs(sender).isEmpty
-        dropHighlight = ok
-        return ok ? .copy : []
+    private func movingID(_ info: NSDraggingInfo) -> String? {
+        info.draggingPasteboard.string(forType: .launcherApp)
     }
-    override func draggingExited(_ sender: NSDraggingInfo?) { dropHighlight = false }
+    private func update(_ info: NSDraggingInfo) -> NSDragOperation {
+        let isMove = movingID(info) != nil
+        guard isMove || !appURLs(info).isEmpty else { current = nil; return [] }
+        current = target?(convert(info.draggingLocation, from: nil))
+        return current == nil ? [] : (isMove ? .move : .copy)
+    }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { update(sender) }
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { update(sender) }
+    override func draggingExited(_ sender: NSDraggingInfo?) { current = nil }
+    override func draggingEnded(_ sender: NSDraggingInfo) { current = nil }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        dropHighlight = false
+        guard let t = target?(convert(sender.draggingLocation, from: nil)) else { current = nil; return false }
+        current = nil
+        if let id = movingID(sender) {
+            // 화면을 다시 그리는 건 끌기가 완전히 끝난 다음에
+            DispatchQueue.main.async { self.onMoveApp?(id, t) }
+            return true
+        }
         let urls = appURLs(sender)
         guard !urls.isEmpty else { return false }
-        onDropApps?(urls, convert(sender.draggingLocation, from: nil))
+        DispatchQueue.main.async { self.onDropApps?(urls, t) }
         return true
     }
     override func draw(_ dirtyRect: NSRect) {
-        guard dropHighlight else { return }
-        NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
-        let p = NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 4), xRadius: 12, yRadius: 12)
+        guard let t = current else { return }
+        // 들어갈 카테고리 영역은 옅게, 들어갈 자리는 세로 막대로
+        NSColor.controlAccentColor.withAlphaComponent(0.10).setFill()
+        let p = NSBezierPath(roundedRect: t.section, xRadius: 10, yRadius: 10)
         p.fill()
-        NSColor.controlAccentColor.setStroke()
-        p.lineWidth = 2
+        NSColor.controlAccentColor.withAlphaComponent(0.6).setStroke()
+        p.lineWidth = 1.5
         p.stroke()
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: t.caret, xRadius: 1.5, yRadius: 1.5).fill()
     }
 }
 
@@ -234,7 +302,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var widgetLevel = 0
     var locked = false
     /// 드롭 위치로 카테고리를 찾기 위한 각 카테고리의 세로 범위
-    var sectionYs: [(cat: Int, top: CGFloat, bottom: CGFloat)] = []
+    var sectionYs: [(cat: Int, top: CGFloat, tilesTop: CGFloat, bottom: CGFloat)] = []
 
     var window: NSWindow!
     var statusItem: NSStatusItem!
@@ -462,10 +530,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func moveApp(_ id: String, toCategory target: Int) {
-        guard let (c, i) = locate(id), c != target else { return }
+        guard let (c, _) = locate(id), c != target else { return }
+        moveApp(id, toCategory: target, at: cats[target].ids.count)
+    }
+
+    /// 끌어다 놓기: target 카테고리의 index 자리에 넣기 (같은 카테고리면 순서만 바뀜)
+    func moveApp(_ id: String, toCategory target: Int, at index: Int) {
+        guard let (c, i) = locate(id) else { return }
+        var dest = index
+        if c == target {
+            if dest == i || dest == i + 1 { return }   // 제자리
+            if i < dest { dest -= 1 }
+        }
         cats[c].ids.remove(at: i)
-        cats[target].ids.append(id)
+        cats[target].ids.insert(id, at: min(max(0, dest), cats[target].ids.count))
         save()
+    }
+
+    /// 마우스 위치 → 어느 카테고리의 몇 번째 자리인지
+    func dropTarget(at p: NSPoint, left: CGFloat, gridW: CGFloat, tile: NSSize) -> DropTarget? {
+        guard !sectionYs.isEmpty else { return nil }
+        let sec = sectionYs.first { p.y < $0.bottom + sectionGap / 2 } ?? sectionYs.last!
+        let count = cats[sec.cat].ids.count
+        let stepX = tile.width + gap, stepY = tile.height + gap
+        let row = max(0, Int((p.y - sec.tilesTop) / stepY))
+        let col = min(cols, max(0, Int(((p.x - left) / stepX).rounded())))
+        let index = min(count, row * cols + col)
+        // 막대 위치: 줄 오른쪽 끝에 놓을 땐 다음 줄 맨 앞 대신 그 줄 끝에 그림
+        let atRowEnd = index > 0 && index % cols == 0 && (col == cols || index == count)
+        let r = atRowEnd ? (index - 1) / cols : index / cols
+        let cIn = atRowEnd ? cols : index % cols
+        let caretX = left + CGFloat(cIn) * stepX - gap / 2 - 1.5
+        let caret = NSRect(x: caretX, y: sec.tilesTop + CGFloat(r) * stepY + 4, width: 3, height: tile.height - 8)
+        let section = NSRect(x: left - 8, y: sec.top - 2, width: gridW - pad * 2 + 16, height: sec.bottom - sec.top + 6)
+        return DropTarget(cat: sec.cat, index: index, section: section, caret: caret)
     }
 
     func add(_ urls: [URL], to c: Int) {
@@ -646,6 +744,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                         menu: categoryMenu(c), lineStart: left))
                 y += headerH
             }
+            let tilesTop = y
             let catRows = max(rows, Int(ceil(Double(cat.ids.count) / Double(cols))))
             for (i, id) in cat.ids.enumerated() {
                 let t = Tile(name: name(id), icon: icon(id), iconSize: iconSize,
@@ -656,10 +755,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 t.setFrameOrigin(NSPoint(x: left + CGFloat(i % cols) * (tile.width + gap),
                                          y: y + CGFloat(i / cols) * (tile.height + gap)))
                 t.onClick = { [unowned self] in launch(id) }
+                t.appID = id
                 views.append(t)
             }
             if cat.ids.isEmpty {
-                let hint = NSTextField(labelWithString: "비어 있음 — Finder에서 앱을 끌어다 놓거나, 앱 우클릭 → 카테고리 옮기기")
+                let hint = NSTextField(labelWithString: "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요")
                 hint.font = .systemFont(ofSize: 11)
                 hint.textColor = .tertiaryLabelColor
                 hint.frame = NSRect(x: left, y: y + tile.height / 2 - 8, width: gridW - pad * 2, height: 16)
@@ -667,7 +767,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 views.append(hint)
             }
             y += CGFloat(catRows) * tile.height + CGFloat(catRows - 1) * gap
-            sectionYs.append((c, top, y))
+            sectionYs.append((c, top, tilesTop, y))
             y += sectionGap
         }
         let docH = y - sectionGap + pad
@@ -678,10 +778,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let h = viewH + bottom
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
-        grid.onDropApps = { [unowned self] urls, p in
-            let c = sectionYs.first { p.y < $0.bottom + sectionGap / 2 }?.cat ?? (cats.count - 1)
-            add(urls, to: c)
-        }
+        grid.target = { [unowned self] p in dropTarget(at: p, left: left, gridW: gridW, tile: tile) }
+        grid.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
+        grid.onMoveApp = { [unowned self] id, t in moveApp(id, toCategory: t.cat, at: t.index) }
         views.forEach(grid.addSubview)
         if widget { grid.menu = backgroundMenu() }
 
