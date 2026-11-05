@@ -362,7 +362,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.onUpdate = { [unowned self] st, art in
             playerBar.update(st, art: art)
             if d.bool(forKey: "ytmDebug") {   // 진단용: 읽은 상태를 파일로
-                let line = "title=\(st.title) | byline=\(st.byline) | time=\(st.time) | pos=\(st.position)/\(st.duration) | playing=\(String(describing: st.playing)) | like=\(st.liked) | repeat=\(st.repeatLabel) | vol=\(st.volume) | muted=\(st.muted) | page=\(st.pageOpen) | art=\(art != nil) | artRect=\(String(describing: st.artRect))\n"
+                let line = "title=\(st.title) | byline=\(st.byline) | time=\(st.time) | pos=\(st.position)/\(st.duration) | playing=\(String(describing: st.playing)) | like=\(st.liked) | repeat=\(st.repeatLabel) | vol=\(st.volume) | muted=\(st.muted) | page=\(st.pageOpen) | art=\(art != nil) | artURL=\(st.artURL)\n"
                 try? line.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-status.txt", atomically: true, encoding: .utf8)
             }
             // 곡이 바뀌면 메뉴바 메뉴의 곡 제목도 새로
@@ -371,7 +371,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return m
     }()
     lazy var playerBar = PlayerBar(music: music)
-    var showPlayer: Bool { playerEnabled && music.target != nil }
+    var showPlayer: Bool { playerEnabled && music.isActive }
     let topH: CGFloat = 40
     var previews = true
     lazy var preview: PreviewController = {
@@ -413,7 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
         if playerEnabled { music.start() }
         // 창 목록·앱 메뉴·미니 플레이어에 필요한 권한이 없으면 처음에 한 번 물어봄
-        if (playerEnabled || previews) && !AX.trusted { AX.askTrust() }
+        if previews && !AX.trusted { AX.askTrust() }
         hideDock = d.bool(forKey: "hideDock")
         if hideDock {
             applyDockHiding()
@@ -615,8 +615,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         playerEnabled = on
         d.set(on, forKey: "player")
         if on {
-            if !AX.trusted { AX.askTrust() }
-            music.start()
+            music.showWindow()     // 처음 켜면 YouTube Music 창을 열어 로그인할 수 있게
         } else {
             music.stop()
         }
@@ -1216,6 +1215,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(Item("    재생 / 일시정지") { [unowned self] in music.press("playPause") })
             m.addItem(Item("    다음 곡") { [unowned self] in music.press("next") })
             m.addItem(Item("    이전 곡") { [unowned self] in music.press("prev") })
+            m.addItem(Item("    YouTube Music 창 열기") { [unowned self] in music.showWindow() })
             m.addItem(.separator())
         }
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }

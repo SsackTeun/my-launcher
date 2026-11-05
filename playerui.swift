@@ -139,10 +139,14 @@ final class PlayerBar: NSView {
         sym(mute, st.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
         if volume.currentEditor() == nil, NSEvent.pressedMouseButtons == 0 { volume.doubleValue = st.volume }
         limited = st.limited
-        for v in [like, dislike, shuffle, rep, mute, volume, progress, timeLabel] as [NSView] { v.isHidden = st.limited }
-        if st.limited { needsLayout = true }
+        has = st.limited ? [] : st.has
+        narrowHint = !st.limited && !st.has.contains("progress")
+        if narrowHint && st.byline.isEmpty { bylineLabel.stringValue = "YouTube Music 창을 넓히면 더 많은 기능이 보여요" }
+        needsLayout = true
     }
     private var limited = false
+    private var has: Set<String> = []
+    private var narrowHint = false
 
     override func layout() {
         super.layout()
@@ -178,7 +182,17 @@ final class PlayerBar: NSView {
         volume.frame = NSRect(x: volX, y: rowY + 10, width: volW, height: 16)
         mute.frame = NSRect(x: (volume.isHidden ? queueBtn.frame.minX - 4 : volX) - 22, y: rowY + 6, width: 22, height: 24)
         timeLabel.isHidden = limited || timeLabel.frame.maxX > shuffle.frame.minX - 2
-        if limited { volume.isHidden = true; mute.isHidden = true }
+        // YouTube Music 화면에 없는 조작은 숨김 (창이 좁거나 다른 탭 뒤에 있을 때)
+        like.isHidden = !has.contains("like")
+        dislike.isHidden = !has.contains("dislike")
+        shuffle.isHidden = !has.contains("shuffle")
+        rep.isHidden = !has.contains("repeat")
+        mute.isHidden = mute.isHidden || !has.contains("mute")
+        volume.isHidden = volume.isHidden || !has.contains("volume")
+        progress.isHidden = !has.contains("progress")
+        if progress.isHidden { timeLabel.isHidden = true }
+        prev.isHidden = !limited && !has.isEmpty && !has.contains("prev")
+        toolTip = narrowHint ? "YouTube Music 창을 넓히면 진행바·좋아요·반복·볼륨도 보여요" : nil
     }
 
     override func draw(_ dirtyRect: NSRect) {
