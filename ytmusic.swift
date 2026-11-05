@@ -163,6 +163,14 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                 try? out.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-eval.txt", atomically: true, encoding: .utf8)
             }
         }
+        // 진단: 설정값 ytmLyricsTest 가 켜져 있으면 가사를 한 번 읽어 파일로
+        if UserDefaults.standard.bool(forKey: "ytmLyricsTest") {
+            UserDefaults.standard.set(false, forKey: "ytmLyricsTest")
+            fetchLyrics { l in
+                let out = "title=\(l.title)\nstatus=\(l.status)\nsource=\(l.source)\n---\n\(l.text.prefix(600))"
+                try? out.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-lyrics-test.txt", atomically: true, encoding: .utf8)
+            }
+        }
         if UserDefaults.standard.bool(forKey: "ytmWebDump") {
             UserDefaults.standard.set(false, forKey: "ytmWebDump")
             debugDump()
