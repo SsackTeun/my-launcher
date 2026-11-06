@@ -65,14 +65,22 @@ final class Tile: NSView {
     private var hovering = false { didSet { needsDisplay = true } }
     private let editing: Bool
 
+    /// 목록 보기 한 줄 높이
+    static func rowHeight(icon: CGFloat) -> CGFloat { max(listIcon(icon), ceil(16 * fontScale)) + 10 }
+    static func listIcon(_ icon: CGFloat) -> CGFloat { min(max(icon, 18), 32) }
+
     init(name: String, icon: NSImage, iconSize: CGFloat, running: Bool, found: Bool,
-         editing: Bool, menu m: NSMenu?, onRemove: (() -> Void)?, badge: String? = nil) {
+         editing: Bool, menu m: NSMenu?, onRemove: (() -> Void)?, badge: String? = nil, listWidth: CGFloat? = nil) {
         self.editing = editing
-        let s = Tile.size(icon: iconSize)
+        let s = listWidth.map { NSSize(width: $0, height: Tile.rowHeight(icon: iconSize)) } ?? Tile.size(icon: iconSize)
         super.init(frame: NSRect(origin: .zero, size: s))
         menu = m
         toolTip = found ? (running ? "\(name) — 실행 중 (클릭하면 앞으로)" : "\(name) — 클릭해서 실행")
                         : "\(name) — 앱을 찾을 수 없음"
+        if listWidth != nil {
+            buildRow(name: name, icon: icon, iconSize: iconSize, running: running, found: found, onRemove: onRemove, badge: badge)
+            return
+        }
 
         // 칸 안쪽은 아래에서 위로: 초록 점 → 이름 → 아이콘
         let iv = NSImageView(frame: NSRect(x: (s.width - iconSize) / 2, y: 14 + ceil(16 * Tile.fontScale), width: iconSize, height: iconSize))
@@ -120,6 +128,61 @@ final class Tile: NSView {
             b.frame = NSRect(x: iv.frame.minX - 10, y: iv.frame.maxY - 14, width: 24, height: 24)
             addSubview(b)
         }
+    }
+
+    /// 목록 보기: [아이콘] 이름 ………… [표시] ● (편집 중이면 맨 오른쪽 ⊖)
+    private func buildRow(name: String, icon: NSImage, iconSize: CGFloat, running: Bool, found: Bool,
+                          onRemove: (() -> Void)?, badge: String?) {
+        let s = frame.size
+        let li = Tile.listIcon(iconSize)
+        let iv = NSImageView(frame: NSRect(x: 8, y: (s.height - li) / 2, width: li, height: li))
+        iv.image = icon
+        iv.imageScaling = .scaleProportionallyUpOrDown
+        if !found { iv.alphaValue = 0.35 }
+        addSubview(iv)
+
+        var right = s.width - 8
+        if editing, let onRemove {
+            let b = ActionButton(title: "", symbol: "minus.circle.fill") { _ in onRemove() }
+            b.isBordered = false
+            b.contentTintColor = .systemRed
+            b.symbolConfiguration = .init(pointSize: 15, weight: .bold)
+            b.toolTip = "런처에서 빼기"
+            b.frame = NSRect(x: right - 22, y: (s.height - 22) / 2, width: 22, height: 22)
+            addSubview(b)
+            right -= 26
+        }
+        if running {
+            let dot = NSView(frame: NSRect(x: right - 7, y: (s.height - 7) / 2, width: 7, height: 7))
+            dot.wantsLayer = true
+            dot.layer?.backgroundColor = NSColor.systemGreen.cgColor
+            dot.layer?.cornerRadius = 3.5
+            dot.toolTip = "실행 중"
+            addSubview(dot)
+            right -= 14
+        }
+        if let badge {
+            let b = NSTextField(labelWithString: badge)
+            b.font = .systemFont(ofSize: 10, weight: .semibold)
+            b.textColor = .white
+            b.alignment = .center
+            b.wantsLayer = true
+            b.layer?.backgroundColor = (badge == "업데이트" ? NSColor.systemOrange : NSColor.controlAccentColor).cgColor
+            b.layer?.cornerRadius = 7
+            b.sizeToFit()
+            let bw = b.frame.width + 10
+            b.frame = NSRect(x: right - bw, y: (s.height - 15) / 2, width: bw, height: 15)
+            addSubview(b)
+            right -= bw + 6
+        }
+        let label = NSTextField(labelWithString: name)
+        label.font = .systemFont(ofSize: 13 * Tile.fontScale)
+        label.lineBreakMode = .byTruncatingTail
+        label.sizeToFit()
+        let lx = iv.frame.maxX + 10
+        label.frame = NSRect(x: lx, y: (s.height - label.frame.height) / 2, width: max(10, right - lx - 4), height: label.frame.height)
+        if !found { label.textColor = .secondaryLabelColor }
+        addSubview(label)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -448,6 +511,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let d = UserDefaults.standard
     var cats: [Category] = []
     var cols = 4
+    /// 앱 보기 방식: 격자(아이콘) / 목록(세로 한 줄씩)
+    var listMode = false
     var rows = 1
     var iconSize: CGFloat = 64
     var editing = false
@@ -625,6 +690,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 예전 버전(카테고리 없음)에서 넘어오면 전부 "기본" 카테고리로
             cats = [Category(name: "기본", ids: d.stringArray(forKey: "apps") ?? defaultApps)]
         }
+        listMode = d.bool(forKey: "listMode")
         if d.object(forKey: "cols") != nil {
             cols = max(1, d.integer(forKey: "cols"))
             rows = max(1, d.integer(forKey: "rows"))
@@ -1005,7 +1071,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 마우스 위치 → 어느 카테고리의 몇 번째 자리인지
-    func dropTarget(at p: NSPoint, left: CGFloat, gridW: CGFloat, tile: NSSize) -> DropTarget? {
+    func dropTarget(at p: NSPoint, left: CGFloat, gridW: CGFloat, tile: NSSize, cols: Int) -> DropTarget? {
         if let pill = pillRects.first(where: { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }) {
             return DropTarget(cat: pill.cat, index: cats[pill.cat].ids.count, section: pill.rect.insetBy(dx: -3, dy: -3),
                               caret: NSRect(x: pill.rect.maxX + 2, y: pill.rect.minY, width: 3, height: pill.rect.height))
@@ -1014,6 +1080,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let sec = sectionYs.first { p.y < $0.bottom + sectionGap / 2 } ?? sectionYs.last!
         let count = cats[sec.cat].ids.count
         let stepX = tile.width + gap, stepY = tile.height + gap
+        let section = NSRect(x: left - 8, y: sec.top - 2, width: gridW - pad * 2 + 16, height: sec.bottom - sec.top + 6)
+        if cols == 1 {
+            // 목록 보기: 줄과 줄 사이에 가로선
+            let index = min(count, max(0, Int(((p.y - sec.tilesTop) / stepY).rounded())))
+            let caret = NSRect(x: left + 4, y: sec.tilesTop + CGFloat(index) * stepY - gap / 2 - 1.5, width: tile.width - 8, height: 3)
+            return DropTarget(cat: sec.cat, index: index, section: section, caret: caret)
+        }
         let row = max(0, Int((p.y - sec.tilesTop) / stepY))
         let col = min(cols, max(0, Int(((p.x - left) / stepX).rounded())))
         let index = min(count, row * cols + col)
@@ -1023,7 +1096,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cIn = atRowEnd ? cols : index % cols
         let caretX = left + CGFloat(cIn) * stepX - gap / 2 - 1.5
         let caret = NSRect(x: caretX, y: sec.tilesTop + CGFloat(r) * stepY + 4, width: 3, height: tile.height - 8)
-        let section = NSRect(x: left - 8, y: sec.top - 2, width: gridW - pad * 2 + 16, height: sec.bottom - sec.top + 6)
         return DropTarget(cat: sec.cat, index: index, section: section, caret: caret)
     }
 
@@ -1339,8 +1411,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func refresh() {
         applyAutoScale()
-        let tile = Tile.size(icon: iconSize)
-        let gridW = pad * 2 + CGFloat(cols) * tile.width + CGFloat(cols - 1) * gap
+        let gridTile = Tile.size(icon: iconSize)
+        let gridW = pad * 2 + CGFloat(cols) * gridTile.width + CGFloat(cols - 1) * gap
+        // 목록 보기: 폭은 격자와 같게, 한 열로 한 줄씩
+        let tile = listMode ? NSSize(width: gridW - pad * 2, height: Tile.rowHeight(icon: iconSize)) : gridTile
+        let lc = listMode ? 1 : cols
         // 위젯에선 아래 버튼 줄을 숨기고(빼기 편집 중일 때만 보임) 우클릭 메뉴로 대신함
         let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
         // 전체 접기: 검색 중이 아니면 앱 목록과 아래 버튼 줄을 숨겨 검색 줄 + 플레이어만
@@ -1395,7 +1470,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     b.font = .systemFont(ofSize: 11)
                     b.sizeToFit()
                     b.setFrameOrigin(NSPoint(x: bx, y: y + (seg.frame.height - b.frame.height) / 2))
-                    if b.frame.maxX <= w - 6 { views.append(b) }
+                    if b.frame.maxX <= left + gridW - pad * 2 - 28 { views.append(b) }   // ⊞/☰ 버튼 자리는 비워 둠
                     bx = b.frame.maxX + 4
                 }
             }
@@ -1407,10 +1482,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     b.font = .systemFont(ofSize: 11)
                     b.sizeToFit()
                     b.setFrameOrigin(NSPoint(x: bx, y: y + (seg.frame.height - b.frame.height) / 2))
-                    if b.frame.maxX <= w - 6 { views.append(b) }
+                    if b.frame.maxX <= left + gridW - pad * 2 - 28 { views.append(b) }   // ⊞/☰ 버튼 자리는 비워 둠
                     bx = b.frame.maxX + 4
                 }
             }
+            // 격자 ⊞ / 목록 ☰ 전환 (줄 맨 오른쪽)
+            let viewBtn = ActionButton(title: "", symbol: listMode ? "square.grid.2x2" : "list.bullet") { [unowned self] _ in
+                listMode.toggle()
+                d.set(listMode, forKey: "listMode")
+                refresh()
+            }
+            viewBtn.isBordered = false
+            viewBtn.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+            viewBtn.contentTintColor = .secondaryLabelColor
+            viewBtn.toolTip = listMode ? "아이콘 격자로 보기" : "세로 목록으로 보기"
+            viewBtn.frame = NSRect(x: left + gridW - pad * 2 - 22, y: y + (seg.frame.height - 22) / 2, width: 22, height: 22)
+            views.append(viewBtn)
+            let rightEdge = viewBtn.frame.minX - 6
             // 전체 탭: 모두 접기(가로 탭) / 모두 펼치기
             if tab == 0 && cats.count > 1 {
                 let b = ActionButton(title: catTabMode ? "모두 펼치기" : "모두 접기",
@@ -1423,9 +1511,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 b.font = .systemFont(ofSize: 11)
                 b.toolTip = catTabMode ? "카테고리를 세로로 모두 펼쳐 보기" : "카테고리를 가로 탭으로 접어서 하나씩 보기"
                 b.sizeToFit()
-                b.setFrameOrigin(NSPoint(x: max(seg.frame.maxX + 8, left + gridW - pad * 2 - b.frame.width),
+                b.setFrameOrigin(NSPoint(x: max(seg.frame.maxX + 8, rightEdge - b.frame.width),
                                          y: y + (seg.frame.height - b.frame.height) / 2))
-                if b.frame.maxX <= w - 4 { views.append(b) }
+                if b.frame.maxX <= rightEdge + 1 { views.append(b) }
             }
             y += seg.frame.height + 8
             if tabMode {
@@ -1521,7 +1609,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let tilesTop = y
             let minRows = (searching || runningTab) ? 1 : rows
-            let catRows = max(minRows, Int(ceil(Double(sec.ids.count) / Double(cols))))
+            let catRows = max(listMode ? 1 : minRows, Int(ceil(Double(sec.ids.count) / Double(lc))))
             for (i, id) in sec.ids.enumerated() {
                 let mine = locate(id) != nil
                 let t = Tile(name: name(id), icon: icon(id), iconSize: iconSize,
@@ -1529,15 +1617,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              editing: editing && mine && !devTab,
                              menu: devTab ? devTileMenu(id) : (mine ? tileMenu(id) : (running(id) != nil ? otherRunningMenu(id) : installedTileMenu(id))),
                              onRemove: { [unowned self] in remove(id) },
-                             badge: devTab ? devApps.badge(id) : nil)
+                             badge: devTab ? devApps.badge(id) : nil,
+                             listWidth: listMode ? tile.width : nil)
                 if devTab, let a = devApps.app(id) {
                     let have = devApps.installedVersion(id).map { "설치된 버전 \($0)" } ?? "아직 안 받음"
                     let new = devApps.latest[id].map { " · 최신 \($0)" } ?? ""
                     t.toolTip = "\(a.name) — \(a.summary ?? a.repo)\n\(have)\(new)"
                 }
                 // GridView 는 위→아래 좌표라 칸의 위쪽 모서리 기준으로 놓음
-                t.setFrameOrigin(NSPoint(x: left + CGFloat(i % cols) * (tile.width + gap),
-                                         y: y + CGFloat(i / cols) * (tile.height + gap)))
+                t.setFrameOrigin(NSPoint(x: left + CGFloat(i % lc) * (tile.width + gap),
+                                         y: y + CGFloat(i / lc) * (tile.height + gap)))
                 t.onClick = { [unowned self] in
                     // 개발자 앱 탭에서 아직 안 받은 앱은 누르면 받기
                     if devTab && url(id) == nil { devApps.install(id) } else { launch(id) }
@@ -1568,7 +1657,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let h = viewH + bottom + topH + ph
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
-        grid.target = { [unowned self] p in dropTarget(at: p, left: left, gridW: gridW, tile: tile) }
+        grid.target = { [unowned self] p in dropTarget(at: p, left: left, gridW: gridW, tile: tile, cols: lc) }
         grid.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
         grid.onMoveApp = { [unowned self] id, t in moveApp(id, toCategory: t.cat, at: t.index) }
         views.forEach(grid.addSubview)
