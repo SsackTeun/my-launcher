@@ -248,6 +248,27 @@ extension Tile: NSDraggingSource {
 
 extension NSPasteboard.PasteboardType {
     static let launcherApp = NSPasteboard.PasteboardType("local.jaeyeong.launcher.app")
+    static let launcherCategory = NSPasteboard.PasteboardType("local.jaeyeong.launcher.category")
+}
+
+/// 카테고리(왼쪽 목록 칸 · 제목 줄)를 끌어서 순서 바꾸기
+final class CategoryDragSource: NSObject, NSDraggingSource {
+    static let shared = CategoryDragSource()
+    func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        context == .withinApplication ? .move : []
+    }
+    @MainActor
+    static func begin(from view: NSView, event: NSEvent, cat: Int) {
+        let item = NSPasteboardItem()
+        item.setString(String(cat), forType: .launcherCategory)
+        let di = NSDraggingItem(pasteboardWriter: item)
+        let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds)!
+        view.cacheDisplay(in: view.bounds, to: rep)
+        let img = NSImage(size: view.bounds.size)
+        img.addRepresentation(rep)
+        di.setDraggingFrame(view.bounds, contents: img)
+        view.beginDraggingSession(with: [di], event: event, source: CategoryDragSource.shared)
+    }
 }
 
 /// 끌어다 놓을 자리: 어느 카테고리의 몇 번째에 들어갈지 + 화면에 그릴 위치
@@ -264,6 +285,12 @@ final class GridView: NSView {
     override var isFlipped: Bool { true }
     /// 마우스가 움직일 때 위치 (밖으로 나가면 nil) — 호버로 펼친 카테고리를 다시 접을 때 씀
     var onMouseMoved: ((NSPoint?) -> Void)?
+    /// 스크롤을 먼저 가져가 볼 곳 (true 를 돌려주면 목록 스크롤은 하지 않음)
+    var onScrollFirst: ((NSEvent) -> Bool)?
+    override func scrollWheel(with event: NSEvent) {
+        if let f = onScrollFirst, f(event) { return }
+        super.scrollWheel(with: event)
+    }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
@@ -274,11 +301,13 @@ final class GridView: NSView {
     var target: ((NSPoint) -> DropTarget?)?
     var onDropApps: (([URL], DropTarget) -> Void)?
     var onMoveApp: ((String, DropTarget) -> Void)?
+    var categoryTarget: ((NSPoint) -> DropTarget?)?
+    var onMoveCategory: ((Int, Int) -> Void)?
     private var current: DropTarget? { didSet { needsDisplay = true } }
 
     override init(frame: NSRect) {
         super.init(frame: frame)
-        registerForDraggedTypes([.fileURL, .launcherApp])
+        registerForDraggedTypes([.fileURL, .launcherApp, .launcherCategory])
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -290,7 +319,14 @@ final class GridView: NSView {
     private func movingID(_ info: NSDraggingInfo) -> String? {
         info.draggingPasteboard.string(forType: .launcherApp)
     }
+    private func movingCategory(_ info: NSDraggingInfo) -> Int? {
+        info.draggingPasteboard.string(forType: .launcherCategory).flatMap { Int($0) }
+    }
     private func update(_ info: NSDraggingInfo) -> NSDragOperation {
+        if movingCategory(info) != nil {
+            current = categoryTarget?(convert(info.draggingLocation, from: nil))
+            return current == nil ? [] : .move
+        }
         let isMove = movingID(info) != nil
         guard isMove || !appURLs(info).isEmpty else { current = nil; return [] }
         current = target?(convert(info.draggingLocation, from: nil))
@@ -301,6 +337,12 @@ final class GridView: NSView {
     override func draggingExited(_ sender: NSDraggingInfo?) { current = nil }
     override func draggingEnded(_ sender: NSDraggingInfo) { current = nil }
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if let from = movingCategory(sender) {
+            current = nil
+            guard let t = categoryTarget?(convert(sender.draggingLocation, from: nil)) else { return false }
+            DispatchQueue.main.async { self.onMoveCategory?(from, t.index) }
+            return true
+        }
         guard let t = target?(convert(sender.draggingLocation, from: nil)) else { current = nil; return false }
         current = nil
         if let id = movingID(sender) {
@@ -397,6 +439,10 @@ final class ScrollCatcher: NSView {
 
 final class CategoryTab: NSView {
     var onClick: (() -> Void)?
+    /// 끌어서 순서 바꿀 카테고리 번호 (도구함 카테고리일 때만)
+    var dragCat: Int?
+    private var downAt: NSPoint?
+    private var dragged = false
     var onScroll: ((NSEvent) -> Void)?
     override func scrollWheel(with event: NSEvent) { if let onScroll { onScroll(event) } else { super.scrollWheel(with: event) } }
     private let selected: Bool
@@ -469,9 +515,17 @@ final class CategoryTab: NSView {
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
     override var mouseDownCanMoveWindow: Bool { false }
-    override func mouseDown(with event: NSEvent) {}
+    override func mouseDown(with event: NSEvent) { downAt = event.locationInWindow; dragged = false }
+    override func mouseDragged(with event: NSEvent) {
+        guard !dragged, let c = dragCat, let a = downAt else { return }
+        let p = event.locationInWindow
+        guard hypot(p.x - a.x, p.y - a.y) > 4 else { return }
+        dragged = true
+        CategoryDragSource.begin(from: self, event: event, cat: c)
+    }
     override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+        defer { downAt = nil }
+        if !dragged, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
     }
 }
 
@@ -520,10 +574,25 @@ final class HeaderView: NSView {
     }
     required init?(coder: NSCoder) { fatalError() }
 
-    override var mouseDownCanMoveWindow: Bool { onClick == nil }
-    override func mouseDown(with event: NSEvent) { if onClick == nil { super.mouseDown(with: event) } }
+    /// 끌어서 순서 바꿀 카테고리 번호
+    var dragCat: Int?
+    private var downAt: NSPoint?
+    private var dragged = false
+    override var mouseDownCanMoveWindow: Bool { onClick == nil && dragCat == nil }
+    override func mouseDown(with event: NSEvent) {
+        downAt = event.locationInWindow; dragged = false
+        if onClick == nil && dragCat == nil { super.mouseDown(with: event) }
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard !dragged, let c = dragCat, let a = downAt else { return }
+        let p = event.locationInWindow
+        guard hypot(p.x - a.x, p.y - a.y) > 4 else { return }
+        dragged = true
+        CategoryDragSource.begin(from: self, event: event, cat: c)
+    }
     override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+        defer { downAt = nil }
+        if !dragged, bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
     }
 }
 
@@ -1312,6 +1381,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         save()
     }
 
+    /// 끌어다 놓기: from 카테고리를 to 자리(0…개수) 앞으로
+    func moveCategory(from: Int, to: Int) {
+        guard cats.indices.contains(from) else { return }
+        var dest = to
+        if dest == from || dest == from + 1 { return }
+        if dest > from { dest -= 1 }
+        let selName = cats.indices.contains(catTabSel) ? cats[catTabSel].name : nil
+        let c = cats.remove(at: from)
+        cats.insert(c, at: min(max(0, dest), cats.count))
+        if let selName, let i = cats.firstIndex(where: { $0.name == selName }) { catTabSel = i; d.set(i, forKey: "catTabSel") }
+        save()
+    }
+
+    /// 카테고리를 끌 때 놓일 자리: 왼쪽 목록이면 칸 사이, 펼친 목록이면 제목 줄 사이 가로선
+    func categoryDropTarget(at p: NSPoint, left: CGFloat, width: CGFloat) -> DropTarget? {
+        let rows: [(cat: Int, rect: NSRect)] = !pillRects.isEmpty
+            ? pillRects
+            : sectionYs.map { ($0.cat, NSRect(x: left, y: $0.top, width: width, height: $0.bottom - $0.top)) }
+        guard !rows.isEmpty else { return nil }
+        let k = rows.firstIndex { p.y < $0.rect.midY } ?? rows.count
+        let index = k < rows.count ? rows[k].cat : cats.count
+        let y = k < rows.count ? rows[k].rect.minY - 2 : rows[rows.count - 1].rect.maxY + 1
+        let r = rows[min(k, rows.count - 1)].rect
+        return DropTarget(cat: index, index: index, section: .zero,
+                          caret: NSRect(x: r.minX + 4, y: y - 1, width: r.width - 8, height: 3))
+    }
+
     func moveCategory(_ c: Int, by delta: Int) {
         let j = c + delta
         guard cats.indices.contains(j) else { return }
@@ -1553,10 +1649,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         var sidebarBottom: CGFloat = 0
+        var sidebarTop: CGFloat = 0
+        var sideCatcher: ScrollCatcher?
         if tabMode {
             // 왼쪽 세로 카테고리 목록 (스크롤로 위아래 이동, 앱을 끌어다 놓으면 그 카테고리로)
             let rowH = CategoryTab.height + 2
             let catcher = ScrollCatcher(frame: NSRect(x: left, y: y, width: sbW, height: CGFloat(allSections.count) * rowH))
+            sideCatcher = catcher
+            sidebarTop = y
             catcher.onScroll = { [unowned self] e in tabScroll(e) }
             views.append(catcher)
             for (k, sec) in allSections.enumerated() {
@@ -1568,7 +1668,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     refresh()
                 }
                 t.onScroll = { [unowned self] e in tabScroll(e) }
-                t.toolTip = sec.cat != nil ? "누르면 ‘\(sec.title)’ 보기 · 스크롤로 위아래 이동 · 앱을 끌어다 놓으면 이 카테고리로"
+                t.dragCat = sec.cat
+                t.toolTip = sec.cat != nil ? "누르면 ‘\(sec.title)’ 보기 · 끌어서 순서 바꾸기 · 스크롤로 위아래 이동 · 앱을 끌어다 놓으면 이 카테고리로"
                                            : "누르면 ‘\(sec.title)’ 보기 · 스크롤로 위아래 이동"
                 views.append(t)
                 if let c = sec.cat { pillRects.append((c, t.frame)) }
@@ -1584,9 +1685,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let top = y
             if showHeaders {
                 let hm = sec.cat.map { categoryMenu($0) } ?? NSMenu()
-                views.append(HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
-                                        title: sec.title, count: sec.ids.count,
-                                        menu: hm, lineStart: left))
+                let hv = HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
+                                    title: sec.title, count: sec.ids.count,
+                                    menu: hm, lineStart: left)
+                hv.dragCat = sec.cat
+                if sec.cat != nil { hv.toolTip = "끌어서 카테고리 순서 바꾸기 · 우클릭: 이름 바꾸기 · 순서 · 삭제 · 여기에 앱 추가" }
+                views.append(hv)
                 y += headerH
             }
             let tilesTop = y
@@ -1640,9 +1744,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let h = viewH + bottom + topH + ph
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
+        if tabMode {
+            // 스크롤로 카테고리 넘기기: 왼쪽 목록 칸 전체(창 왼쪽 끝 ~ 구분선, 위아래 끝까지)
+            sideCatcher?.frame = NSRect(x: 0, y: sidebarTop, width: left + sbW + 6, height: max(docH, viewH) - sidebarTop)
+            // 앱이 한 화면에 다 들어가면 오른쪽 앱 영역에서 스크롤해도 카테고리 넘기기
+            let fits = docH <= viewH + 1
+            grid.onScrollFirst = { [unowned self] e in
+                guard fits else { return false }
+                tabScroll(e)
+                return true
+            }
+        }
         grid.target = { [unowned self] p in dropTarget(at: p, left: tilesLeft, gridW: gridW, tile: tile, cols: lc) }
         grid.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
         grid.onMoveApp = { [unowned self] id, t in moveApp(id, toCategory: t.cat, at: t.index) }
+        grid.categoryTarget = { [unowned self] p in categoryDropTarget(at: p, left: left, width: rowRight - left) }
+        grid.onMoveCategory = { [unowned self] from, to in moveCategory(from: from, to: to) }
         views.forEach(grid.addSubview)
         if widget { grid.menu = backgroundMenu() }
 
