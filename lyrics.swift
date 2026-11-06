@@ -514,7 +514,9 @@ struct LyricsStrip: View {
     static let collapsedHeight: CGFloat = 30
     /// 펼쳤을 때 높이: 지금 줄 + 번역 + 다음 줄이 들어가도록 글자 크기에 맞춤
     static func expandedHeight(_ scale: Double, pron: Bool = false) -> CGFloat {
-        collapsedHeight + CGFloat(ceil((66 + (pron ? 16 : 0)) * scale)) + 8
+        // 지금 줄(15pt) + 발음 · 번역 · 다음 줄(12pt) 의 실제 줄 높이 + 아래 여백
+        let lines: CGFloat = 21 + 17 + 17 + (pron ? 17 : 0)
+        return collapsedHeight + CGFloat(ceil(lines * scale)) + 18
     }
 
     var body: some View {
@@ -637,7 +639,8 @@ struct LyricsStrip: View {
                 }
             }
             .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .padding(.top, 2)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)   // 위에서부터, 아래는 여백
             .animation(.easeOut(duration: 0.3), value: cur)
             .contentShape(Rectangle())
             .onTapGesture { model.onOpenFull?() }
