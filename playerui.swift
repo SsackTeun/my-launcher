@@ -102,6 +102,14 @@ final class PlayerBar: NSView {
     private var shuffle: ActionButton!, prev: ActionButton!, play: ActionButton!, next: ActionButton!, rep: ActionButton!
     private var mute: ActionButton!, queueBtn: ActionButton!, openBtn: ActionButton!, lyricsBtn: ActionButton!
     var onLyrics: (() -> Void)?
+    /// ⧉ 떼어 내기 / 합치기
+    var onDetach: (() -> Void)?
+    var detached = false { didSet { updateDetachIcon() } }
+    private var detachBtn: ActionButton!
+    private func updateDetachIcon() {
+        detachBtn?.image = NSImage(systemSymbolName: detached ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle", accessibilityDescription: nil)
+        detachBtn?.toolTip = detached ? "도구함 창으로 합치기" : "플레이어만 따로 떼어 내기"
+    }
     private let volume = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private var popover: NSPopover?
 
@@ -178,6 +186,13 @@ final class PlayerBar: NSView {
         lyricsBtn.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
         lyricsBtn.toolTip = "가사 (번역)"
         addSubview(lyricsBtn)
+
+        detachBtn = ActionButton(title: "", symbol: "rectangle.on.rectangle") { [weak self] _ in self?.onDetach?() }
+        detachBtn.isBordered = false
+        detachBtn.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+        detachBtn.contentTintColor = .secondaryLabelColor
+        addSubview(detachBtn)
+        updateDetachIcon()
 
         // YouTube Music 창(내장 브라우저) 열기
         openBtn = ActionButton(title: "", symbol: "macwindow") { [weak self] _ in self?.music?.showWindow() }
@@ -274,7 +289,8 @@ final class PlayerBar: NSView {
         let pad: CGFloat = 12
         // 1줄: 사진 · 제목/아티스트 · 좋아요/싫어요
         artView.frame = NSRect(x: pad, y: 8, width: 44, height: 44)
-        openBtn.frame = NSRect(x: w - pad - 24, y: 16, width: 24, height: 24)
+        detachBtn.frame = NSRect(x: w - pad - 22, y: 17, width: 22, height: 22)
+        openBtn.frame = NSRect(x: detachBtn.frame.minX - 26, y: 16, width: 24, height: 24)
         dislike.frame = NSRect(x: openBtn.frame.minX - 28, y: 16, width: 24, height: 24)
         like.frame = NSRect(x: dislike.frame.minX - 26, y: 16, width: 24, height: 24)
         let textX = artView.frame.maxX + 10

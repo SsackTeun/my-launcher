@@ -124,6 +124,9 @@ final class LyricsModel: ObservableObject {
 
     func bumpFont(_ d: Double) { fontScale = min(1.8, max(0.8, (fontScale + d) * 10).rounded() / 10) }
     var onOpenFull: (() -> Void)?
+    /// ⧉ 가사 줄 떼어 내기 / 합치기
+    var onDetach: (() -> Void)?
+    @Published var stripDetached = false
     @Published var target: String {
         didSet {
             UserDefaults.standard.set(target, forKey: "lyricsTarget")
@@ -534,6 +537,13 @@ struct LyricsStrip: View {
                 }
                 Spacer(minLength: 4)
                 if model.stripExpanded { PronMenu(model: model); FontSizeButtons(model: model) }
+                Button { model.onDetach?() } label: {
+                    Image(systemName: model.stripDetached ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle")
+                        .font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(model.stripDetached ? "도구함 창으로 합치기" : "가사 줄만 따로 떼어 내기")
                 Button { model.onOpenFull?() } label: {
                     Text("전체 가사").font(.system(size: 11))
                 }

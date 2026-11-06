@@ -808,13 +808,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return f
     }()
     lazy var finderButton: ActionButton = {
-        let b = ActionButton(title: "Finder", symbol: nil) { [unowned self] _ in launch("com.apple.finder") }
+        // 글자 없이 Finder 아이콘만, 다른 아이콘 버튼들과 같은 크기로
+        let b = ActionButton(title: "", symbol: nil) { [unowned self] _ in launch("com.apple.finder") }
         let img = NSWorkspace.shared.icon(forFile: "/System/Library/CoreServices/Finder.app")
-        img.size = NSSize(width: 16, height: 16)
+        img.size = NSSize(width: 18, height: 18)
         b.image = img
-        b.imagePosition = .imageLeading
+        b.imagePosition = .imageOnly
+        b.isBordered = false
         b.toolTip = "Finder 열기"
-        b.sizeToFit()
+        b.frame.size = NSSize(width: 24, height: 24)
         return b
     }()
     // 앱 목록 접기 (전체 / 카테고리별)
@@ -998,14 +1000,90 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return m
     }()
+    // ⧉ 떼어 낸 창: 플레이어 · 가사 줄
+    enum Part { case player, lyrics }
+    var playerDetached = UserDefaults.standard.bool(forKey: "playerDetached")
+    var lyricsDetached = UserDefaults.standard.bool(forKey: "lyricsDetached")
+    var playerPanel: NSWindow?
+    var lyricsPanel: NSWindow?
+
+    func toggleDetach(_ part: Part) {
+        switch part {
+        case .player:
+            playerDetached.toggle(); d.set(playerDetached, forKey: "playerDetached")
+            playerBar.detached = playerDetached
+        case .lyrics:
+            lyricsDetached.toggle(); d.set(lyricsDetached, forKey: "lyricsDetached")
+            lyrics.model.stripDetached = lyricsDetached
+        }
+        refresh()
+    }
+
+    /// 떼어 낸 창 하나 (위젯과 같은 카드 모양, 맨 위 손잡이로 옮김, 위치 기억)
+    func detachedPanel(_ part: Part) -> NSWindow {
+        if let p = part == .player ? playerPanel : lyricsPanel { return p }
+        let p = WidgetWindow(contentRect: NSRect(x: 0, y: 0, width: 340, height: 120), styleMask: [.borderless], backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.isReleasedWhenClosed = false
+        p.isMovableByWindowBackground = false
+        let name = part == .player ? "DetachedPlayer" : "DetachedLyrics"
+        let first = d.string(forKey: "NSWindow Frame \(name)") == nil
+        p.setFrameAutosaveName(name)
+        if first, let main = window {
+            // 처음엔 도구함 창 옆에
+            let off: CGFloat = part == .player ? 0 : 140
+            p.setFrameTopLeftPoint(NSPoint(x: main.frame.maxX + 12, y: main.frame.maxY - off))
+        }
+        if part == .player { playerPanel = p } else { lyricsPanel = p }
+        return p
+    }
+
+    /// 떼어 낸 창에 그 부분을 넣고 크기 · 높이를 맞춤
+    func showDetached(_ part: Part, view: NSView, width: CGFloat, height: CGFloat) {
+        let p = detachedPanel(part)
+        let handle: CGFloat = 14
+        let size = NSSize(width: width, height: height + handle)
+        let fx: NSVisualEffectView
+        if let cur = p.contentView as? NSVisualEffectView { fx = cur } else {
+            fx = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
+            fx.material = .hudWindow
+            fx.blendingMode = .behindWindow
+            fx.state = .active
+            fx.maskImage = roundedMask(16)
+            p.contentView = fx
+        }
+        let top = p.frame.maxY
+        p.setFrame(NSRect(x: p.frame.minX, y: top - size.height, width: size.width, height: size.height), display: false)
+        fx.frame = NSRect(origin: .zero, size: size)
+        let grip = fx.subviews.first(where: { $0 is DragHandle }) as? DragHandle ?? {
+            let g = DragHandle(frame: .zero)
+            g.isLocked = { [unowned self] in locked }
+            fx.addSubview(g)
+            return g
+        }()
+        grip.frame = NSRect(x: 0, y: size.height - handle, width: size.width, height: handle)
+        if view.superview !== fx { fx.addSubview(view) }
+        view.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        view.needsLayout = true
+        p.level = widget ? widgetLevels[widgetLevel].1 : .floating
+        p.collectionBehavior = widget ? [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone] : []
+        p.orderFrontRegardless()
+    }
+
     lazy var lyrics: LyricsController = {
         let c = LyricsController(music: music)
         c.model.onStripToggle = { [unowned self] in refresh() }   // 가사 줄 펼치기/접기 → 창 높이 다시
+        c.model.onDetach = { [unowned self] in toggleDetach(.lyrics) }
+        c.model.stripDetached = lyricsDetached
         return c
     }()
     lazy var playerBar: PlayerBar = {
         let b = PlayerBar(music: music)
         b.onLyrics = { [unowned self] in lyrics.toggle() }
+        b.onDetach = { [unowned self] in toggleDetach(.player) }
+        b.detached = playerDetached
         return b
     }()
     var showPlayer: Bool { playerEnabled && music.isActive }
@@ -2029,8 +2107,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 2) 창 높이: 전부 보이게 하되 화면보다 크면 스크롤
         let screenH = (window.screen ?? NSScreen.main)?.visibleFrame.height ?? 800
         // 플레이어 + 그 아래 가사 줄
-        let lh = showPlayer ? lyrics.stripHeight : 0
-        let ph = showPlayer ? playerH + lh : 0
+        // 플레이어 · 가사 줄 중 떼어 낸 건 원래 창에서 빠짐
+        let pH = showPlayer && !playerDetached ? playerH : 0
+        let lh = showPlayer && !lyricsDetached ? lyrics.stripHeight : 0
+        let ph = pH + lh
         // 목록 높이: 내용에 맞추되 화면을 넘지 않게
         let maxViewH = screenH - bottom - topH - ph - gripH - hdrH - 80
         // 아래 손잡이로 정한 높이가 있으면 그대로 (내용보다 길면 아래가 비고, 카테고리를 바꿔도 창 크기가 유지됨)
@@ -2192,13 +2272,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             content.addSubview(resizeHandle)
             resizeHandle.needsDisplay = true
         }
-        if ph > 0 {
-            playerBar.frame = NSRect(x: 0, y: h - topH - playerH, width: w, height: playerH)
+        if pH > 0 {
+            playerBar.frame = NSRect(x: 0, y: h - topH - pH, width: w, height: pH)
             content.addSubview(playerBar)
             playerBar.needsLayout = true
+        }
+        if lh > 0 {
             lyrics.stripView.frame = NSRect(x: 0, y: h - topH - ph, width: w, height: lh)
             content.addSubview(lyrics.stripView)
         }
+        // 떼어 낸 창
+        if showPlayer && playerDetached {
+            showDetached(.player, view: playerBar, width: max(300, w), height: playerH)
+        } else { playerPanel?.orderOut(nil) }
+        if showPlayer && lyricsDetached {
+            showDetached(.lyrics, view: lyrics.stripView, width: max(300, w), height: lyrics.stripHeight)
+        } else { lyricsPanel?.orderOut(nil) }
 
         // 위쪽 줄: [🔍 앱 찾기 ........] [Finder]
         topBar.frame = NSRect(x: 0, y: h - topH, width: w, height: topH)
@@ -2211,10 +2300,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             dragHandle.removeFromSuperview()
         }
         let fb = finderButton.frame.size
-        finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 10, y: (barRowH - fb.height) / 2))
+        finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 8, y: (barRowH - fb.height) / 2))
         collapseButton.image = NSImage(systemSymbolName: allFolded ? "chevron.down" : "chevron.up", accessibilityDescription: nil)
         collapseButton.toolTip = allFolded ? "앱 목록 펼치기" : "앱 목록 접기"
-        collapseButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 28, y: (barRowH - 24) / 2))
+        collapseButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
         bulkButton.setFrameOrigin(NSPoint(x: collapseButton.frame.minX - 26, y: (barRowH - 24) / 2))
         updateLockButton()
         lockButton.setFrameOrigin(NSPoint(x: bulkButton.frame.minX - 26, y: (barRowH - 24) / 2))
