@@ -151,21 +151,28 @@ extension Spaces {
     private static func grabPoint(pid: pid_t, rect r: CGRect) -> CGPoint {
         let app = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(app, 0.3)
-        let bad: Set<String> = ["AXButton", "AXRadioButton", "AXTabGroup", "AXTextField", "AXTextArea", "AXPopUpButton",
+        // 탭 묶음(AXTabGroup)의 빈 공간은 창을 끄는 자리라 괜찮음 — 탭(AXRadioButton) · 버튼만 피함
+        let bad: Set<String> = ["AXButton", "AXRadioButton", "AXTextField", "AXTextArea", "AXPopUpButton",
                                 "AXMenuButton", "AXCheckBox", "AXLink", "AXComboBox", "AXSearchField", "AXImage", "AXStaticText"]
         var xs: [CGFloat] = []
         // 오른쪽 끝(창 버튼 · 프로필 버튼 바로 안쪽)부터 왼쪽으로, 그다음 가운데
         var x = r.maxX - 90
         while x > r.minX + 90 { xs.append(x); x -= 24 }
-        for y in [r.minY + 6, r.minY + 12, r.minY + 3] {
+        var log: [String] = []
+        defer { try? log.joined(separator: "\n").write(toFile: NSHomeDirectory() + "/MyLauncher/space-grab.txt", atomically: true, encoding: .utf8) }
+        // 맨 위 가장자리(탭 위쪽 여백)부터
+        for y in [r.minY + 3, r.minY + 6, r.minY + 12] {
             for x in xs {
                 var el: AXUIElement?
                 guard AXUIElementCopyElementAtPosition(app, Float(x), Float(y), &el) == .success, let el else { continue }
                 var role: CFTypeRef?
                 AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
-                if let role = role as? String, !bad.contains(role) { return CGPoint(x: x, y: y) }
+                let rs = role as? String ?? "?"
+                if log.count < 40 { log.append("\(Int(x)),\(Int(y)) \(rs)") }
+                if !bad.contains(rs) { log.append("→ 잡음 \(Int(x)),\(Int(y)) \(rs)"); return CGPoint(x: x, y: y) }
             }
         }
+        log.append("→ 빈 자리 없음, 가운데")
         return CGPoint(x: r.midX, y: r.minY + 12)
     }
 
