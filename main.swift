@@ -836,13 +836,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var catTabSel = 0
     var runTabSel = 0
     var devTabSel = 0
+    var deskTabSel = 0
+    /// 데스크탑 탭: 마지막으로 읽은 데스크탑 목록
+    var desks: [Spaces.Desk] = []
     /// 지금 탭에서 왼쪽 세로 목록에 고른 항목 (탭마다 따로 기억)
     var curSel: Int {
-        get { tab == 1 ? runTabSel : (tab == 2 ? devTabSel : catTabSel) }
+        get { tab == 1 ? runTabSel : (tab == 2 ? devTabSel : (tab == 3 ? deskTabSel : catTabSel)) }
         set {
             switch tab {
             case 1: runTabSel = newValue; d.set(newValue, forKey: "runTabSel")
             case 2: devTabSel = newValue; d.set(newValue, forKey: "devTabSel")
+            case 3: deskTabSel = newValue; d.set(newValue, forKey: "deskTabSel")
             default: catTabSel = newValue; d.set(newValue, forKey: "catTabSel")
             }
         }
@@ -1158,6 +1162,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 앱이 켜지거나 꺼지면 초록 점을 바로 갱신
         let nc = NSWorkspace.shared.notificationCenter
+        // 데스크탑을 옮기면 데스크탑 탭을 새로
+        nc.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { if self?.tab == 3 { self?.refresh() } }
+        }
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
         }
@@ -1182,6 +1190,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         catTabSel = d.integer(forKey: "catTabSel")
         runTabSel = d.integer(forKey: "runTabSel")
         devTabSel = d.integer(forKey: "devTabSel")
+        deskTabSel = d.integer(forKey: "deskTabSel")
         devApps.load()
         foldedCats = Set(d.stringArray(forKey: "foldedCats") ?? [])
         if playerEnabled { music.start(); lyrics.start() }
@@ -1631,6 +1640,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func displaySections() -> [(title: String, cat: Int?, ids: [String])] {
         let q = query.trimmingCharacters(in: .whitespaces)
+        if q.isEmpty && tab == 3 {
+            // 데스크탑 탭: 데스크탑마다 창이 열려 있는 앱
+            guard Spaces.available else { return [("데스크탑 정보를 읽을 수 없어요", nil, [])] }
+            desks = Spaces.load()
+            let me = ProcessInfo.processInfo.processIdentifier
+            return desks.map { dk in
+                var seen = Set<String>()
+                let ids = dk.pids.compactMap { pid -> String? in
+                    guard pid != me, let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, seen.insert(id).inserted else { return nil }
+                    return id
+                }
+                return (dk.label, nil, ids)
+            }
+        }
         if q.isEmpty && tab == 2 {
             return [("GitHub 앱", nil, devApps.ids)]
         }
@@ -1920,7 +1943,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 모두 접기 = 탭 모드: 왼쪽에 카테고리 세로 목록, 오른쪽에 고른 카테고리 앱
         let tabMode = catTabMode && query.trimmingCharacters(in: .whitespaces).isEmpty && !allFolded && (tab != 0 || cats.count > 1)
         // 왼쪽 목록 폭은 탭과 상관없이 같게 (탭을 바꿔도 창이 흔들리지 않게)
-        let sideNames = cats.map(\.name) + ["도구함 앱", "다른 앱", "GitHub 앱"]
+        let sideNames = cats.map(\.name) + ["도구함 앱", "다른 앱", "GitHub 앱", "데스크탑 10 (지금)"]
         let sbW: CGFloat = tabMode ? min(150, max(84, sideNames.map { name -> CGFloat in
             let l = NSTextField(labelWithString: name)
             l.font = .systemFont(ofSize: 13 * min(Tile.fontScale, 1.2), weight: .semibold)
@@ -1930,12 +1953,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let side: CGFloat = tabMode ? sbW + 12 : 0
         // 폭은 접든 펴든 같게 (접으면 높이만 줄어듦). 위쪽 줄 버튼들이 들어갈 최소 폭은 보장
         // 탭 줄(탭 + 아이콘 버튼들)이 늘 다 들어가는 폭은 보장 (좁으면 버튼이 사라져 되돌릴 수 없었음)
-        let w = max(gridW + side, 372)
+        let w = max(gridW + side, 440)
         let left = (w - gridW - side) / 2 + pad
         let tilesLeft = left + side
         let rowRight = tilesLeft + gridW - pad * 2
         var sections = allFolded ? [] : displaySections()
-        let runningTab = (tab == 1 || tab == 2) && !searching
+        let runningTab = (tab == 1 || tab == 2 || tab == 3) && !searching
         let devTab = tab == 2 && !searching
         // 탭 모드: 왼쪽 목록에서 고른 묶음 하나만, 제목 줄 없이
         let allSections = sections
@@ -1958,7 +1981,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 탭: [전체 | 실행 중 N]
         if !allFolded && !searching {
             let ups = devApps.updateCount
-            let seg = NSSegmentedControl(labels: ["전체", "실행 중 \(runningIDs().count)", ups > 0 ? "개발자 앱 ●\(ups)" : "개발자 앱"], trackingMode: .selectOne,
+            let seg = NSSegmentedControl(labels: ["전체", "실행 중 \(runningIDs().count)", ups > 0 ? "개발자 앱 ●\(ups)" : "개발자 앱", "데스크탑"], trackingMode: .selectOne,
                                          target: self, action: #selector(tabChanged(_:)))
             seg.selectedSegment = tab
             seg.controlSize = .small
@@ -2084,7 +2107,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              badge: devTab ? devApps.badge(id) : nil,
                              listWidth: listMode ? tile.width : nil)
                 // 실행 중 탭: 마우스를 올리면 개별 종료 버튼
-                if tab == 1 && !searching, let r = running(id), r.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                if (tab == 1 || tab == 3) && !searching, let r = running(id), r.processIdentifier != ProcessInfo.processInfo.processIdentifier {
                     t.addQuitButton { force in
                         if force { r.forceTerminate() } else { r.terminate() }
                     }
@@ -2108,7 +2131,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 views.append(t)
             }
             if sec.ids.isEmpty {
-                let hint = NSTextField(labelWithString: searching ? "‘\(query)’와 맞는 앱이 없어요" : (devTab ? "목록이 비어 있어요 — 새로 고침을 눌러 보세요" : (runningTab ? "실행 중인 \(sec.title)이 없어요" : "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요")))
+                let hint = NSTextField(labelWithString: searching ? "‘\(query)’와 맞는 앱이 없어요" : (devTab ? "목록이 비어 있어요 — 새로 고침을 눌러 보세요" : (runningTab ? (tab == 3 ? "이 데스크탑에는 열린 창이 없어요" : "실행 중인 \(sec.title)이 없어요") : "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요")))
                 hint.font = .systemFont(ofSize: 11)
                 hint.textColor = .tertiaryLabelColor
                 hint.frame = NSRect(x: tilesLeft, y: y + tile.height / 2 - 8, width: gridW - pad * 2, height: 16)

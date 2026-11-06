@@ -6,7 +6,7 @@ set -e
 cd "$(dirname "$0")"
 OUT_DIR=${OUT:-~/Applications}
 A="$OUT_DIR/도구함.app"
-SRC=(main.swift appmenu.swift ytmusic.swift playerui.swift lyrics.swift pronounce.swift devapps.swift)
+SRC=(main.swift appmenu.swift ytmusic.swift playerui.swift lyrics.swift pronounce.swift devapps.swift spaces.swift)
 FW=(-framework Cocoa -framework ServiceManagement -framework WebKit -framework SwiftUI -framework Translation -framework NaturalLanguage)
 TMP=$(mktemp -d)
 mkdir -p "$A/Contents/MacOS"
