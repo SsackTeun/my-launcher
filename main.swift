@@ -146,7 +146,14 @@ final class Tile: NSView {
     }
 
     var onClick: (() -> Void)?
-    private var hovering = false { didSet { needsDisplay = true; quitButton?.isHidden = !hovering } }
+    private var hovering = false {
+        didSet {
+            needsDisplay = true
+            quitButton?.isHidden = !hovering
+            if quitButton != nil { runDot?.isHidden = hovering }   // ⓧ 가 나오면 초록 점은 가림
+        }
+    }
+    private var runDot: NSView?
     private var quitButton: ActionButton?
 
     /// 실행 중인 앱 종료 버튼 (마우스를 올렸을 때만 보임). ⌥ 누르고 누르면 강제 종료
@@ -161,7 +168,8 @@ final class Tile: NSView {
         let rowHeight = Tile.rowHeight(icon: 0)
         if frame.height <= rowHeight + 20 && frame.width > frame.height * 2 {
             // 목록 보기: 줄 오른쪽 끝 (초록 점 자리)
-            b.frame = NSRect(x: frame.width - 30, y: (frame.height - 22) / 2, width: 22, height: 22)
+            let c = runDot.map { NSPoint(x: $0.frame.midX, y: $0.frame.midY) } ?? NSPoint(x: frame.width - 19, y: frame.height / 2)
+            b.frame = NSRect(x: c.x - 11, y: c.y - 11, width: 22, height: 22)
         } else {
             // 격자 보기: 칸 오른쪽 위
             b.frame = NSRect(x: frame.width - 24, y: frame.height - 24, width: 22, height: 22)
@@ -223,6 +231,7 @@ final class Tile: NSView {
             dot.layer?.backgroundColor = NSColor.systemGreen.cgColor
             dot.layer?.cornerRadius = 3
             addSubview(dot)
+            runDot = dot
         }
 
         // 편집 모드: 왼쪽 위에 빨간 ⊖ 버튼
@@ -266,6 +275,7 @@ final class Tile: NSView {
             dot.layer?.cornerRadius = 3.5
             dot.toolTip = "실행 중"
             addSubview(dot)
+            runDot = dot
             right -= 14
         }
         if let badge {
@@ -859,6 +869,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 끝까지 스크롤하면 다음 카테고리로 넘어가기 (설정)
     var scrollCrossesCategory = true
     var crossCheck: NSButton!
+    /// ⓧ 로 끌 때 물어보기 (설정)
+    var confirmQuit: Bool = UserDefaults.standard.object(forKey: "confirmQuit") as? Bool ?? true
+    var confirmCheck: NSButton!
+    func setConfirmQuit(_ on: Bool) {
+        confirmQuit = on
+        d.set(on, forKey: "confirmQuit")
+        if settings != nil { syncSettings() }
+    }
+    @objc func confirmChecked(_ b: NSButton) { setConfirmQuit(b.state == .on) }
     enum FocusEdge { case first, last }
     var pendingFocusEdge: FocusEdge?
     var lastTabMode = false
@@ -2108,7 +2127,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              listWidth: listMode ? tile.width : nil)
                 // 실행 중 탭: 마우스를 올리면 개별 종료 버튼
                 if (tab == 1 || tab == 3) && !searching, let r = running(id), r.processIdentifier != ProcessInfo.processInfo.processIdentifier {
-                    t.addQuitButton { force in
+                    t.addQuitButton { [unowned self] force in
+                        if confirmQuit {
+                            let a = NSAlert()
+                            a.messageText = "‘\(r.localizedName ?? "앱")’을(를) \(force ? "강제 종료" : "종료")할까요?"
+                            a.informativeText = force ? "저장하지 않은 내용은 사라져요." : "저장 안 한 문서가 있으면 그 앱이 저장할지 물어봐요."
+                            a.addButton(withTitle: force ? "강제 종료" : "종료")
+                            a.addButton(withTitle: "취소")
+                            let sup = NSButton(checkboxWithTitle: "다음부터 묻지 않기", target: nil, action: nil)
+                            a.accessoryView = sup
+                            NSApp.activate(ignoringOtherApps: true)
+                            guard a.runModal() == .alertFirstButtonReturn else { return }
+                            if sup.state == .on { setConfirmQuit(false) }
+                        }
                         if force { r.forceTerminate() } else { r.terminate() }
                     }
                 }
@@ -2456,7 +2487,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 382),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 412),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -2495,6 +2526,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.addSubview(n)
             return (f, s)
         }
+
+        label("앱 종료", y: 372)
+        confirmCheck = NSButton(checkboxWithTitle: "ⓧ 로 끌 때 먼저 물어보기", target: self, action: #selector(confirmChecked(_:)))
+        confirmCheck.frame = NSRect(x: 106, y: 371, width: 250, height: 22)
+        v.addSubview(confirmCheck)
 
         label("스크롤", y: 342)
         crossCheck = NSButton(checkboxWithTitle: "끝까지 스크롤하면 다음 카테고리로", target: self, action: #selector(crossChecked(_:)))
@@ -2587,6 +2623,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         playerCheck.state = playerEnabled ? .on : .off
         lockCheck.state = locked ? .on : .off
         crossCheck.state = scrollCrossesCategory ? .on : .off
+        confirmCheck.state = confirmQuit ? .on : .off
         uiScaleLabel.stringValue = (uiScaleAuto ? "자동 " : "") + "\(Int((uiScale * 100).rounded()))%"
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
