@@ -289,37 +289,47 @@ let widgetLevels: [(String, NSWindow.Level)] = [
     ("항상 위에", .floating),
 ]
 
-/// 탭 모드의 카테고리 탭 (누르면 그 카테고리만 보임, 앱을 끌어다 놓으면 그 카테고리로)
-final class CategoryPill: NSView {
+/// 탭 모드의 카테고리 탭: 글자 + 작은 개수, 고르면 진하게 + 밑줄 (앱을 끌어다 놓으면 그 카테고리로)
+final class CategoryTab: NSView {
     var onClick: (() -> Void)?
     private let selected: Bool
-    private var hovering = false { didSet { needsDisplay = true } }
+    private var hovering = false { didSet { updateColors() } }
     private let label: NSTextField
+    private let countLabel: NSTextField
+    static let height: CGFloat = 26
 
-    init(title: String, count: Int, selected: Bool, menu m: NSMenu, fontScale: CGFloat) {
+    init(title: String, count: Int?, selected: Bool, menu m: NSMenu?, fontScale: CGFloat) {
         self.selected = selected
-        label = NSTextField(labelWithString: "\(title)  \(count)")
+        label = NSTextField(labelWithString: title)
+        countLabel = NSTextField(labelWithString: count.map { "\($0)" } ?? "")
         super.init(frame: .zero)
         menu = m
-        label.font = .systemFont(ofSize: 12 * fontScale, weight: selected ? .semibold : .regular)
-        label.textColor = selected ? .white : .labelColor
+        let fs = min(fontScale, 1.2)
+        label.font = .systemFont(ofSize: 13 * fs, weight: selected ? .semibold : .regular)
+        countLabel.font = .systemFont(ofSize: 10 * fs, weight: .medium)
         label.sizeToFit()
-        let h = ceil(label.frame.height) + 8
-        frame.size = NSSize(width: ceil(label.frame.width) + 20, height: h)
-        label.setFrameOrigin(NSPoint(x: 10, y: (h - label.frame.height) / 2))
+        countLabel.sizeToFit()
+        let gapW: CGFloat = count == nil ? 0 : 3
+        let w = ceil(label.frame.width + gapW + countLabel.frame.width)
+        frame.size = NSSize(width: w, height: CategoryTab.height)
+        let ty = (CategoryTab.height - label.frame.height) / 2 + 1
+        label.setFrameOrigin(NSPoint(x: 0, y: ty))
+        countLabel.setFrameOrigin(NSPoint(x: label.frame.maxX + gapW, y: ty + 1))
         addSubview(label)
-        toolTip = "누르면 ‘\(title)’ 만 보기 · 우클릭: 카테고리 메뉴 · 앱을 끌어다 놓으면 이 카테고리로"
+        addSubview(countLabel)
+        updateColors()
     }
     required init?(coder: NSCoder) { fatalError() }
 
+    private func updateColors() {
+        label.textColor = selected || hovering ? .labelColor : .secondaryLabelColor
+        countLabel.textColor = selected ? .secondaryLabelColor : .tertiaryLabelColor
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
-        let path = NSBezierPath(roundedRect: r, xRadius: r.height / 2, yRadius: r.height / 2)
-        if selected {
-            NSColor.controlAccentColor.setFill(); path.fill()
-        } else {
-            NSColor.labelColor.withAlphaComponent(hovering ? 0.14 : 0.07).setFill(); path.fill()
-        }
+        guard selected else { return }
+        NSColor.controlAccentColor.setFill()
+        NSBezierPath(roundedRect: NSRect(x: 0, y: 1, width: bounds.width, height: 2.5), xRadius: 1.25, yRadius: 1.25).fill()
     }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -1301,25 +1311,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             y += seg.frame.height + 8
         }
         if tabMode {
-            // 카테고리 탭들을 가로로 (넘치면 다음 줄로)
-            var px = left, rowH: CGFloat = 0
+            // 카테고리 탭을 한 줄로. 넘치면 끝의 ⋯ 메뉴로 (고른 카테고리는 늘 보이게)
             let maxX = left + gridW - pad * 2
-            for (c, cat) in cats.enumerated() {
-                let pill = CategoryPill(title: cat.name, count: cat.ids.count, selected: c == catTabSel,
-                                        menu: categoryMenu(c), fontScale: Tile.fontScale)
-                if px > left && px + pill.frame.width > maxX { px = left; y += rowH + 6; rowH = 0 }
-                pill.setFrameOrigin(NSPoint(x: px, y: y))
-                pill.onClick = { [unowned self] in
+            let spacing: CGFloat = 16, moreW: CGFloat = 24
+            func makeTab(_ c: Int) -> CategoryTab {
+                let t = CategoryTab(title: cats[c].name, count: cats[c].ids.count, selected: c == catTabSel,
+                                    menu: categoryMenu(c), fontScale: Tile.fontScale)
+                t.onClick = { [unowned self] in
                     catTabSel = c
                     d.set(c, forKey: "catTabSel")
                     refresh()
                 }
-                views.append(pill)
-                pillRects.append((c, pill.frame))
-                px += pill.frame.width + 6
-                rowH = max(rowH, pill.frame.height)
+                return t
             }
-            y += rowH + 10
+            let tabs = cats.indices.map(makeTab)
+            let total = tabs.reduce(0) { $0 + $1.frame.width } + spacing * CGFloat(max(0, tabs.count - 1))
+            var shown = Array(cats.indices)
+            if total > maxX - left {
+                // 앞에서부터 들어가는 만큼만, 고른 탭은 꼭 포함
+                shown = []
+                var used: CGFloat = 0
+                for c in cats.indices {
+                    let wNeed = tabs[c].frame.width + (shown.isEmpty ? 0 : spacing)
+                    if used + wNeed > maxX - left - moreW - spacing { break }
+                    shown.append(c); used += wNeed
+                }
+                if !shown.contains(catTabSel) {
+                    while !shown.isEmpty,
+                          shown.reduce(0, { $0 + tabs[$1].frame.width }) + tabs[catTabSel].frame.width + spacing * CGFloat(shown.count) > maxX - left - moreW - spacing {
+                        shown.removeLast()
+                    }
+                    shown.append(catTabSel)
+                }
+            }
+            var px = left
+            for c in shown {
+                let t = tabs[c]
+                t.setFrameOrigin(NSPoint(x: px, y: y))
+                views.append(t)
+                pillRects.append((c, t.frame))
+                px += t.frame.width + spacing
+            }
+            let hidden = cats.indices.filter { !shown.contains($0) }
+            if !hidden.isEmpty {
+                let more = ActionButton(title: "", symbol: "ellipsis") { [unowned self] b in
+                    let m = NSMenu()
+                    for c in hidden {
+                        m.addItem(Item("\(cats[c].name)  \(cats[c].ids.count)") { [unowned self] in
+                            catTabSel = c
+                            d.set(c, forKey: "catTabSel")
+                            refresh()
+                        })
+                    }
+                    popUp(m, under: b)
+                }
+                more.isBordered = false
+                more.contentTintColor = .secondaryLabelColor
+                more.toolTip = "다른 카테고리 \(hidden.count)개"
+                more.frame = NSRect(x: px - 4, y: y + 1, width: moreW, height: CategoryTab.height - 2)
+                views.append(more)
+            }
+            // 탭 아래 얇은 구분선
+            let line = NSBox(frame: NSRect(x: left, y: y + CategoryTab.height, width: maxX - left, height: 1))
+            line.boxType = .separator
+            views.append(line)
+            y += CategoryTab.height + 12
         }
         for sec in sections {
             let top = y
