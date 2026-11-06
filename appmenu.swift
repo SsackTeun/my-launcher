@@ -170,7 +170,7 @@ func mirror(_ axMenu: AXUIElement, into m: NSMenu, pid: pid_t, depth: Int) {
 // MARK: - 열린 창 한꺼번에 정리 (도구함 자신은 빼고)
 
 enum BulkWindows {
-    enum Kind { case close, minimize, quit }
+    enum Kind { case close, minimize, restore, quit }
 
     /// 도구함을 뺀, 화면에 창이 있는 일반 앱들
     static func apps(includeFinder: Bool) -> [NSRunningApplication] {
@@ -193,6 +193,8 @@ enum BulkWindows {
         switch kind {
         case .quit: return apps(includeFinder: false).count
         case .close, .minimize: return apps(includeFinder: true).reduce(0) { $0 + windows($1).count }
+        case .restore:
+            return apps(includeFinder: true).reduce(0) { n, app in n + windows(app).filter { AX.bool($0, kAXMinimizedAttribute) == true }.count }
         }
     }
 
@@ -211,6 +213,13 @@ enum BulkWindows {
             for app in apps(includeFinder: true) {
                 for w in windows(app) { AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanTrue) }
             }
+        case .restore:
+            // 최소화돼 Dock 에 들어간 창들을 다시 펼침
+            for app in apps(includeFinder: true) {
+                for w in windows(app) where AX.bool(w, kAXMinimizedAttribute) == true {
+                    AXUIElementSetAttributeValue(w, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+                }
+            }
         }
     }
 
@@ -223,10 +232,10 @@ enum BulkWindows {
         }
         let n = count(kind)
         guard n > 0 else {
-            let a = NSAlert(); a.messageText = kind == .quit ? "종료할 앱이 없어요." : "열린 창이 없어요."; a.runModal()
+            let a = NSAlert(); a.messageText = kind == .quit ? "종료할 앱이 없어요." : (kind == .restore ? "최소화한 창이 없어요." : "열린 창이 없어요."); a.runModal()
             return
         }
-        if kind != .minimize {
+        if kind != .minimize && kind != .restore {
             let a = NSAlert()
             a.messageText = kind == .quit ? "앱 \(n)개를 모두 종료할까요?" : "열린 창 \(n)개를 모두 닫을까요?"
             a.informativeText = kind == .quit
@@ -245,6 +254,7 @@ enum BulkWindows {
         let m = NSMenu()
         m.addItem(Item("열린 창 모두 닫기") { confirmAndRun(.close) })
         m.addItem(Item("열린 창 모두 최소화") { confirmAndRun(.minimize) })
+        m.addItem(Item("최소화한 창 모두 되살리기") { confirmAndRun(.restore) })
         m.addItem(.separator())
         m.addItem(Item("앱 골라서 종료…") { QuitPicker.shared.show() })
         m.addItem(Item("앱 모두 종료 (도구함·Finder 제외)") { confirmAndRun(.quit) })
