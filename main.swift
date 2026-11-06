@@ -701,12 +701,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let dx = e.scrollingDeltaX, dy = e.scrollingDeltaY
         let delta = abs(dx) > abs(dy) ? dx : dy
         var steps = 0
-        if e.hasPreciseScrollingDeltas {
+        if isWheelNotch(e) {
+            // 마우스 휠: 한 칸 굴리면 한 칸 (값이 작게 들어오는 첫 칸도 바로 반응)
+            if delta != 0 { steps = delta < 0 ? 1 : -1 }
+            focusAcc = 0
+        } else {
+            // 트랙패드: 손가락 움직인 만큼
             focusAcc += delta
             let unit: CGFloat = 16
             while abs(focusAcc) >= unit { steps += focusAcc < 0 ? 1 : -1; focusAcc += focusAcc < 0 ? unit : -unit }
-        } else if delta != 0 {
-            steps = delta < 0 ? 1 : -1
         }
         guard steps != 0 else { return }
         let cur = visibleTiles.firstIndex { $0.id == focusedID } ?? (steps > 0 ? -1 : visibleTiles.count)
@@ -731,14 +734,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var tabScrollAcc: CGFloat = 0
     private var tabScrollAt = Date.distantPast
 
+    /// 마우스 휠 한 칸인지 (트랙패드 · 매직 마우스는 phase 가 붙어 옴). 휠은 값 크기와 상관없이 한 칸 = 한 칸
+    func isWheelNotch(_ e: NSEvent) -> Bool { e.phase.isEmpty && e.momentumPhase.isEmpty }
+
     /// 카테고리 탭 줄 위에서 스크롤: 아래 · 왼쪽으로 쓸면 다음, 위 · 오른쪽이면 이전
     func tabScroll(_ e: NSEvent) {
         guard e.momentumPhase.isEmpty else { return }          // 관성 스크롤은 무시
         if e.phase == .began { tabScrollAcc = 0 }
         let dx = e.scrollingDeltaX, dy = e.scrollingDeltaY
-        tabScrollAcc += abs(dx) > abs(dy) ? dx : dy
-        let threshold: CGFloat = e.hasPreciseScrollingDeltas ? 28 : 0.5
-        guard abs(tabScrollAcc) >= threshold, Date().timeIntervalSince(tabScrollAt) > 0.18 else { return }
+        let delta = abs(dx) > abs(dy) ? dx : dy
+        if isWheelNotch(e) {
+            // 마우스 휠: 한 칸에 하나씩 (첫 칸도 바로)
+            guard delta != 0, Date().timeIntervalSince(tabScrollAt) > 0.08 else { return }
+            tabScrollAcc = delta
+        } else {
+            tabScrollAcc += delta
+            guard abs(tabScrollAcc) >= 28, Date().timeIntervalSince(tabScrollAt) > 0.18 else { return }
+        }
         let step = tabScrollAcc < 0 ? 1 : -1
         tabScrollAcc = 0
         tabScrollAt = Date()
