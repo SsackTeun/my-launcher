@@ -588,6 +588,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 카테고리 보기: 모두 펼치기(세로) / 모두 접기(가로 탭)
     var catTabMode = false
     var catTabSel = 0
+    var runTabSel = 0
+    var devTabSel = 0
+    /// 지금 탭에서 왼쪽 세로 목록에 고른 항목 (탭마다 따로 기억)
+    var curSel: Int {
+        get { tab == 1 ? runTabSel : (tab == 2 ? devTabSel : catTabSel) }
+        set {
+            switch tab {
+            case 1: runTabSel = newValue; d.set(newValue, forKey: "runTabSel")
+            case 2: devTabSel = newValue; d.set(newValue, forKey: "devTabSel")
+            default: catTabSel = newValue; d.set(newValue, forKey: "catTabSel")
+            }
+        }
+    }
+    var sideCount = 0
     /// 탭 모드에서 카테고리 탭들이 놓인 자리 (끌어다 놓기용)
     var pillRects: [(cat: Int, rect: NSRect)] = []
     private var tabScrollAcc: CGFloat = 0
@@ -604,10 +618,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let step = tabScrollAcc < 0 ? 1 : -1
         tabScrollAcc = 0
         tabScrollAt = Date()
-        let next = min(cats.count - 1, max(0, catTabSel + step))
-        guard next != catTabSel else { return }
-        catTabSel = next
-        d.set(next, forKey: "catTabSel")
+        let next = min(sideCount - 1, max(0, curSel + step))
+        guard next != curSel else { return }
+        curSel = next
         refresh()
     }
 
@@ -753,6 +766,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         tab = d.integer(forKey: "listTab")
         catTabMode = d.bool(forKey: "catTabMode")
         catTabSel = d.integer(forKey: "catTabSel")
+        runTabSel = d.integer(forKey: "runTabSel")
+        devTabSel = d.integer(forKey: "devTabSel")
         devApps.load()
         foldedCats = Set(d.stringArray(forKey: "foldedCats") ?? [])
         if playerEnabled { music.start(); lyrics.start() }
@@ -1185,16 +1200,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func displaySections() -> [(title: String, cat: Int?, ids: [String])] {
         let q = query.trimmingCharacters(in: .whitespaces)
         if q.isEmpty && tab == 2 {
-            return [("GitHub 에서 받는 개발자 앱", nil, devApps.ids)]
+            return [("GitHub 앱", nil, devApps.ids)]
         }
         if q.isEmpty && tab == 1 {
             // 실행 중 탭: 도구함 앱 중 켜진 것 + 그 밖에 켜진 앱
             let run = runningIDs()
             let mine = allIds.filter { run.contains($0) }
             let others = run.filter { locate($0) == nil }
-            var out: [(String, Int?, [String])] = [("실행 중인 도구함 앱", nil, mine)]
-            if !others.isEmpty { out.append(("그 밖에 실행 중", nil, others)) }
-            return out
+            return [("도구함 앱", nil, mine), ("다른 앱", nil, others)]
         }
         if q.isEmpty { return cats.enumerated().map { ($0.element.name, $0.offset, $0.element.ids) } }
         let mine = allIds.filter { matches($0, q) }
@@ -1446,9 +1459,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let showBar = (!widget || editing) && !allFolded
         let bottom = showBar ? barH : 0
         // 모두 접기 = 탭 모드: 왼쪽에 카테고리 세로 목록, 오른쪽에 고른 카테고리 앱
-        let tabMode = catTabMode && tab == 0 && query.trimmingCharacters(in: .whitespaces).isEmpty && cats.count > 1 && !allFolded
-        let sbW: CGFloat = tabMode ? min(150, max(84, cats.map { c -> CGFloat in
-            let l = NSTextField(labelWithString: c.name)
+        let tabMode = catTabMode && query.trimmingCharacters(in: .whitespaces).isEmpty && !allFolded && (tab != 0 || cats.count > 1)
+        // 왼쪽 목록 폭은 탭과 상관없이 같게 (탭을 바꿔도 창이 흔들리지 않게)
+        let sideNames = cats.map(\.name) + ["도구함 앱", "다른 앱", "GitHub 앱"]
+        let sbW: CGFloat = tabMode ? min(150, max(84, sideNames.map { name -> CGFloat in
+            let l = NSTextField(labelWithString: name)
             l.font = .systemFont(ofSize: 13 * min(Tile.fontScale, 1.2), weight: .semibold)
             l.sizeToFit()
             return ceil(l.frame.width) + 44
@@ -1462,10 +1477,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var sections = allFolded ? [] : displaySections()
         let runningTab = (tab == 1 || tab == 2) && !searching
         let devTab = tab == 2 && !searching
-        // 탭 모드: 고른 카테고리 하나만, 제목 줄 없이
-        if tabMode {
-            catTabSel = min(max(0, catTabSel), cats.count - 1)
-            sections = sections.filter { $0.cat == catTabSel }
+        // 탭 모드: 왼쪽 목록에서 고른 묶음 하나만, 제목 줄 없이
+        let allSections = sections
+        sideCount = allSections.count
+        if tabMode, !allSections.isEmpty {
+            if curSel < 0 || curSel >= allSections.count { curSel = 0 }
+            sections = [allSections[curSel]]
         }
         let showHeaders = !tabMode && (searching || runningTab || cats.count > 1)
         pillRects = []
@@ -1484,69 +1501,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seg.sizeToFit()
             seg.setFrameOrigin(NSPoint(x: left, y: y))
             views.append(seg)
-            // 실행 중 탭: 골라서 종료 · 모두 종료
-            if tab == 2 {
-                // 개발자 앱 탭: 모두 업데이트 · 새로 고침
-                var bx = seg.frame.maxX + 8
-                var buttons: [(String, () -> Void)] = [("새로 고침", { [unowned self] in devApps.load(force: true) })]
-                if ups > 0 {
-                    buttons.insert(("모두 업데이트 \(ups)", { [unowned self] in
-                        // 도구함 자신은 맨 마지막에 (다시 시작되므로)
-                        let me = Bundle.main.bundleIdentifier
-                        devApps.ids.filter { devApps.hasUpdate($0) && $0 != me }.forEach { devApps.install($0) }
-                        if let me, devApps.hasUpdate(me) { devApps.install(me) }
-                    }), at: 0)
-                }
-                for (title, action) in buttons {
-                    let b = ActionButton(title: title, symbol: nil) { _ in action() }
-                    b.controlSize = .small
-                    b.font = .systemFont(ofSize: 11)
-                    b.sizeToFit()
-                    b.setFrameOrigin(NSPoint(x: bx, y: y + (seg.frame.height - b.frame.height) / 2))
-                    if b.frame.maxX <= rowRight - 28 { views.append(b) }   // ⊞/☰ 버튼 자리는 비워 둠
-                    bx = b.frame.maxX + 4
-                }
+            // 오른쪽 끝에서부터 같은 모양의 아이콘 버튼: [탭별 버튼…] [접기/펼치기] [⊞/☰]
+            var bx = rowRight
+            func iconButton(_ symbol: String, _ tip: String, tint: NSColor? = nil, _ action: @escaping () -> Void) {
+                let b = ActionButton(title: "", symbol: symbol) { _ in action() }
+                b.isBordered = false
+                b.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+                b.contentTintColor = tint ?? .secondaryLabelColor
+                b.toolTip = tip
+                b.frame = NSRect(x: bx - 22, y: y + (seg.frame.height - 22) / 2, width: 22, height: 22)
+                guard b.frame.minX >= seg.frame.maxX + 4 else { return }
+                views.append(b)
+                bx -= 26
             }
-            if tab == 1 {
-                var bx = seg.frame.maxX + 8
-                for (title, action) in [("골라서 종료", { QuitPicker.shared.show() }), ("모두 종료", { BulkWindows.confirmAndRun(.quit) })] as [(String, () -> Void)] {
-                    let b = ActionButton(title: title, symbol: nil) { _ in action() }
-                    b.controlSize = .small
-                    b.font = .systemFont(ofSize: 11)
-                    b.sizeToFit()
-                    b.setFrameOrigin(NSPoint(x: bx, y: y + (seg.frame.height - b.frame.height) / 2))
-                    if b.frame.maxX <= rowRight - 28 { views.append(b) }   // ⊞/☰ 버튼 자리는 비워 둠
-                    bx = b.frame.maxX + 4
-                }
-            }
-            // 격자 ⊞ / 목록 ☰ 전환 (줄 맨 오른쪽)
-            let viewBtn = ActionButton(title: "", symbol: listMode ? "square.grid.2x2" : "list.bullet") { [unowned self] _ in
+            iconButton(listMode ? "square.grid.2x2" : "list.bullet", listMode ? "아이콘 격자로 보기" : "세로 목록으로 보기") { [unowned self] in
                 listMode.toggle()
                 d.set(listMode, forKey: "listMode")
                 refresh()
             }
-            viewBtn.isBordered = false
-            viewBtn.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
-            viewBtn.contentTintColor = .secondaryLabelColor
-            viewBtn.toolTip = listMode ? "아이콘 격자로 보기" : "세로 목록으로 보기"
-            viewBtn.frame = NSRect(x: rowRight - 22, y: y + (seg.frame.height - 22) / 2, width: 22, height: 22)
-            views.append(viewBtn)
-            let rightEdge = viewBtn.frame.minX - 6
-            // 전체 탭: 모두 접기(가로 탭) / 모두 펼치기
-            if tab == 0 && cats.count > 1 {
-                let b = ActionButton(title: catTabMode ? "모두 펼치기" : "모두 접기",
-                                     symbol: catTabMode ? "list.bullet.below.rectangle" : "rectangle.split.3x1") { [unowned self] _ in
+            if tab != 0 || cats.count > 1 {
+                iconButton(catTabMode ? "rectangle.expand.vertical" : "sidebar.left",
+                           catTabMode ? "모두 펼치기 (묶음을 세로로 쭉)" : "모두 접기 (왼쪽 목록에서 하나씩 보기)") { [unowned self] in
                     catTabMode.toggle()
                     d.set(catTabMode, forKey: "catTabMode")
                     refresh()
                 }
-                b.controlSize = .small
-                b.font = .systemFont(ofSize: 11)
-                b.toolTip = catTabMode ? "카테고리를 세로로 모두 펼쳐 보기" : "카테고리를 가로 탭으로 접어서 하나씩 보기"
-                b.sizeToFit()
-                b.setFrameOrigin(NSPoint(x: max(seg.frame.maxX + 8, rightEdge - b.frame.width),
-                                         y: y + (seg.frame.height - b.frame.height) / 2))
-                if b.frame.maxX <= rightEdge + 1 { views.append(b) }
+            }
+            if tab == 1 {
+                iconButton("power", "모두 종료 (도구함 · Finder 제외)") { BulkWindows.confirmAndRun(.quit) }
+                iconButton("checklist", "골라서 종료…") { QuitPicker.shared.show() }
+            }
+            if tab == 2 {
+                iconButton("arrow.clockwise", "새로 고침") { [unowned self] in devApps.load(force: true) }
+                if ups > 0 {
+                    iconButton("arrow.down.circle.fill", "모두 업데이트 (\(ups)개)", tint: .systemOrange) { [unowned self] in
+                        // 도구함 자신은 맨 마지막에 (다시 시작되므로)
+                        let me = Bundle.main.bundleIdentifier
+                        devApps.ids.filter { devApps.hasUpdate($0) && $0 != me }.forEach { devApps.install($0) }
+                        if let me, devApps.hasUpdate(me) { devApps.install(me) }
+                    }
+                }
             }
             y += seg.frame.height + 8
             if tabMode {
@@ -1562,24 +1556,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if tabMode {
             // 왼쪽 세로 카테고리 목록 (스크롤로 위아래 이동, 앱을 끌어다 놓으면 그 카테고리로)
             let rowH = CategoryTab.height + 2
-            let catcher = ScrollCatcher(frame: NSRect(x: left, y: y, width: sbW, height: CGFloat(cats.count) * rowH))
+            let catcher = ScrollCatcher(frame: NSRect(x: left, y: y, width: sbW, height: CGFloat(allSections.count) * rowH))
             catcher.onScroll = { [unowned self] e in tabScroll(e) }
             views.append(catcher)
-            for (c, cat) in cats.enumerated() {
-                let t = CategoryTab(title: cat.name, count: cat.ids.count, selected: c == catTabSel,
-                                    menu: categoryMenu(c), fontScale: Tile.fontScale, sidebarWidth: sbW)
-                t.setFrameOrigin(NSPoint(x: left, y: y + CGFloat(c) * rowH))
+            for (k, sec) in allSections.enumerated() {
+                let t = CategoryTab(title: sec.title, count: sec.ids.count, selected: k == curSel,
+                                    menu: sec.cat.map { categoryMenu($0) }, fontScale: Tile.fontScale, sidebarWidth: sbW)
+                t.setFrameOrigin(NSPoint(x: left, y: y + CGFloat(k) * rowH))
                 t.onClick = { [unowned self] in
-                    catTabSel = c
-                    d.set(c, forKey: "catTabSel")
+                    curSel = k
                     refresh()
                 }
                 t.onScroll = { [unowned self] e in tabScroll(e) }
-                t.toolTip = "누르면 ‘\(cat.name)’ 보기 · 스크롤로 위아래 이동 · 앱을 끌어다 놓으면 이 카테고리로"
+                t.toolTip = sec.cat != nil ? "누르면 ‘\(sec.title)’ 보기 · 스크롤로 위아래 이동 · 앱을 끌어다 놓으면 이 카테고리로"
+                                           : "누르면 ‘\(sec.title)’ 보기 · 스크롤로 위아래 이동"
                 views.append(t)
-                pillRects.append((c, t.frame))
+                if let c = sec.cat { pillRects.append((c, t.frame)) }
             }
-            sidebarBottom = y + CGFloat(cats.count) * rowH
+            sidebarBottom = y + CGFloat(allSections.count) * rowH
             // 목록과 앱 사이 세로 구분선
             let vline = NSBox(frame: NSRect(x: left + sbW + 5, y: y, width: 1, height: sidebarBottom - y))
             vline.boxType = .separator
@@ -1623,7 +1617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 views.append(t)
             }
             if sec.ids.isEmpty {
-                let hint = NSTextField(labelWithString: searching ? "‘\(query)’와 맞는 앱이 없어요" : (runningTab ? "실행 중인 도구함 앱이 없어요" : "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요"))
+                let hint = NSTextField(labelWithString: searching ? "‘\(query)’와 맞는 앱이 없어요" : (devTab ? "목록이 비어 있어요 — 새로 고침을 눌러 보세요" : (runningTab ? "실행 중인 \(sec.title)이 없어요" : "비어 있음 — 다른 카테고리의 앱을 여기로 끌어다 놓으세요")))
                 hint.font = .systemFont(ofSize: 11)
                 hint.textColor = .tertiaryLabelColor
                 hint.frame = NSRect(x: tilesLeft, y: y + tile.height / 2 - 8, width: gridW - pad * 2, height: 16)
