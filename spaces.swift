@@ -147,6 +147,44 @@ extension Spaces {
 
     private static func post(_ e: CGEvent?) { e?.post(tap: .cghidEventTap) }
 
+    /// 창 맨 위에서 잡고 끌 수 있는 빈 자리 찾기 (탭 · 버튼 · 입력칸은 피함 — Chrome 처럼 맨 위가 탭 줄인 앱)
+    private static func grabPoint(pid: pid_t, rect r: CGRect) -> CGPoint {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, 0.3)
+        let bad: Set<String> = ["AXButton", "AXRadioButton", "AXTabGroup", "AXTextField", "AXTextArea", "AXPopUpButton",
+                                "AXMenuButton", "AXCheckBox", "AXLink", "AXComboBox", "AXSearchField", "AXImage", "AXStaticText"]
+        var xs: [CGFloat] = []
+        // 오른쪽 끝(창 버튼 · 프로필 버튼 바로 안쪽)부터 왼쪽으로, 그다음 가운데
+        var x = r.maxX - 90
+        while x > r.minX + 90 { xs.append(x); x -= 24 }
+        for y in [r.minY + 6, r.minY + 12, r.minY + 3] {
+            for x in xs {
+                var el: AXUIElement?
+                guard AXUIElementCopyElementAtPosition(app, Float(x), Float(y), &el) == .success, let el else { continue }
+                var role: CFTypeRef?
+                AXUIElementCopyAttributeValue(el, kAXRoleAttribute as CFString, &role)
+                if let role = role as? String, !bad.contains(role) { return CGPoint(x: x, y: y) }
+            }
+        }
+        return CGPoint(x: r.midX, y: r.minY + 12)
+    }
+
+    /// 그 앱의 이 창(위치 · 크기로 맞춤)의 창 번호
+    private static func windowID(pid: pid_t, rect r: CGRect) -> Int? {
+        let wins = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+        return wins.first { w in
+            guard (w[kCGWindowOwnerPID as String] as? pid_t) == pid, (w[kCGWindowLayer as String] as? Int) == 0,
+                  let b = w[kCGWindowBounds as String] as? [String: Any] else { return false }
+            let x = b["X"] as? Double ?? 0, y = b["Y"] as? Double ?? 0, wd = b["Width"] as? Double ?? 0, h = b["Height"] as? Double ?? 0
+            return abs(x - r.minX) < 3 && abs(y - r.minY) < 3 && abs(wd - r.width) < 3 && abs(h - r.height) < 3
+        }?[kCGWindowNumber as String] as? Int
+    }
+
+    private static func spaces(of wid: Int) -> [Int] {
+        guard let mainConn, let copyForWindows else { return [] }
+        return copyForWindows(mainConn(), 7, [wid] as CFArray)?.takeRetainedValue() as? [Int] ?? []
+    }
+
     /// 결과: nil 이면 성공, 아니면 안내 문구
     @MainActor
     static func move(pid: pid_t, to target: Desk, desks: [Desk], done: @escaping (String?) -> Void) {
@@ -189,7 +227,8 @@ extension Spaces {
         // 창을 앞으로 가져온 뒤 제목 막대를 잡고 데스크탑 넘기기
         app?.activate()
         AXUIElementPerformAction(win, kAXRaiseAction as CFString)
-        let grab = CGPoint(x: r.midX, y: r.minY + 12)
+        let grab = grabPoint(pid: pid, rect: r)
+        let wid = windowID(pid: pid, rect: r)
         let back = CGEvent(source: nil)?.location ?? grab
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: grab, mouseButton: .left))
@@ -202,7 +241,14 @@ extension Spaces {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
                         post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: nudge, mouseButton: .left))
                         post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: back, mouseButton: .left))
-                        done(nil)
+                        // 정말 옮겨졌는지 확인
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                            if let wid, !spaces(of: wid).contains(target.id) {
+                                done("‘\(app?.localizedName ?? "앱")’ 창을 옮기지 못했어요.\n창 맨 위에 잡을 빈 곳이 없는 앱일 수 있어요. Mission Control 에서 끌어다 놓아 주세요.")
+                            } else {
+                                done(nil)
+                            }
+                        }
                     }
                     return
                 }
