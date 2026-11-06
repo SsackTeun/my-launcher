@@ -1929,7 +1929,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }.max() ?? 84)) : 0
         let side: CGFloat = tabMode ? sbW + 12 : 0
         // 폭은 접든 펴든 같게 (접으면 높이만 줄어듦). 위쪽 줄 버튼들이 들어갈 최소 폭은 보장
-        let w = max(gridW + side, showBar ? 340 : 300)
+        // 탭 줄(탭 + 아이콘 버튼들)이 늘 다 들어가는 폭은 보장 (좁으면 버튼이 사라져 되돌릴 수 없었음)
+        let w = max(gridW + side, 372)
         let left = (w - gridW - side) / 2 + pad
         let tilesLeft = left + side
         let rowRight = tilesLeft + gridW - pad * 2
@@ -1962,10 +1963,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seg.selectedSegment = tab
             seg.controlSize = .small
             seg.sizeToFit()
-            seg.setFrameOrigin(NSPoint(x: left, y: y))
+            // 탭 줄은 앱 격자 폭이 아니라 창 전체 폭을 씀
+            let hdrLeft: CGFloat = 12, hdrRight = w - 12
+            seg.setFrameOrigin(NSPoint(x: hdrLeft, y: y))
             headerViews.append(seg)
             // 오른쪽 끝에서부터 같은 모양의 아이콘 버튼: [탭별 버튼…] [접기/펼치기] [⊞/☰]
-            var bx = rowRight
+            var bx = hdrRight
             func iconButton(_ symbol: String, _ tip: String, tint: NSColor? = nil, _ action: @escaping () -> Void) {
                 let b = ActionButton(title: "", symbol: symbol) { _ in action() }
                 b.isBordered = false
@@ -2010,7 +2013,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             y += seg.frame.height + 8
             if tabMode {
                 // 위는 '보기 종류', 아래는 '카테고리' — 얇은 선과 여백으로 나눔
-                let sep = NSBox(frame: NSRect(x: left, y: y, width: rowRight - left, height: 1))
+                let sep = NSBox(frame: NSRect(x: hdrLeft, y: y, width: hdrRight - hdrLeft, height: 1))
                 sep.boxType = .separator
                 sep.alphaValue = 0.6
                 headerViews.append(sep)
