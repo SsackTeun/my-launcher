@@ -783,6 +783,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var editing = false
     var widget = false
     var widgetLevel = 0
+    /// 위젯일 때도 Dock 아이콘 · 메뉴 막대에 도구함 표시
+    var widgetShowsInDock = true
     var locked = false
     /// 드롭 위치로 카테고리를 찾기 위한 각 카테고리의 세로 범위
     var sectionYs: [(cat: Int, top: CGFloat, tilesTop: CGFloat, bottom: CGFloat)] = []
@@ -1144,6 +1146,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             iconSize = CGFloat(d.double(forKey: "iconSize"))
         }
         widget = d.bool(forKey: "widget")
+        widgetShowsInDock = d.object(forKey: "widgetShowsInDock") as? Bool ?? true
         widgetLevel = min(d.integer(forKey: "widgetLevel"), widgetLevels.count - 1)
         locked = d.bool(forKey: "locked")
         // 글자 크기: 기본은 '자동'(화면 · 아이콘 크기에 맞춤). 직접 정한 적이 있을 때만 그 값
@@ -1229,7 +1232,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         root = nil
 
         // 위젯은 Dock 에 안 보이게, 일반 창은 Dock 에 보이게
-        NSApp.setActivationPolicy(widget ? .accessory : .regular)
+        // 위젯이어도 '표시' 옵션이 켜져 있으면 Dock 아이콘 · 메뉴 막대에 도구함이 뜸 (누르면 앞에 있는 앱이 됨)
+        NSApp.setActivationPolicy(widget && !widgetShowsInDock ? .accessory : .regular)
         refresh()
         if let p = carryTopLeft {
             w.setFrameTopLeftPoint(p)
@@ -1321,6 +1325,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 it.state = i == widgetLevel ? .on : .off
                 items.append(it)
             }
+        }
+        if widget {
+            let dock = Item("    Dock · 메뉴 막대에 표시") { [unowned self] in
+                widgetShowsInDock.toggle()
+                d.set(widgetShowsInDock, forKey: "widgetShowsInDock")
+                NSApp.setActivationPolicy(widgetShowsInDock ? .regular : .accessory)
+                window.orderFrontRegardless()
+                buildStatusMenu()
+            }
+            dock.state = widgetShowsInDock ? .on : .off
+            items.append(dock)
         }
         let lock = Item(widget ? "    위치 고정" : "창 위치 고정") { [unowned self] in toggleLocked() }
         lock.state = locked ? .on : .off
