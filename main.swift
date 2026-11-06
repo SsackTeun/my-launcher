@@ -678,6 +678,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var visibleTiles: [(id: String, tile: Tile)] = []
     var focusedID: String?
     private var focusAcc: CGFloat = 0
+    /// 끝까지 스크롤하면 다음 카테고리로 넘어가기 (설정)
+    var scrollCrossesCategory = true
+    var crossCheck: NSButton!
+    enum FocusEdge { case first, last }
+    var pendingFocusEdge: FocusEdge?
+    var lastTabMode = false
 
     func setFocus(_ id: String?, reveal: Bool = false) {
         focusedID = id
@@ -704,7 +710,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard steps != 0 else { return }
         let cur = visibleTiles.firstIndex { $0.id == focusedID } ?? (steps > 0 ? -1 : visibleTiles.count)
-        let next = min(visibleTiles.count - 1, max(0, cur + steps))
+        let want = cur + steps
+        // 끝을 넘어서 스크롤하면 다음 · 이전 카테고리로 (설정에서 켜고 끔, 왼쪽 목록 보기일 때)
+        if scrollCrossesCategory, lastTabMode, want >= visibleTiles.count || want < 0 {
+            let to = curSel + (want < 0 ? -1 : 1)
+            if to >= 0 && to < sideCount {
+                curSel = to
+                pendingFocusEdge = want < 0 ? .last : .first
+                focusAcc = 0
+                refresh()
+                if let t = visibleTiles.first(where: { $0.id == focusedID })?.tile { t.scrollToVisible(t.bounds.insetBy(dx: 0, dy: -10)) }
+                return
+            }
+        }
+        let next = min(visibleTiles.count - 1, max(0, want))
         setFocus(visibleTiles[next].id, reveal: true)
     }
     /// 탭 모드에서 카테고리 탭들이 놓인 자리 (끌어다 놓기용)
@@ -832,6 +851,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             cats = [Category(name: "기본", ids: d.stringArray(forKey: "apps") ?? defaultApps)]
         }
         listMode = d.bool(forKey: "listMode")
+        scrollCrossesCategory = d.object(forKey: "scrollCross") as? Bool ?? true
         if d.object(forKey: "cols") != nil {
             cols = max(1, d.integer(forKey: "cols"))
             rows = max(1, d.integer(forKey: "rows"))
@@ -983,6 +1003,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if settings != nil { syncSettings() }
         playerBar.needsLayout = true
         refresh()
+    }
+
+    @objc func crossChecked(_ b: NSButton) {
+        scrollCrossesCategory = b.state == .on
+        d.set(scrollCrossesCategory, forKey: "scrollCross")
     }
 
     @objc func lockChecked(_ b: NSButton) { if (b.state == .on) != locked { toggleLocked() } }
@@ -1790,9 +1815,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 스크롤로 카테고리 넘기기: 왼쪽 목록 칸 전체(창 왼쪽 끝 ~ 구분선, 위아래 끝까지)
             sideCatcher?.frame = NSRect(x: 0, y: sidebarTop, width: left + sbW + 6, height: max(docH, viewH) - sidebarTop)
         }
+        lastTabMode = tabMode
+        if let edge = pendingFocusEdge {
+            pendingFocusEdge = nil
+            let pick = edge == .first ? visibleTiles.first : visibleTiles.last
+            focusedID = pick?.id
+            for (tid, t) in visibleTiles { t.focused = tid == focusedID }
+        }
         // 앱 영역에서 스크롤하면 강조(포커스)가 앱을 한 칸씩 옮겨 감 (필요하면 목록도 따라 스크롤)
         grid.onScrollFirst = { [unowned self] e in
-            guard !visibleTiles.isEmpty else { return false }
+            // 빈 카테고리에서는 그냥 카테고리를 넘김 (끝까지 스크롤 옵션이 켜져 있을 때)
+            if visibleTiles.isEmpty {
+                guard lastTabMode, scrollCrossesCategory else { return false }
+                tabScroll(e)
+                return true
+            }
             focusScroll(e)
             return true
         }
@@ -2026,7 +2063,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 352),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 382),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -2065,6 +2102,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.addSubview(n)
             return (f, s)
         }
+
+        label("스크롤", y: 342)
+        crossCheck = NSButton(checkboxWithTitle: "끝까지 스크롤하면 다음 카테고리로", target: self, action: #selector(crossChecked(_:)))
+        crossCheck.frame = NSRect(x: 106, y: 341, width: 250, height: 22)
+        crossCheck.toolTip = "왼쪽 목록 보기에서, 마지막 앱보다 더 내리면 다음 카테고리 첫 앱으로 (위로는 이전 카테고리 마지막 앱으로)"
+        v.addSubview(crossCheck)
 
         label("창 위치", y: 312)
         lockCheck = NSButton(checkboxWithTitle: "위치 고정 (끌어도 안 움직임)", target: self, action: #selector(lockChecked(_:)))
@@ -2150,6 +2193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dockCheck.state = hideDock ? .on : .off
         playerCheck.state = playerEnabled ? .on : .off
         lockCheck.state = locked ? .on : .off
+        crossCheck.state = scrollCrossesCategory ? .on : .off
         uiScaleLabel.stringValue = (uiScaleAuto ? "자동 " : "") + "\(Int((uiScale * 100).rounded()))%"
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
