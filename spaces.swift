@@ -9,6 +9,9 @@ enum Spaces {
         let label: String
         let current: Bool
         var pids: [pid_t]
+        var display = ""          // 모니터 UUID
+        var order = 0             // 그 모니터 안에서 몇 번째 데스크탑 (0부터, 전체 화면 포함)
+        var fullscreen = false
     }
 
     private typealias MainConn = @convention(c) () -> Int32
@@ -56,6 +59,7 @@ enum Spaces {
             let dname = names[uuid] ?? (names.count == 1 ? names.values.first : nil) ?? "모니터"
             let cur = (disp["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int
             var n = 0
+            var order = 0
             for sp in disp["Spaces"] as? [[String: Any]] ?? [] {
                 guard let id = sp["ManagedSpaceID"] as? Int else { continue }
                 let type = sp["type"] as? Int ?? 0
@@ -68,7 +72,9 @@ enum Spaces {
                     label = multi ? "데스크탑 \(n) · \(dname)" : "데스크탑 \(n)"
                 }
                 index[id] = desks.count
-                desks.append(Desk(id: id, label: label + (id == cur ? " (지금)" : ""), current: id == cur, pids: []))
+                desks.append(Desk(id: id, label: label + (id == cur ? " (지금)" : ""), current: id == cur, pids: [],
+                                  display: uuid, order: order, fullscreen: type == 4))
+                order += 1
             }
         }
 
@@ -94,8 +100,122 @@ enum Spaces {
         // 전체 화면 데스크탑은 그 앱 이름으로
         for k in fullscreen {
             let d = desks[k]
-            desks[k] = Desk(id: d.id, label: "전체 화면 · \(fsOwner[k] ?? "앱")" + (d.current ? " (지금)" : ""), current: d.current, pids: d.pids)
+            desks[k] = Desk(id: d.id, label: "전체 화면 · \(fsOwner[k] ?? "앱")" + (d.current ? " (지금)" : ""), current: d.current, pids: d.pids,
+                            display: d.display, order: d.order, fullscreen: true)
         }
         return desks
+    }
+}
+
+// MARK: - 다른 데스크탑으로 옮기기
+// macOS 가 다른 앱 창을 데스크탑으로 바로 보내는 걸 막아서, 사람이 하는 방법을 흉내 냄:
+// · 다른 모니터면: 창을 그 모니터로 옮김 (손쉬운 사용으로 위치 바꾸기)
+// · 같은 모니터의 다른 데스크탑이면: 창 제목 막대를 잡은 채 Ctrl+← / → 로 데스크탑을 넘김 (창이 따라옴)
+
+extension Spaces {
+    private static func screen(forUUID uuid: String) -> NSScreen? {
+        NSScreen.screens.first { s in
+            guard let num = s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                  let u = CGDisplayCreateUUIDFromDisplayID(num.uint32Value)?.takeRetainedValue() else { return false }
+            return (CFUUIDCreateString(nil, u) as String).uppercased() == uuid
+        } ?? (NSScreen.screens.count == 1 ? NSScreen.screens.first : nil)
+    }
+
+    private static func axRect(_ w: AXUIElement) -> CGRect? {
+        var pv: CFTypeRef?, sv: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(w, kAXPositionAttribute as CFString, &pv) == .success,
+              AXUIElementCopyAttributeValue(w, kAXSizeAttribute as CFString, &sv) == .success, let pv, let sv else { return nil }
+        var p = CGPoint.zero, sz = CGSize.zero
+        AXValueGetValue(pv as! AXValue, .cgPoint, &p)
+        AXValueGetValue(sv as! AXValue, .cgSize, &sz)
+        return CGRect(origin: p, size: sz)
+    }
+
+    /// 앱의 (보이는) 표준 창 중 첫 번째
+    private static func mainWindow(pid: pid_t) -> AXUIElement? {
+        let app = AXUIElementCreateApplication(pid)
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(app, kAXWindowsAttribute as CFString, &v) == .success,
+              let ws = v as? [AXUIElement] else { return nil }
+        return ws.first { w in
+            var sub: CFTypeRef?, mini: CFTypeRef?
+            AXUIElementCopyAttributeValue(w, kAXSubroleAttribute as CFString, &sub)
+            AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &mini)
+            return (sub as? String) == (kAXStandardWindowSubrole as String) && (mini as? Bool) != true
+        } ?? ws.first
+    }
+
+    private static func post(_ e: CGEvent?) { e?.post(tap: .cghidEventTap) }
+
+    /// 결과: nil 이면 성공, 아니면 안내 문구
+    @MainActor
+    static func move(pid: pid_t, to target: Desk, desks: [Desk], done: @escaping (String?) -> Void) {
+        guard AXIsProcessTrusted() else { done("손쉬운 사용 권한이 필요해요"); return }
+        guard !target.fullscreen else { done("전체 화면 데스크탑으로는 옮길 수 없어요"); return }
+        guard let win = mainWindow(pid: pid), var r = axRect(win) else { done("옮길 창을 찾지 못했어요"); return }
+        let app = NSRunningApplication(processIdentifier: pid)
+
+        // 1) 다른 모니터면 창을 그 모니터 가운데로 (그 모니터의 '지금 데스크탑'에 놓임)
+        let cur = desks.first { $0.display == target.display && $0.current }
+        // 창이 지금 어느 모니터에 있는지 (AX 는 왼쪽 위 기준 → 화면 좌표로)
+        let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
+        let center = NSPoint(x: r.midX, y: primaryTop - r.midY)
+        let srcScreen = NSScreen.screens.first { NSMouseInRect(center, $0.frame, false) }
+        let srcDisplay = srcScreen.flatMap { s -> String? in
+            guard let num = s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber,
+                  let u = CGDisplayCreateUUIDFromDisplayID(num.uint32Value)?.takeRetainedValue() else { return nil }
+            return (CFUUIDCreateString(nil, u) as String).uppercased()
+        }
+        if NSScreen.screens.count > 1, srcDisplay != target.display {
+            if let scr = screen(forUUID: target.display) {
+                // AX 좌표는 왼쪽 위 기준
+                let top = NSScreen.screens.first.map { $0.frame.maxY } ?? scr.frame.maxY
+                let vf = scr.visibleFrame
+                var p = CGPoint(x: vf.midX - r.width / 2, y: top - vf.maxY + 40)
+                p.x = max(vf.minX, p.x)
+                var pv = p
+                if let val = AXValueCreate(.cgPoint, &pv) {
+                    AXUIElementSetAttributeValue(win, kAXPositionAttribute as CFString, val)
+                }
+                if let nr = axRect(win) { r = nr }
+            }
+        }
+
+        // 2) 같은 모니터 안에서 몇 칸 넘겨야 하는지
+        guard let cur, cur.id != target.id else { done(nil); return }
+        let steps = target.order - cur.order
+        guard steps != 0 else { done(nil); return }
+
+        // 창을 앞으로 가져온 뒤 제목 막대를 잡고 데스크탑 넘기기
+        app?.activate()
+        AXUIElementPerformAction(win, kAXRaiseAction as CFString)
+        let grab = CGPoint(x: r.midX, y: r.minY + 12)
+        let back = CGEvent(source: nil)?.location ?? grab
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: grab, mouseButton: .left))
+            post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: grab, mouseButton: .left))
+            let nudge = CGPoint(x: grab.x + 4, y: grab.y)
+            post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseDragged, mouseCursorPosition: nudge, mouseButton: .left))
+            var i = 0
+            func next() {
+                guard i < abs(steps) else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                        post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: nudge, mouseButton: .left))
+                        post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: back, mouseButton: .left))
+                        done(nil)
+                    }
+                    return
+                }
+                i += 1
+                let key: CGKeyCode = steps > 0 ? 124 : 123   // → / ←
+                let down = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: true)
+                down?.flags = [.maskControl, .maskSecondaryFn]
+                let up = CGEvent(keyboardEventSource: nil, virtualKey: key, keyDown: false)
+                up?.flags = [.maskControl, .maskSecondaryFn]
+                post(down); post(up)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { next() }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { next() }
+        }
     }
 }

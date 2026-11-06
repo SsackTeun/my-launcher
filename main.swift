@@ -872,6 +872,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ⓧ 로 끌 때 물어보기 (설정)
     var confirmQuit: Bool = UserDefaults.standard.object(forKey: "confirmQuit") as? Bool ?? true
     var confirmCheck: NSButton!
+    /// 데스크탑 탭: 앱 창을 다른 데스크탑으로 (제목 막대 잡고 넘기는 방식이라 잠깐 화면이 넘어감)
+    func moveToDesk(_ id: String, _ k: Int) {
+        guard desks.indices.contains(k), let r = running(id) else { return }
+        Spaces.move(pid: r.processIdentifier, to: desks[k], desks: desks) { [weak self] msg in
+            if let msg {
+                let a = NSAlert(); a.messageText = msg; a.runModal()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self?.refresh() }
+        }
+    }
+
     func setConfirmQuit(_ on: Bool) {
         confirmQuit = on
         d.set(on, forKey: "confirmQuit")
@@ -1181,6 +1192,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 앱이 켜지거나 꺼지면 초록 점을 바로 갱신
         let nc = NSWorkspace.shared.notificationCenter
+        // 진단: 설정값 spaceMoveTest 에 "pid,데스크탑순번" 을 넣으면 그 앱 창을 옮겨 봄
+        Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, let v = self.d.string(forKey: "spaceMoveTest") else { return }
+                self.d.removeObject(forKey: "spaceMoveTest")
+                let parts = v.split(separator: ",").compactMap { Int($0) }
+                guard parts.count == 2 else { return }
+                let ds = Spaces.load()
+                guard ds.indices.contains(parts[1]) else { return }
+                Spaces.move(pid: pid_t(parts[0]), to: ds[parts[1]], desks: ds) { msg in
+                    try? ((msg ?? "ok") + "\n").write(toFile: NSHomeDirectory() + "/MyLauncher/space-test.txt", atomically: true, encoding: .utf8)
+                }
+            }
+        }
         // 데스크탑을 옮기면 데스크탑 탭을 새로
         nc.addObserver(forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { if self?.tab == 3 { self?.refresh() } }
@@ -2093,6 +2118,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                            : "누르면 ‘\(sec.title)’ 보기 · 스크롤로 위아래 이동"
                 sideViews.append(t)
                 if let c = sec.cat { pillRects.append((c, t.frame)) }
+                else if tab == 3 { pillRects.append((k, t.frame)) }   // 데스크탑: 앱을 끌어다 놓으면 그 데스크탑으로
             }
             sidebarBottom = y + CGFloat(allSections.count) * rowH
             // 목록과 앱 사이 세로 구분선
@@ -2155,7 +2181,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // 개발자 앱 탭에서 아직 안 받은 앱은 누르면 받기
                     if devTab && url(id) == nil { devApps.install(id) } else { launch(id) }
                 }
-                t.appID = (mine && !searching) ? id : ""   // 검색 결과에선 끌어 옮기기 안 함
+                t.appID = ((mine || tab == 3) && !searching) ? id : ""   // 검색 결과에선 끌어 옮기기 안 함 (데스크탑 탭은 데스크탑 옮기기용)
                 t.onHoverIn = { [unowned self] in setFocus(id) }
                 t.focused = id == focusedID
                 visibleTiles.append((id, t))
@@ -2208,11 +2234,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sidePane.onScrollFirst = { [unowned self] e in tabScroll(e); return true }
             // 왼쪽 목록 위에 놓기: 앱은 그 카테고리로, 카테고리는 순서 바꾸기
             sidePane.target = { [unowned self] p in
-                pillRects.contains { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }
+                if tab == 3 {
+                    guard let pill = pillRects.first(where: { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }) else { return nil }
+                    return DropTarget(cat: pill.cat, index: 0, section: pill.rect.insetBy(dx: -3, dy: -3), caret: .zero)
+                }
+                return pillRects.contains { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }
                     ? dropTarget(at: p, left: tilesLeft, gridW: gridW, tile: tile, cols: lc) : nil
             }
             sidePane.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
-            sidePane.onMoveApp = { [unowned self] id, t in moveApp(id, toCategory: t.cat, at: t.index) }
+            sidePane.onMoveApp = { [unowned self] id, t in
+                if tab == 3 { moveToDesk(id, t.cat) } else { moveApp(id, toCategory: t.cat, at: t.index) }
+            }
             sidePane.categoryTarget = { [unowned self] p in categoryDropTarget(at: p, left: left, width: sbW) }
             sidePane.onMoveCategory = { [unowned self] from, to in moveCategory(from: from, to: to) }
         }
