@@ -530,6 +530,18 @@ let widgetLevels: [(String, NSWindow.Level)] = [
     ("항상 위에", .floating),
 ]
 
+/// 빈 곳을 잡고 끌면 창이 움직이는 판 (검색 줄 · 탭 줄 바탕). 위치 고정이면 안 움직임
+final class DragArea: NSView {
+    var isLocked: () -> Bool = { false }
+    var flippedLayout = false
+    override var isFlipped: Bool { flippedLayout }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) {
+        guard !isLocked(), let w = window else { return }
+        w.performDrag(with: event)
+    }
+}
+
 /// 위젯 맨 위 손잡이: 잡고 끌면 창이 움직이고, 더블클릭하면 화면 위쪽 가운데로
 final class DragHandle: NSView {
     var isLocked: () -> Bool = { false }
@@ -1031,7 +1043,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return b
     }()
     lazy var topBar: NSView = {
-        let v = NSView(frame: .zero)
+        let v = DragArea(frame: .zero)
+        v.isLocked = { [unowned self] in locked }
         v.addSubview(searchField)
         v.addSubview(finderButton)
         v.addSubview(collapseButton)
@@ -1108,7 +1121,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 떼어 낸 창에 그 부분을 넣고 크기 · 높이를 맞춤
     func showDetached(_ part: Part, view: NSView, width: CGFloat, height: CGFloat, below: (NSView, CGFloat)? = nil) {
         let p = detachedPanel(part)
-        let handle: CGFloat = 14
+        let handle: CGFloat = 20
         let belowH = below?.1 ?? 0
         let size = NSSize(width: width, height: height + belowH + handle)
         let fx: NSVisualEffectView
@@ -1160,7 +1173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var showPlayer: Bool { playerEnabled && music.isActive }
     /// 위쪽 줄 높이 (위젯이면 맨 위 손잡이 자리만큼 더)
     let barRowH: CGFloat = 40
-    var handleH: CGFloat { widget ? 14 : 0 }
+    var handleH: CGFloat { widget ? 20 : 0 }
     var topH: CGFloat { barRowH + handleH }
     /// 사용자가 아래 손잡이로 정한 앱 목록 높이 (nil 이면 내용에 맞춤)
     var userListH: CGFloat? = {
@@ -2264,7 +2277,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
         // 고정 영역들: 위 탭 줄, 왼쪽 세로 목록
-        let headerBar = FlippedView(frame: NSRect(x: 0, y: 0, width: w, height: hdrH))
+        let headerBar = DragArea(frame: NSRect(x: 0, y: 0, width: w, height: hdrH))
+        headerBar.flippedLayout = true
+        headerBar.isLocked = { [unowned self] in locked }
         headerViews.forEach(headerBar.addSubview)
         if widget { headerBar.menu = backgroundMenu() }
         let sidePane = GridView(frame: NSRect(x: 0, y: 0, width: max(0, tilesLeft - 4), height: viewH))
