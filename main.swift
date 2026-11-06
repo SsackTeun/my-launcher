@@ -1835,6 +1835,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var views: [NSView] = []
         sectionYs = []
         var y = pad
+        // 위쪽 탭 줄은 스크롤 밖 고정 영역에 (목록을 내려도 그대로)
+        var headerViews: [NSView] = []
+        var hdrH: CGFloat = 0
         // 탭: [전체 | 실행 중 N]
         if !allFolded && !searching {
             let ups = devApps.updateCount
@@ -1844,7 +1847,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             seg.controlSize = .small
             seg.sizeToFit()
             seg.setFrameOrigin(NSPoint(x: left, y: y))
-            views.append(seg)
+            headerViews.append(seg)
             // 오른쪽 끝에서부터 같은 모양의 아이콘 버튼: [탭별 버튼…] [접기/펼치기] [⊞/☰]
             var bx = rowRight
             func iconButton(_ symbol: String, _ tip: String, tint: NSColor? = nil, _ action: @escaping () -> Void) {
@@ -1855,7 +1858,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 b.toolTip = tip
                 b.frame = NSRect(x: bx - 22, y: y + (seg.frame.height - 22) / 2, width: 22, height: 22)
                 guard b.frame.minX >= seg.frame.maxX + 4 else { return }
-                views.append(b)
+                headerViews.append(b)
                 bx -= 26
             }
             iconButton(listMode ? "square.grid.2x2" : "list.bullet", listMode ? "아이콘 격자로 보기" : "세로 목록으로 보기") { [unowned self] in
@@ -1894,10 +1897,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let sep = NSBox(frame: NSRect(x: left, y: y, width: rowRight - left, height: 1))
                 sep.boxType = .separator
                 sep.alphaValue = 0.6
-                views.append(sep)
+                headerViews.append(sep)
                 y += 9
             }
         }
+        if !headerViews.isEmpty {
+            hdrH = y
+            y = 6       // 아래 스크롤 영역은 처음부터
+        }
+        // 왼쪽 세로 목록도 스크롤 밖 고정 영역에
+        var sideViews: [NSView] = []
         var sidebarBottom: CGFloat = 0
         var sidebarTop: CGFloat = 0
         var sideCatcher: ScrollCatcher?
@@ -1908,7 +1917,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             sideCatcher = catcher
             sidebarTop = y
             catcher.onScroll = { [unowned self] e in tabScroll(e) }
-            views.append(catcher)
+            sideViews.append(catcher)
             for (k, sec) in allSections.enumerated() {
                 let t = CategoryTab(title: sec.title, count: sec.ids.count, selected: k == curSel,
                                     menu: sec.cat.map { categoryMenu($0) }, fontScale: Tile.fontScale, sidebarWidth: sbW)
@@ -1921,7 +1930,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 t.dragCat = sec.cat
                 t.toolTip = sec.cat != nil ? "누르면 ‘\(sec.title)’ 보기 · 끌어서 순서 바꾸기 · 스크롤로 위아래 이동 · 앱을 끌어다 놓으면 이 카테고리로"
                                            : "누르면 ‘\(sec.title)’ 보기 · 스크롤로 위아래 이동"
-                views.append(t)
+                sideViews.append(t)
                 if let c = sec.cat { pillRects.append((c, t.frame)) }
             }
             sidebarBottom = y + CGFloat(allSections.count) * rowH
@@ -1929,7 +1938,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let vline = NSBox(frame: NSRect(x: left + sbW + 5, y: y, width: 1, height: sidebarBottom - y))
             vline.boxType = .separator
             vline.alphaValue = 0.6
-            views.append(vline)
+            sideViews.append(vline)
         }
         for sec in sections {
             let top = y
@@ -1994,19 +2003,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let lh = showPlayer ? lyrics.stripHeight : 0
         let ph = showPlayer ? playerH + lh : 0
         // 목록 높이: 내용에 맞추되 화면을 넘지 않게
-        let maxViewH = screenH - bottom - topH - ph - gripH - 80
+        let maxViewH = screenH - bottom - topH - ph - gripH - hdrH - 80
         // 아래 손잡이로 정한 높이가 있으면 그대로 (내용보다 길면 아래가 비고, 카테고리를 바꿔도 창 크기가 유지됨)
         var viewH = min(docH, maxViewH)
         if let u = userListH, docH > 0 { viewH = min(maxViewH, max(40, u)) }
+        // 왼쪽 목록이 잘리지 않을 만큼은 높게
+        if tabMode { viewH = max(viewH, min(maxViewH, sidebarBottom + 6)) }
         lastViewH = viewH
         lastDocH = maxViewH
         let grip = allFolded ? 0 : gripH
-        let h = viewH + bottom + topH + ph + grip
+        let h = viewH + bottom + topH + ph + grip + hdrH
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
+        // 고정 영역들: 위 탭 줄, 왼쪽 세로 목록
+        let headerBar = FlippedView(frame: NSRect(x: 0, y: 0, width: w, height: hdrH))
+        headerViews.forEach(headerBar.addSubview)
+        if widget { headerBar.menu = backgroundMenu() }
+        let sidePane = GridView(frame: NSRect(x: 0, y: 0, width: max(0, tilesLeft - 4), height: viewH))
         if tabMode {
-            // 스크롤로 카테고리 넘기기: 왼쪽 목록 칸 전체(창 왼쪽 끝 ~ 구분선, 위아래 끝까지)
-            sideCatcher?.frame = NSRect(x: 0, y: sidebarTop, width: left + sbW + 6, height: max(docH, viewH) - sidebarTop)
+            // 스크롤로 카테고리 넘기기: 왼쪽 칸 전체
+            sideCatcher?.frame = NSRect(x: 0, y: sidebarTop, width: sidePane.frame.width, height: viewH - sidebarTop)
+            sideViews.forEach(sidePane.addSubview)
+            sidePane.onScrollFirst = { [unowned self] e in tabScroll(e); return true }
+            // 왼쪽 목록 위에 놓기: 앱은 그 카테고리로, 카테고리는 순서 바꾸기
+            sidePane.target = { [unowned self] p in
+                pillRects.contains { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }
+                    ? dropTarget(at: p, left: tilesLeft, gridW: gridW, tile: tile, cols: lc) : nil
+            }
+            sidePane.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
+            sidePane.onMoveApp = { [unowned self] id, t in moveApp(id, toCategory: t.cat, at: t.index) }
+            sidePane.categoryTarget = { [unowned self] p in categoryDropTarget(at: p, left: left, width: sbW) }
+            sidePane.onMoveCategory = { [unowned self] from, to in moveCategory(from: from, to: to) }
         }
         lastTabMode = tabMode
         if let edge = pendingFocusEdge {
@@ -2029,7 +2056,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         grid.target = { [unowned self] p in dropTarget(at: p, left: tilesLeft, gridW: gridW, tile: tile, cols: lc) }
         grid.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
         grid.onMoveApp = { [unowned self] id, t in moveApp(id, toCategory: t.cat, at: t.index) }
-        grid.categoryTarget = { [unowned self] p in categoryDropTarget(at: p, left: left, width: rowRight - left) }
+        if !tabMode { grid.categoryTarget = { [unowned self] p in categoryDropTarget(at: p, left: left, width: rowRight - left) } }
         grid.onMoveCategory = { [unowned self] from, to in moveCategory(from: from, to: to) }
         views.forEach(grid.addSubview)
         if widget { grid.menu = backgroundMenu() }
@@ -2121,6 +2148,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         content.frame = NSRect(x: 0, y: 0, width: w, height: h)
         content.addSubview(scroll)
+        if hdrH > 0 {
+            headerBar.setFrameOrigin(NSPoint(x: 0, y: bottom + grip + viewH))
+            content.addSubview(headerBar)
+        }
+        if tabMode {
+            sidePane.setFrameOrigin(NSPoint(x: 0, y: bottom + grip))
+            content.addSubview(sidePane)
+        }
         if showBar { content.addSubview(bar) }
         // 맨 아래 손잡이 (목록을 접었을 땐 숨김)
         if grip > 0 {
