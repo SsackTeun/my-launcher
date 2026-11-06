@@ -371,7 +371,7 @@ final class DragHandle: NSView {
     }
     override func mouseEntered(with event: NSEvent) {
         hovering = true
-        toolTip = isLocked() ? "위치 고정됨 — 🔒 를 눌러 풀 수 있어요" : "잡고 끌어서 옮기기 · 더블클릭하면 화면 위쪽 가운데로"
+        toolTip = isLocked() ? "위치 고정됨 — 🔒 를 눌러 풀 수 있어요" : "잡고 끌어서 옮기기"
     }
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func cursorUpdate(with event: NSEvent) {
@@ -379,7 +379,7 @@ final class DragHandle: NSView {
     }
     override var mouseDownCanMoveWindow: Bool { false }
     override func mouseDown(with event: NSEvent) {
-        if event.clickCount == 2 { onDoubleClick?(); return }
+        // 끌어서 옮기기만 (여러 번 눌러도 다른 동작 없음)
         guard !isLocked(), let w = window else { return }
         NSCursor.closedHand.set()
         w.performDrag(with: event)
