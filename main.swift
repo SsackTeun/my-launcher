@@ -199,6 +199,15 @@ struct DropTarget {
 /// 앱 아이콘을 끌어 다른 자리·카테고리로 옮기거나, Finder에서 .app 을 끌어다 놓으면 추가
 final class GridView: NSView {
     override var isFlipped: Bool { true }
+    /// 마우스가 움직일 때 위치 (밖으로 나가면 nil) — 호버로 펼친 카테고리를 다시 접을 때 씀
+    var onMouseMoved: ((NSPoint?) -> Void)?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseMoved(with event: NSEvent) { onMouseMoved?(convert(event.locationInWindow, from: nil)) }
+    override func mouseExited(with event: NSEvent) { onMouseMoved?(nil) }
     var target: ((NSPoint) -> DropTarget?)?
     var onDropApps: (([URL], DropTarget) -> Void)?
     var onMoveApp: ((String, DropTarget) -> Void)?
@@ -283,6 +292,13 @@ let widgetLevels: [(String, NSWindow.Level)] = [
 /// 카테고리 제목 줄 (이름 + 구분선). 우클릭하면 카테고리 메뉴
 final class HeaderView: NSView {
     var onClick: (() -> Void)?
+    var onHover: (() -> Void)?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { onHover?() }
 
     init(frame: NSRect, title: String, count: Int, menu m: NSMenu, lineStart: CGFloat, folded: Bool? = nil) {
         super.init(frame: frame)
@@ -381,6 +397,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return a
     }()
     var foldedCats: Set<String> = []
+    /// 마우스를 올려서 잠깐 펼친 카테고리 (밖으로 나가면 다시 접힘)
+    var hoverCat: String?
+    var hoverTimer: Timer?        // 펼치기 대기
+    var hoverCloseTimer: Timer?   // 접기 대기
+
+    func hoverOpen(_ name: String) {
+        hoverTimer?.invalidate()
+        // 스치듯 지나갈 때 열리지 않게 잠깐 기다렸다가
+        let t = Timer(timeInterval: 0.25, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.hoverCat != name else { return }
+                self.hoverCat = name
+                self.refresh()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        hoverTimer = t
+    }
+
+    /// 펼친 카테고리 영역 밖으로 나가면 조금 뒤 다시 접음
+    func hoverMoved(_ p: NSPoint?) {
+        if p == nil { hoverTimer?.invalidate() }   // 창 밖으로 나가면 펼치기 대기도 취소
+        guard let name = hoverCat else { return }
+        let inside: Bool = {
+            guard let p, let c = cats.firstIndex(where: { $0.name == name }),
+                  let sec = sectionYs.first(where: { $0.cat == c }) else { return false }
+            return p.y >= sec.top - 2 && p.y <= sec.bottom + sectionGap
+        }()
+        hoverCloseTimer?.invalidate()
+        guard !inside else { return }
+        let t = Timer(timeInterval: 0.35, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.hoverCat == name else { return }
+                self.hoverCat = nil
+                self.refresh()
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        hoverCloseTimer = t
+    }
     lazy var collapseButton: ActionButton = {
         let b = ActionButton(title: "", symbol: "chevron.up") { [unowned self] _ in
             listCollapsed.toggle()
@@ -1191,7 +1247,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for sec in sections {
             let top = y
             let foldable = showHeaders && !searching && sec.cat != nil
-            let folded = foldable && foldedCats.contains(sec.title)
+            let folded = foldable && foldedCats.contains(sec.title) && hoverCat != sec.title
             if showHeaders {
                 let hm = sec.cat.map { categoryMenu($0) } ?? NSMenu()
                 let hv = HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
@@ -1200,10 +1256,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if foldable {
                     let name = sec.title
                     hv.onClick = { [unowned self] in
+                        // 클릭: 접힘 ↔ 펼침을 고정 (호버로 잠깐 펼친 상태에서 누르면 계속 펼쳐 둠)
                         if foldedCats.contains(name) { foldedCats.remove(name) } else { foldedCats.insert(name) }
                         d.set(Array(foldedCats), forKey: "foldedCats")
+                        hoverCat = nil
                         refresh()
                     }
+                    if folded { hv.onHover = { [unowned self] in hoverOpen(name) } }
                 }
                 views.append(hv)
                 y += headerH
@@ -1266,6 +1325,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         grid.target = { [unowned self] p in dropTarget(at: p, left: left, gridW: gridW, tile: tile) }
         grid.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
         grid.onMoveApp = { [unowned self] id, t in moveApp(id, toCategory: t.cat, at: t.index) }
+        grid.onMouseMoved = { [unowned self] p in hoverMoved(p) }
         views.forEach(grid.addSubview)
         if widget { grid.menu = backgroundMenu() }
 
