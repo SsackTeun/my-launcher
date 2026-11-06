@@ -1230,7 +1230,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 진단: 설정값 spaceMoveTest 에 "pid,데스크탑순번" 을 넣으면 그 앱 창을 옮겨 봄
         Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, let v = self.d.string(forKey: "spaceMoveTest") else { return }
+                guard let self else { return }
+                if self.d.bool(forKey: "mcDump") { self.d.removeObject(forKey: "mcDump"); Spaces.dumpMissionControl() }
+                guard let v = self.d.string(forKey: "spaceMoveTest") else { return }
                 self.d.removeObject(forKey: "spaceMoveTest")
                 let parts = v.split(separator: ",").compactMap { Int($0) }
                 guard parts.count == 2 else { return }

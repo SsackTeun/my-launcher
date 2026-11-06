@@ -287,3 +287,44 @@ extension Spaces {
         }
     }
 }
+
+
+// MARK: - 진단: Mission Control 이 열렸을 때 Dock 의 손쉬운 사용 구조를 파일로
+
+extension Spaces {
+    @MainActor
+    static func dumpMissionControl() {
+        guard let dock = NSRunningApplication.runningApplications(withBundleIdentifier: "com.apple.dock").first else { return }
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            let app = AXUIElementCreateApplication(dock.processIdentifier)
+            AXUIElementSetMessagingTimeout(app, 0.5)
+            var out = ""
+            var stack: [(AXUIElement, Int)] = [(app, 0)]
+            var n = 0
+            while let (el, depth) = stack.popLast(), n < 800 {
+                n += 1
+                func str(_ k: String) -> String {
+                    var v: CFTypeRef?
+                    AXUIElementCopyAttributeValue(el, k as CFString, &v)
+                    return (v as? String) ?? ""
+                }
+                var pv: CFTypeRef?, sv: CFTypeRef?
+                var p = CGPoint.zero, sz = CGSize.zero
+                if AXUIElementCopyAttributeValue(el, kAXPositionAttribute as CFString, &pv) == .success, let pv { AXValueGetValue(pv as! AXValue, .cgPoint, &p) }
+                if AXUIElementCopyAttributeValue(el, kAXSizeAttribute as CFString, &sv) == .success, let sv { AXValueGetValue(sv as! AXValue, .cgSize, &sz) }
+                var acts: CFArray?
+                AXUIElementCopyActionNames(el, &acts)
+                out += String(repeating: " ", count: depth) + "\(str(kAXRoleAttribute)) \(str(kAXSubroleAttribute)) t=\"\(str(kAXTitleAttribute))\" d=\"\(str(kAXDescriptionAttribute))\" id=\"\(str("AXIdentifier"))\" \(Int(p.x)),\(Int(p.y)) \(Int(sz.width))x\(Int(sz.height)) acts=\((acts as? [String] ?? []).joined(separator: ","))\n"
+                var kids: CFTypeRef?
+                AXUIElementCopyAttributeValue(el, kAXChildrenAttribute as CFString, &kids)
+                for c in ((kids as? [AXUIElement]) ?? []).reversed() { stack.append((c, depth + 1)) }
+            }
+            try? out.write(toFile: NSHomeDirectory() + "/MyLauncher/mc-dump.txt", atomically: true, encoding: .utf8)
+            // Mission Control 닫기 (Esc)
+            let esc = CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: true)
+            esc?.post(tap: .cghidEventTap)
+            CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false)?.post(tap: .cghidEventTap)
+        }
+    }
+}
