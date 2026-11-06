@@ -146,7 +146,30 @@ final class Tile: NSView {
     }
 
     var onClick: (() -> Void)?
-    private var hovering = false { didSet { needsDisplay = true } }
+    private var hovering = false { didSet { needsDisplay = true; quitButton?.isHidden = !hovering } }
+    private var quitButton: ActionButton?
+
+    /// 실행 중인 앱 종료 버튼 (마우스를 올렸을 때만 보임). ⌥ 누르고 누르면 강제 종료
+    func addQuitButton(_ quit: @escaping (_ force: Bool) -> Void) {
+        let b = ActionButton(title: "", symbol: "xmark.circle.fill") { _ in
+            quit(NSEvent.modifierFlags.contains(.option))
+        }
+        b.isBordered = false
+        b.contentTintColor = .secondaryLabelColor
+        b.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
+        b.toolTip = "종료 · ⌥ 누르고 누르면 강제 종료"
+        let rowHeight = Tile.rowHeight(icon: 0)
+        if frame.height <= rowHeight + 20 && frame.width > frame.height * 2 {
+            // 목록 보기: 줄 오른쪽 끝 (초록 점 자리)
+            b.frame = NSRect(x: frame.width - 30, y: (frame.height - 22) / 2, width: 22, height: 22)
+        } else {
+            // 격자 보기: 칸 오른쪽 위
+            b.frame = NSRect(x: frame.width - 24, y: frame.height - 24, width: 22, height: 22)
+        }
+        b.isHidden = !hovering
+        addSubview(b)
+        quitButton = b
+    }
     private let editing: Bool
 
     /// 목록 보기 한 줄 높이
@@ -1964,6 +1987,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              onRemove: { [unowned self] in remove(id) },
                              badge: devTab ? devApps.badge(id) : nil,
                              listWidth: listMode ? tile.width : nil)
+                // 실행 중 탭: 마우스를 올리면 개별 종료 버튼
+                if tab == 1 && !searching, let r = running(id), r.processIdentifier != ProcessInfo.processInfo.processIdentifier {
+                    t.addQuitButton { force in
+                        if force { r.forceTerminate() } else { r.terminate() }
+                    }
+                }
                 if devTab, let a = devApps.app(id) {
                     let have = devApps.installedVersion(id).map { "설치된 버전 \($0)" } ?? "아직 안 받음"
                     let new = devApps.latest[id].map { " · 최신 \($0)" } ?? ""
