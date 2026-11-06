@@ -43,3 +43,13 @@
 ```bash
 ./release.sh 1.2
 ```
+
+## Windows 판 (`windows/`)
+
+같은 저장소의 `windows/` 폴더에 Tauri 로 만든 Windows 판이 있어요. (Windows 10/11)
+
+- 시작 메뉴 앱을 모아 카테고리별로 실행 · 검색 · 왼쪽 목록 / 격자 · 목록 보기 · 끌어다 놓기 · 우클릭 메뉴
+- 실행 중 탭 (앱마다 종료, Shift 누르고 누르면 강제 종료) · 개발자 앱 탭 · 위젯 모드(바탕화면에 붙이기 / 항상 위)
+- 받기: [Releases](https://github.com/SsackTeun/my-launcher/releases) 의 `win-v…` 에서 `Launcher-Windows-Setup.exe`
+- 빌드는 GitHub Actions(Windows)가 해요: `windows/` 가 바뀌면 빌드, `win-v0.2.0` 같은 태그를 올리면 Releases 에 올라감
+- 로컬에서: `cd windows && npm ci && npx tauri dev` (Windows PC 에서)

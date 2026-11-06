@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>도구함</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- 위젯 모드: 잡고 끌어서 옮기는 손잡이 -->
+    <div id="grip" title="잡고 끌어서 옮기기"><span></span></div>
+
+    <header id="top">
+      <div class="search">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        <input id="q" type="search" placeholder="앱 찾기" autocomplete="off" spellcheck="false" />
+      </div>
+      <button class="icon" id="lockBtn" title="창 위치 고정"></button>
+      <button class="icon" id="collapseBtn" title="앱 목록 접기"></button>
+      <button class="icon" id="explorerBtn" title="파일 탐색기 열기"></button>
+    </header>
+
+    <nav id="tabs">
+      <div class="seg" id="seg"></div>
+      <div class="tools" id="tools"></div>
+    </nav>
+
+    <main id="body">
+      <aside id="side"></aside>
+      <section id="list" tabindex="-1"></section>
+    </main>
+
+    <!-- 아래 손잡이: 위아래로 끌어서 높이 조절 -->
+    <div id="resize" title="끌어서 크기 조절"><span></span></div>
+  </div>
+
+  <div id="menu" class="menu" hidden></div>
+  <div id="modal" class="modal" hidden></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

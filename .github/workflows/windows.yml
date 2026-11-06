@@ -1,0 +1,68 @@
+# 도구함 Windows 판 빌드: windows/ 가 바뀌면 빌드해서 결과물을 남기고,
+# win-v* 태그를 올리면 Releases 에 올림 (Mac 판의 '최신 릴리스'는 그대로 둠)
+name: Windows 빌드
+
+on:
+  push:
+    branches: [main]
+    paths: ["windows/**", ".github/workflows/windows.yml"]
+    tags: ["win-v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: windows/src-tauri
+
+      - name: 도구 설치
+        run: npm ci
+
+      - name: 빌드
+        run: npx tauri build
+
+      - name: 묶기
+        shell: pwsh
+        run: |
+          $ver = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item src-tauri/target/release/my-launcher.exe dist/MyLauncher.exe
+          Set-Content -NoNewline dist/version.txt $ver
+          Compress-Archive -Path dist/* -DestinationPath Launcher-Windows.zip -Force
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
+          Copy-Item $setup.FullName Launcher-Windows-Setup.exe
+          "VERSION=$ver" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Launcher-Windows
+          path: |
+            windows/Launcher-Windows.zip
+            windows/Launcher-Windows-Setup.exe
+
+      - name: 릴리스 올리기 (win-v 태그일 때)
+        if: startsWith(github.ref, 'refs/tags/win-v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create $env:GITHUB_REF_NAME Launcher-Windows.zip Launcher-Windows-Setup.exe `
+            --title "도구함 Windows $env:VERSION" `
+            --notes "Launcher-Windows-Setup.exe 로 설치하거나, Launcher-Windows.zip 을 풀어 MyLauncher.exe 를 실행하세요. (Windows 10/11, WebView2 필요)" `
+            --latest=false

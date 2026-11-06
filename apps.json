@@ -21,6 +21,12 @@
     "repo": "SsackTeun/my-launcher",
     "asset": "Launcher.zip",
     "app": "도구함.app",
-    "summary": "이 런처 (업데이트하면 다시 시작돼요)"
+    "summary": "이 런처 (업데이트하면 다시 시작돼요)",
+    "windows": {
+      "repo": "SsackTeun/my-launcher",
+      "asset": "Launcher-Windows.zip",
+      "exe": "MyLauncher.exe",
+      "folder": "MyLauncher"
+    }
   }
 ]

@@ -1,0 +1,39 @@
+[package]
+name = "my-launcher"
+version = "0.1.0"
+description = "도구함 (Windows) — 내 앱들을 카테고리별로 모아 실행하는 런처"
+edition = "2021"
+
+[lib]
+name = "my_launcher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+png = "0.17"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+  "Win32_Foundation",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_UI_Shell",
+  "Win32_UI_Shell_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
+  "Win32_System_Threading",
+  "Win32_System_Com",
+  "Win32_Storage_FileSystem",
+] }
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = true
