@@ -325,8 +325,17 @@ final class DragHandle: NSView {
 }
 
 /// 탭 모드의 카테고리 탭: 글자 + 작은 개수, 고르면 진하게 + 밑줄 (앱을 끌어다 놓으면 그 카테고리로)
+/// 휠 · 트랙패드 스크롤을 받아서 넘겨 주는 투명한 판 (카테고리 탭 줄 빈 곳용)
+final class ScrollCatcher: NSView {
+    var onScroll: ((NSEvent) -> Void)?
+    override func scrollWheel(with event: NSEvent) { onScroll?(event) }
+    override func hitTest(_ point: NSPoint) -> NSView? { super.hitTest(point) }
+}
+
 final class CategoryTab: NSView {
     var onClick: (() -> Void)?
+    var onScroll: ((NSEvent) -> Void)?
+    override func scrollWheel(with event: NSEvent) { if let onScroll { onScroll(event) } else { super.scrollWheel(with: event) } }
     private let selected: Bool
     private var hovering = false { didSet { updateColors() } }
     private let label: NSTextField
@@ -493,6 +502,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var catTabSel = 0
     /// 탭 모드에서 카테고리 탭들이 놓인 자리 (끌어다 놓기용)
     var pillRects: [(cat: Int, rect: NSRect)] = []
+    private var tabScrollAcc: CGFloat = 0
+    private var tabScrollAt = Date.distantPast
+
+    /// 카테고리 탭 줄 위에서 스크롤: 아래 · 왼쪽으로 쓸면 다음, 위 · 오른쪽이면 이전
+    func tabScroll(_ e: NSEvent) {
+        guard e.momentumPhase.isEmpty else { return }          // 관성 스크롤은 무시
+        if e.phase == .began { tabScrollAcc = 0 }
+        let dx = e.scrollingDeltaX, dy = e.scrollingDeltaY
+        tabScrollAcc += abs(dx) > abs(dy) ? dx : dy
+        let threshold: CGFloat = e.hasPreciseScrollingDeltas ? 28 : 0.5
+        guard abs(tabScrollAcc) >= threshold, Date().timeIntervalSince(tabScrollAt) > 0.18 else { return }
+        let step = tabScrollAcc < 0 ? 1 : -1
+        tabScrollAcc = 0
+        tabScrollAt = Date()
+        let next = min(cats.count - 1, max(0, catTabSel + step))
+        guard next != catTabSel else { return }
+        catTabSel = next
+        d.set(next, forKey: "catTabSel")
+        refresh()
+    }
 
     lazy var collapseButton: ActionButton = {
         let b = ActionButton(title: "", symbol: "chevron.up") { [unowned self] _ in
@@ -604,7 +633,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         widget = d.bool(forKey: "widget")
         widgetLevel = min(d.integer(forKey: "widgetLevel"), widgetLevels.count - 1)
         locked = d.bool(forKey: "locked")
-        if d.object(forKey: "uiScale") != nil { uiScale = CGFloat(d.double(forKey: "uiScale")) }
+        // 글자 크기: 기본은 '자동'(화면 · 아이콘 크기에 맞춤). 직접 정한 적이 있을 때만 그 값
+        uiScaleAuto = d.object(forKey: "uiScaleAuto") as? Bool ?? true
+        if !uiScaleAuto, d.object(forKey: "uiScale") != nil { uiScale = CGFloat(d.double(forKey: "uiScale")) }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🧰"
@@ -613,6 +644,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let nc = NSWorkspace.shared.notificationCenter
         for name in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             nc.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.refresh() } }
+        }
+
+        // 창을 다른 모니터로 옮기거나 화면 설정이 바뀌면 글자 크기 자동 다시 맞춤
+        NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refresh() }
+        }
+        NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: nil, queue: .main) { [weak self] n in
+            MainActor.assumeIsolated {
+                guard let self, (n.object as? NSWindow) === self.window else { return }
+                self.refresh()
+            }
         }
 
         makeWindow()
@@ -699,7 +741,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         buildStatusMenu()
     }
 
+    /// 글자 크기 자동: 창이 있는 화면이 작을수록, 아이콘이 작을수록 글자도 작게
+    var uiScaleAuto = true
+
+    func autoUIScale() -> CGFloat {
+        let h = (window?.screen ?? NSScreen.main)?.frame.height ?? 1080
+        var s: CGFloat = h <= 900 ? 0.8 : (h <= 1000 ? 0.85 : (h <= 1200 ? 0.95 : 1.05))
+        if iconSize <= 32 { s -= 0.05 } else if iconSize >= 80 { s += 0.1 }
+        return min(1.4, max(0.8, (s * 20).rounded() / 20))
+    }
+
+    /// 자동이면 지금 화면에 맞는 값으로 (화면이 바뀌거나 아이콘 크기를 바꿀 때마다)
+    func applyAutoScale() {
+        guard uiScaleAuto else { return }
+        let v = autoUIScale()
+        if v != uiScale { uiScale = v; playerBar.needsLayout = true }
+    }
+
+    func setUIScaleAuto() {
+        uiScaleAuto = true
+        d.set(true, forKey: "uiScaleAuto")
+        applyAutoScale()
+        if settings != nil { syncSettings() }
+        refresh()
+    }
+
     func setUIScale(_ v: CGFloat) {
+        uiScaleAuto = false
+        d.set(false, forKey: "uiScaleAuto")
         uiScale = min(1.4, max(0.8, (v * 10).rounded() / 10))
         d.set(Double(uiScale), forKey: "uiScale")
         if settings != nil { syncSettings() }
@@ -1269,6 +1338,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func refresh() {
+        applyAutoScale()
         let tile = Tile.size(icon: iconSize)
         let gridW = pad * 2 + CGFloat(cols) * tile.width + CGFloat(cols - 1) * gap
         // 위젯에선 아래 버튼 줄을 숨기고(빼기 편집 중일 때만 보임) 우클릭 메뉴로 대신함
@@ -1357,8 +1427,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if b.frame.maxX <= w - 4 { views.append(b) }
             }
             y += seg.frame.height + 8
+            if tabMode {
+                // 위는 '보기 종류', 아래는 '카테고리' — 얇은 선과 여백으로 나눔
+                let sep = NSBox(frame: NSRect(x: left, y: y, width: gridW - pad * 2, height: 1))
+                sep.boxType = .separator
+                sep.alphaValue = 0.6
+                views.append(sep)
+                y += 9
+            }
         }
         if tabMode {
+            // 탭 줄 전체(빈 곳 포함)에서 스크롤로 카테고리 이동
+            let catcher = ScrollCatcher(frame: NSRect(x: left, y: y, width: gridW - pad * 2, height: CategoryTab.height))
+            catcher.onScroll = { [unowned self] e in tabScroll(e) }
+            catcher.toolTip = "스크롤하면 다른 카테고리로"
+            views.append(catcher)
             // 카테고리 탭을 한 줄로. 넘치면 끝의 ⋯ 메뉴로 (고른 카테고리는 늘 보이게)
             let maxX = left + gridW - pad * 2
             let spacing: CGFloat = 16, moreW: CGFloat = 24
@@ -1396,6 +1479,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             for c in shown {
                 let t = tabs[c]
                 t.setFrameOrigin(NSPoint(x: px, y: y))
+                t.onScroll = { [unowned self] e in tabScroll(e) }
                 views.append(t)
                 pillRects.append((c, t.frame))
                 px += t.frame.width + spacing
@@ -1767,12 +1851,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fx = b.frame.maxX + 4
         }
         uiScaleLabel = NSTextField(labelWithString: "100%")
-        uiScaleLabel.frame = NSRect(x: fx + 4, y: 283, width: 50, height: 16)
+        uiScaleLabel.frame = NSRect(x: fx + 4, y: 283, width: 70, height: 16)
         v.addSubview(uiScaleLabel)
-        let reset = ActionButton(title: "기본", symbol: nil) { [unowned self] _ in setUIScale(1) }
+        let reset = ActionButton(title: "자동", symbol: nil) { [unowned self] _ in setUIScaleAuto() }
+        reset.toolTip = "화면 크기와 아이콘 크기에 맞춰 자동으로"
         reset.controlSize = .small
         reset.sizeToFit()
-        reset.setFrameOrigin(NSPoint(x: fx + 56, y: 280))
+        reset.setFrameOrigin(NSPoint(x: fx + 76, y: 280))
         v.addSubview(reset)
 
         label("음악", y: 252)
@@ -1834,7 +1919,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         dockCheck.state = hideDock ? .on : .off
         playerCheck.state = playerEnabled ? .on : .off
         lockCheck.state = locked ? .on : .off
-        uiScaleLabel.stringValue = "\(Int((uiScale * 100).rounded()))%"
+        uiScaleLabel.stringValue = (uiScaleAuto ? "자동 " : "") + "\(Int((uiScale * 100).rounded()))%"
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
         sizeSlider.doubleValue = Double(iconSize)
