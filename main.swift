@@ -1984,12 +1984,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 플레이어 + 그 아래 가사 줄
         let lh = showPlayer ? lyrics.stripHeight : 0
         let ph = showPlayer ? playerH + lh : 0
-        // 목록 높이: 내용에 맞추되 화면을 넘지 않게. 아래 손잡이로 정한 높이가 있으면 그 높이 (내용보다 길게는 안 됨)
+        // 목록 높이: 내용에 맞추되 화면을 넘지 않게
         let maxViewH = screenH - bottom - topH - ph - gripH - 80
+        // 아래 손잡이로 정한 높이가 있으면 그대로 (내용보다 길면 아래가 비고, 카테고리를 바꿔도 창 크기가 유지됨)
         var viewH = min(docH, maxViewH)
-        if let u = userListH, docH > 0 { viewH = min(viewH, max(40, u)) }
+        if let u = userListH, docH > 0 { viewH = min(maxViewH, max(40, u)) }
         lastViewH = viewH
-        lastDocH = min(docH, maxViewH)
+        lastDocH = maxViewH
         let grip = allFolded ? 0 : gripH
         let h = viewH + bottom + topH + ph + grip
 
