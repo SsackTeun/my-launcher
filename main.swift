@@ -907,7 +907,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let msg {
                 let a = NSAlert(); a.messageText = msg; a.runModal()
             }
+            // 창 정보가 늦게 바뀌는 앱도 있어 한 번 더
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { self?.refresh() }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { self?.refresh() }
         }
     }
 

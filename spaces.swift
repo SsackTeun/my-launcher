@@ -88,8 +88,9 @@ enum Spaces {
                   let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != me, regular.contains(pid),
                   let wid = w[kCGWindowNumber as String] as? Int else { continue }
             if let a = w[kCGWindowAlpha as String] as? Double, a <= 0 { continue }
+            // 진짜 창만 (주소창 추천 목록 · 알림 풍선 같은 숨은 작은 창은 빼기)
             if let b = w[kCGWindowBounds as String] as? [String: Any],
-               (b["Width"] as? Double ?? 0) < 60 || (b["Height"] as? Double ?? 0) < 40 { continue }
+               (b["Width"] as? Double ?? 0) < 200 || (b["Height"] as? Double ?? 0) < 150 { continue }
             let sps = copyForWindows(cid, 7, [wid] as CFArray)?.takeRetainedValue() as? [Int] ?? []
             for sp in sps {
                 guard let k = index[sp] else { continue }
@@ -158,6 +159,8 @@ extension Spaces {
         // 오른쪽 끝(창 버튼 · 프로필 버튼 바로 안쪽)부터 왼쪽으로, 그다음 가운데
         var x = r.maxX - 90
         while x > r.minX + 90 { xs.append(x); x -= 24 }
+        // 탭이 꽉 찬 경우: 왼쪽 창 버튼(🔴🟡🟢) 바로 오른쪽, 첫 탭 앞의 빈틈
+        xs.append(contentsOf: [r.minX + 76, r.minX + 82, r.minX + 70, r.minX + 88])
         var log: [String] = []
         defer { try? log.joined(separator: "\n").write(toFile: NSHomeDirectory() + "/MyLauncher/space-grab.txt", atomically: true, encoding: .utf8) }
         // 맨 위 가장자리(탭 위쪽 여백)부터
