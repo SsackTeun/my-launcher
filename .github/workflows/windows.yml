@@ -40,10 +40,13 @@ jobs:
       - name: 묶기
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
           $ver = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item src-tauri/target/release/my-launcher.exe dist/MyLauncher.exe
-          Set-Content -NoNewline dist/version.txt $ver
+          # 개발자 앱 탭이 설치된 버전을 알 수 있게
+          [IO.File]::WriteAllText((Join-Path (Resolve-Path dist) "version.txt"), $ver)
+          Get-ChildItem dist
           Compress-Archive -Path dist/* -DestinationPath Launcher-Windows.zip -Force
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*.exe | Select-Object -First 1
           Copy-Item $setup.FullName Launcher-Windows-Setup.exe
