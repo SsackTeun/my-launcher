@@ -225,11 +225,14 @@ final class Tile: NSView {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
     }
-    override func mouseEntered(with event: NSEvent) { hovering = true }
+    /// 스크롤로 옮겨 다니는 강조 (마우스를 떼도 남음)
+    var focused = false { didSet { if focused != oldValue { needsDisplay = true } } }
+    var onHoverIn: (() -> Void)?
+    override func mouseEntered(with event: NSEvent) { hovering = true; onHoverIn?() }
     override func mouseExited(with event: NSEvent) { hovering = false }
 
     override func draw(_ dirtyRect: NSRect) {
-        guard hovering, !editing else { return }
+        guard hovering || focused, !editing else { return }
         NSColor.labelColor.withAlphaComponent(0.08).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 12, yRadius: 12).fill()
     }
@@ -671,6 +674,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
     var sideCount = 0
+    /// 지금 화면에 놓인 앱 칸들 (스크롤 포커스 이동용) · 강조된 앱
+    var visibleTiles: [(id: String, tile: Tile)] = []
+    var focusedID: String?
+    private var focusAcc: CGFloat = 0
+
+    func setFocus(_ id: String?, reveal: Bool = false) {
+        focusedID = id
+        for (tid, t) in visibleTiles { t.focused = tid == id }
+        if reveal, let t = visibleTiles.first(where: { $0.id == id })?.tile {
+            // 강조가 화면 밖이면 목록을 따라 스크롤
+            t.scrollToVisible(t.bounds.insetBy(dx: 0, dy: -10))
+        }
+    }
+
+    /// 앱 영역에서 스크롤: 아래 · 왼쪽으로 쓸면 다음 앱, 위 · 오른쪽이면 이전 앱으로 강조를 옮김
+    func focusScroll(_ e: NSEvent) {
+        guard !visibleTiles.isEmpty, e.momentumPhase.isEmpty else { return }
+        if e.phase == .began { focusAcc = 0 }
+        let dx = e.scrollingDeltaX, dy = e.scrollingDeltaY
+        let delta = abs(dx) > abs(dy) ? dx : dy
+        var steps = 0
+        if e.hasPreciseScrollingDeltas {
+            focusAcc += delta
+            let unit: CGFloat = 16
+            while abs(focusAcc) >= unit { steps += focusAcc < 0 ? 1 : -1; focusAcc += focusAcc < 0 ? unit : -unit }
+        } else if delta != 0 {
+            steps = delta < 0 ? 1 : -1
+        }
+        guard steps != 0 else { return }
+        let cur = visibleTiles.firstIndex { $0.id == focusedID } ?? (steps > 0 ? -1 : visibleTiles.count)
+        let next = min(visibleTiles.count - 1, max(0, cur + steps))
+        setFocus(visibleTiles[next].id, reveal: true)
+    }
     /// 탭 모드에서 카테고리 탭들이 놓인 자리 (끌어다 놓기용)
     var pillRects: [(cat: Int, rect: NSRect)] = []
     private var tabScrollAcc: CGFloat = 0
@@ -1582,6 +1618,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let showHeaders = !tabMode && (searching || runningTab || cats.count > 1)
         pillRects = []
+        visibleTiles = []
 
         // 1) 카테고리마다: 제목 줄 → 열 × 행 격자(앱이 많으면 행이 늘어남)
         var views: [NSView] = []
@@ -1720,6 +1757,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if devTab && url(id) == nil { devApps.install(id) } else { launch(id) }
                 }
                 t.appID = (mine && !searching) ? id : ""   // 검색 결과에선 끌어 옮기기 안 함
+                t.onHoverIn = { [unowned self] in setFocus(id) }
+                t.focused = id == focusedID
+                visibleTiles.append((id, t))
                 views.append(t)
             }
             if sec.ids.isEmpty {
@@ -1749,13 +1789,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if tabMode {
             // 스크롤로 카테고리 넘기기: 왼쪽 목록 칸 전체(창 왼쪽 끝 ~ 구분선, 위아래 끝까지)
             sideCatcher?.frame = NSRect(x: 0, y: sidebarTop, width: left + sbW + 6, height: max(docH, viewH) - sidebarTop)
-            // 앱이 한 화면에 다 들어가면 오른쪽 앱 영역에서 스크롤해도 카테고리 넘기기
-            let fits = docH <= viewH + 1
-            grid.onScrollFirst = { [unowned self] e in
-                guard fits else { return false }
-                tabScroll(e)
-                return true
-            }
+        }
+        // 앱 영역에서 스크롤하면 강조(포커스)가 앱을 한 칸씩 옮겨 감 (필요하면 목록도 따라 스크롤)
+        grid.onScrollFirst = { [unowned self] e in
+            guard !visibleTiles.isEmpty else { return false }
+            focusScroll(e)
+            return true
         }
         grid.target = { [unowned self] p in dropTarget(at: p, left: tilesLeft, gridW: gridW, tile: tile, cols: lc) }
         grid.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
@@ -2153,6 +2192,11 @@ extension AppDelegate: NSSearchFieldDelegate {
     func control(_ control: NSControl, textView: NSTextView, doCommandBy sel: Selector) -> Bool {
         guard control === searchField else { return false }
         if sel == #selector(NSResponder.insertNewline(_:)) {
+            // 검색칸이 비어 있으면 강조된 앱 실행
+            if query.trimmingCharacters(in: .whitespaces).isEmpty, let id = focusedID {
+                launch(id)
+                return true
+            }
             // Enter: 첫 번째 결과 실행
             if let first = displaySections().flatMap(\.ids).first {
                 launch(first)
