@@ -1066,20 +1066,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     // ⧉ 떼어 낸 창: 플레이어 · 가사 줄
     enum Part { case player, lyrics }
-    var playerDetached = UserDefaults.standard.bool(forKey: "playerDetached")
-    var lyricsDetached = UserDefaults.standard.bool(forKey: "lyricsDetached")
+    var playerDetached = UserDefaults.standard.bool(forKey: "playerDetached") || UserDefaults.standard.bool(forKey: "lyricsDetached")
+    var lyricsDetached = UserDefaults.standard.bool(forKey: "lyricsDetached") || UserDefaults.standard.bool(forKey: "playerDetached")
     var playerPanel: NSWindow?
     var lyricsPanel: NSWindow?
 
+    /// 플레이어와 가사 줄은 늘 함께 떼어 내고 함께 합침 (어느 쪽 ⧉ 를 눌러도)
     func toggleDetach(_ part: Part) {
-        switch part {
-        case .player:
-            playerDetached.toggle(); d.set(playerDetached, forKey: "playerDetached")
-            playerBar.detached = playerDetached
-        case .lyrics:
-            lyricsDetached.toggle(); d.set(lyricsDetached, forKey: "lyricsDetached")
-            lyrics.model.stripDetached = lyricsDetached
-        }
+        let on = !(playerDetached || lyricsDetached)
+        playerDetached = on; lyricsDetached = on
+        d.set(on, forKey: "playerDetached"); d.set(on, forKey: "lyricsDetached")
+        playerBar.detached = on
+        lyrics.model.stripDetached = on
+        lyricsPanel?.orderOut(nil)
         refresh()
     }
 
@@ -1105,10 +1104,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 떼어 낸 창에 그 부분을 넣고 크기 · 높이를 맞춤
-    func showDetached(_ part: Part, view: NSView, width: CGFloat, height: CGFloat) {
+    func showDetached(_ part: Part, view: NSView, width: CGFloat, height: CGFloat, below: (NSView, CGFloat)? = nil) {
         let p = detachedPanel(part)
         let handle: CGFloat = 14
-        let size = NSSize(width: width, height: height + handle)
+        let belowH = below?.1 ?? 0
+        let size = NSSize(width: width, height: height + belowH + handle)
         let fx: NSVisualEffectView
         if let cur = p.contentView as? NSVisualEffectView { fx = cur } else {
             fx = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
@@ -1129,8 +1129,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }()
         grip.frame = NSRect(x: 0, y: size.height - handle, width: size.width, height: handle)
         if view.superview !== fx { fx.addSubview(view) }
-        view.frame = NSRect(x: 0, y: 0, width: width, height: height)
+        view.frame = NSRect(x: 0, y: belowH, width: width, height: height)
         view.needsLayout = true
+        // 아래에 같이 붙일 것 (플레이어 밑의 가사 줄)
+        if let (bv, bh) = below {
+            if bv.superview !== fx { fx.addSubview(bv) }
+            bv.frame = NSRect(x: 0, y: 0, width: width, height: bh)
+        }
         p.level = widget ? widgetLevels[widgetLevel].1 : .floating
         p.collectionBehavior = widget ? [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone] : []
         p.orderFrontRegardless()
@@ -2418,12 +2423,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             content.addSubview(lyrics.stripView)
         }
         // 떼어 낸 창
+        // 떼어 낸 음악 창: 위에 플레이어, 아래에 가사 줄
         if showPlayer && playerDetached {
-            showDetached(.player, view: playerBar, width: max(300, w), height: playerH)
+            showDetached(.player, view: playerBar, width: max(300, w), height: playerH,
+                         below: (lyrics.stripView, lyrics.stripHeight))
         } else { playerPanel?.orderOut(nil) }
-        if showPlayer && lyricsDetached {
-            showDetached(.lyrics, view: lyrics.stripView, width: max(300, w), height: lyrics.stripHeight)
-        } else { lyricsPanel?.orderOut(nil) }
+        lyricsPanel?.orderOut(nil)
 
         // 위쪽 줄: [🔍 앱 찾기 ........] [Finder]
         topBar.frame = NSRect(x: 0, y: h - topH, width: w, height: topH)

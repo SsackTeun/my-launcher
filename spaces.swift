@@ -187,10 +187,22 @@ extension Spaces {
 
     /// 결과: nil 이면 성공, 아니면 안내 문구
     @MainActor
-    static func move(pid: pid_t, to target: Desk, desks: [Desk], done: @escaping (String?) -> Void) {
+    static func move(pid: pid_t, to target: Desk, desks: [Desk], retried: Bool = false, done: @escaping (String?) -> Void) {
         guard AXIsProcessTrusted() else { done("손쉬운 사용 권한이 필요해요"); return }
         guard !target.fullscreen else { done("전체 화면 데스크탑으로는 옮길 수 없어요"); return }
-        guard let win = mainWindow(pid: pid), var r = axRect(win) else { done("옮길 창을 찾지 못했어요"); return }
+        guard let win = mainWindow(pid: pid), var r = axRect(win) else {
+            // 다른 데스크탑에 있는 창은 macOS 가 목록에 안 보여 줌 → 앱을 앞으로 불러 그 데스크탑으로 넘어간 뒤 다시
+            guard !retried, let app = NSRunningApplication(processIdentifier: pid) else {
+                done("옮길 창을 찾지 못했어요. 그 앱 창이 있는 데스크탑으로 가서 다시 해 보세요.")
+                return
+            }
+            app.activate()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                // 넘어간 뒤의 데스크탑 상태로 다시 계산
+                move(pid: pid, to: target, desks: load(), retried: true, done: done)
+            }
+            return
+        }
         let app = NSRunningApplication(processIdentifier: pid)
 
         // 1) 다른 모니터면 창을 그 모니터 가운데로 (그 모니터의 '지금 데스크탑'에 놓임)
