@@ -51,6 +51,90 @@ func popUp(_ menu: NSMenu, under view: NSView) {
     menu.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
 }
 
+// MARK: - 앱 칸 말풍선 (macOS 기본 말풍선 대신)
+// 기본 말풍선은 도구함이 앞에 있지 않을 때 '마우스가 나갔다'는 신호를 놓쳐 한동안 남아 있었다.
+// 이 말풍선은 마우스가 칸을 벗어나거나, 칸이 사라지거나, 누르거나 스크롤하면 바로 사라진다.
+
+final class HoverTip {
+    static let shared = HoverTip()
+    private let panel: NSPanel
+    private let label = NSTextField(wrappingLabelWithString: "")
+    private weak var owner: NSView?
+    private var showTimer: Timer?
+    private var watchTimer: Timer?
+
+    private init() {
+        panel = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: true)
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.ignoresMouseEvents = true
+        panel.level = .popUpMenu
+        panel.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
+        let bg = NSVisualEffectView()
+        bg.material = .toolTip
+        bg.state = .active
+        bg.wantsLayer = true
+        bg.layer?.cornerRadius = 6
+        bg.layer?.masksToBounds = true
+        label.font = .systemFont(ofSize: 12)
+        label.textColor = .labelColor
+        label.maximumNumberOfLines = 0
+        bg.addSubview(label)
+        panel.contentView = bg
+    }
+
+    /// 마우스가 칸에 들어왔을 때: 잠깐 머물면 보여 준다
+    func schedule(_ text: String?, for view: NSView) {
+        hide()
+        guard let text, !text.isEmpty else { return }
+        owner = view
+        showTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: false) { [weak self] _ in
+            self?.show(text)
+        }
+    }
+
+    /// view 가 주인일 때만 숨긴다 (nil 이면 무조건)
+    func hide(for view: NSView? = nil) {
+        if let view, view !== owner { return }
+        showTimer?.invalidate(); showTimer = nil
+        watchTimer?.invalidate(); watchTimer = nil
+        owner = nil
+        panel.orderOut(nil)
+    }
+
+    private func ownerContainsMouse() -> Bool {
+        guard let v = owner, let w = v.window, w.isVisible, !v.isHiddenOrHasHiddenAncestor else { return false }
+        let r = w.convertToScreen(v.convert(v.bounds, to: nil))
+        return r.contains(NSEvent.mouseLocation)
+    }
+
+    private func show(_ text: String) {
+        guard ownerContainsMouse() else { return hide() }
+        label.stringValue = text
+        let maxW: CGFloat = 320
+        let size = label.sizeThatFits(NSSize(width: maxW, height: .greatestFiniteMagnitude))
+        let pad = NSSize(width: 8, height: 5)
+        label.frame = NSRect(x: pad.width, y: pad.height, width: ceil(size.width), height: ceil(size.height))
+        let w = ceil(size.width) + pad.width * 2, h = ceil(size.height) + pad.height * 2
+        // 마우스 오른쪽 아래, 화면 밖으로 나가지 않게
+        let m = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first { $0.frame.contains(m) } ?? NSScreen.main
+        var o = NSPoint(x: m.x + 10, y: m.y - h - 18)
+        if let f = screen?.visibleFrame {
+            o.x = min(max(o.x, f.minX + 4), f.maxX - w - 4)
+            if o.y < f.minY + 4 { o.y = m.y + 18 }
+        }
+        panel.setFrame(NSRect(x: o.x, y: o.y, width: w, height: h), display: true)
+        panel.orderFrontRegardless()
+        // 보이는 동안 0.15초마다 마우스가 아직 칸 위에 있는지 확인 (나갔다는 신호를 놓쳐도 사라지게)
+        watchTimer = Timer.scheduledTimer(withTimeInterval: 0.15, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            if !self.ownerContainsMouse() { self.hide() }
+        }
+    }
+}
+
 // MARK: - 앱 하나를 나타내는 칸
 
 final class Tile: NSView {
@@ -196,6 +280,7 @@ final class Tile: NSView {
     private var dragged = false
 
     override func mouseDown(with event: NSEvent) {
+        HoverTip.shared.hide()
         downPoint = event.locationInWindow
         dragged = false
     }
@@ -228,8 +313,23 @@ final class Tile: NSView {
     /// 스크롤로 옮겨 다니는 강조 (마우스를 떼도 남음)
     var focused = false { didSet { if focused != oldValue { needsDisplay = true } } }
     var onHoverIn: (() -> Void)?
-    override func mouseEntered(with event: NSEvent) { hovering = true; onHoverIn?() }
-    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func mouseEntered(with event: NSEvent) { hovering = true; onHoverIn?(); HoverTip.shared.schedule(tip, for: self) }
+    override func mouseExited(with event: NSEvent) { hovering = false; HoverTip.shared.hide(for: self) }
+
+    /// 말풍선 글: macOS 기본 말풍선 대신 HoverTip 으로 보여 준다
+    private var tip: String?
+    override var toolTip: String? {
+        get { tip }
+        set { tip = newValue }
+    }
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        if newWindow == nil { HoverTip.shared.hide(for: self) }
+        super.viewWillMove(toWindow: newWindow)
+    }
+    override func scrollWheel(with event: NSEvent) {
+        HoverTip.shared.hide(for: self)
+        super.scrollWheel(with: event)
+    }
 
     override func draw(_ dirtyRect: NSRect) {
         guard hovering || focused, !editing else { return }
@@ -430,6 +530,44 @@ final class DragHandle: NSView {
         w.performDrag(with: event)
         NSCursor.openHand.set()
     }
+}
+
+/// 아래 손잡이: 위아래로 끌면 앱 목록 높이 조절, 더블클릭하면 자동 높이
+final class ResizeHandle: NSView {
+    var onBegin: (() -> Void)?
+    var onDrag: ((CGFloat) -> Void)?      // 처음 누른 곳에서 아래로 움직인 거리
+    var onReset: (() -> Void)?
+    private var startY: CGFloat?
+    private var hovering = false { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let w: CGFloat = hovering ? 44 : 36
+        let r = NSRect(x: (bounds.width - w) / 2, y: (bounds.height - 5) / 2, width: w, height: 5)
+        NSColor.labelColor.withAlphaComponent(hovering ? 0.45 : 0.22).setFill()
+        NSBezierPath(roundedRect: r, xRadius: 2.5, yRadius: 2.5).fill()
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect, .cursorUpdate], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        toolTip = "위아래로 끌어서 목록 높이 조절 · 더블클릭하면 내용에 맞춤"
+    }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func cursorUpdate(with event: NSEvent) { NSCursor.resizeUpDown.set() }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { onReset?(); return }
+        startY = NSEvent.mouseLocation.y
+        onBegin?()
+    }
+    override func mouseDragged(with event: NSEvent) {
+        guard let s = startY else { return }
+        onDrag?(s - NSEvent.mouseLocation.y)
+    }
+    override func mouseUp(with event: NSEvent) { startY = nil }
 }
 
 /// 탭 모드의 카테고리 탭: 글자 + 작은 개수, 고르면 진하게 + 밑줄 (앱을 끌어다 놓으면 그 카테고리로)
@@ -843,6 +981,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let barRowH: CGFloat = 40
     var handleH: CGFloat { widget ? 14 : 0 }
     var topH: CGFloat { barRowH + handleH }
+    /// 사용자가 아래 손잡이로 정한 앱 목록 높이 (nil 이면 내용에 맞춤)
+    var userListH: CGFloat? = {
+        let v = UserDefaults.standard.double(forKey: "userListH")
+        return v > 0 ? CGFloat(v) : nil
+    }()
+    var lastViewH: CGFloat = 0
+    var lastDocH: CGFloat = 0
+    private var resizeStartH: CGFloat = 0
+    let gripH: CGFloat = 12
+    lazy var resizeHandle: ResizeHandle = {
+        let r = ResizeHandle(frame: .zero)
+        r.onBegin = { [unowned self] in resizeStartH = lastViewH }
+        r.onDrag = { [unowned self] dy in
+            let v = max(40, min(lastDocH, resizeStartH + dy)).rounded()
+            guard abs(v - (userListH ?? lastViewH)) >= 2 else { return }
+            userListH = v
+            d.set(Double(v), forKey: "userListH")
+            refresh()
+        }
+        r.onReset = { [unowned self] in
+            userListH = nil
+            d.removeObject(forKey: "userListH")
+            refresh()
+        }
+        return r
+    }()
     lazy var dragHandle: DragHandle = {
         let h = DragHandle(frame: .zero)
         h.isLocked = { [unowned self] in locked }
@@ -951,6 +1115,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         w.setFrameAutosaveName(autosave)
         window = w
         topBar.removeFromSuperview()
+        resizeHandle.removeFromSuperview()
         root = nil
 
         // 위젯은 Dock 에 안 보이게, 일반 창은 Dock 에 보이게
@@ -1819,8 +1984,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 플레이어 + 그 아래 가사 줄
         let lh = showPlayer ? lyrics.stripHeight : 0
         let ph = showPlayer ? playerH + lh : 0
-        let viewH = min(docH, screenH - bottom - topH - ph - 80)
-        let h = viewH + bottom + topH + ph
+        // 목록 높이: 내용에 맞추되 화면을 넘지 않게. 아래 손잡이로 정한 높이가 있으면 그 높이 (내용보다 길게는 안 됨)
+        let maxViewH = screenH - bottom - topH - ph - gripH - 80
+        var viewH = min(docH, maxViewH)
+        if let u = userListH, docH > 0 { viewH = min(viewH, max(40, u)) }
+        lastViewH = viewH
+        lastDocH = min(docH, maxViewH)
+        let grip = allFolded ? 0 : gripH
+        let h = viewH + bottom + topH + ph + grip
 
         let grid = GridView(frame: NSRect(x: 0, y: 0, width: w, height: max(docH, viewH)))
         if tabMode {
@@ -1853,7 +2024,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         views.forEach(grid.addSubview)
         if widget { grid.menu = backgroundMenu() }
 
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: bottom, width: w, height: viewH))
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: bottom + grip, width: w, height: viewH))
         scroll.documentView = grid
         scroll.hasVerticalScroller = docH > viewH
         scroll.drawsBackground = false
@@ -1893,7 +2064,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         info.font = .systemFont(ofSize: 11)
         info.sizeToFit()
 
-        let bar = NSView(frame: NSRect(x: 0, y: 0, width: w, height: barH))
+        let bar = NSView(frame: NSRect(x: 0, y: grip, width: w, height: barH))
         let line = NSBox(frame: NSRect(x: 0, y: barH - 1, width: w, height: 1))
         line.boxType = .separator
         bar.addSubview(line)
@@ -1941,6 +2112,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         content.frame = NSRect(x: 0, y: 0, width: w, height: h)
         content.addSubview(scroll)
         if showBar { content.addSubview(bar) }
+        // 맨 아래 손잡이 (목록을 접었을 땐 숨김)
+        if grip > 0 {
+            resizeHandle.frame = NSRect(x: 0, y: 0, width: w, height: grip)
+            content.addSubview(resizeHandle)
+            resizeHandle.needsDisplay = true
+        }
         if ph > 0 {
             playerBar.frame = NSRect(x: 0, y: h - topH - playerH, width: w, height: playerH)
             content.addSubview(playerBar)
