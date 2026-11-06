@@ -560,14 +560,23 @@ final class ResizeHandle: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 { onReset?(); return }
-        startY = NSEvent.mouseLocation.y
+        guard let w = window else { return }
+        let start = NSEvent.mouseLocation.y
+        startY = start
         onBegin?()
+        NSCursor.resizeUpDown.push()
+        // 손을 뗄 때까지 마우스를 직접 따라감 (끄는 동안 창 크기가 바뀌어도 끊기지 않게)
+        w.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { [weak self] ev, stop in
+            guard let self, let ev else { stop.pointee = true; return }
+            if ev.type == .leftMouseUp {
+                stop.pointee = true
+                return
+            }
+            self.onDrag?(start - NSEvent.mouseLocation.y)
+        }
+        NSCursor.pop()
+        startY = nil
     }
-    override func mouseDragged(with event: NSEvent) {
-        guard let s = startY else { return }
-        onDrag?(s - NSEvent.mouseLocation.y)
-    }
-    override func mouseUp(with event: NSEvent) { startY = nil }
 }
 
 /// 탭 모드의 카테고리 탭: 글자 + 작은 개수, 고르면 진하게 + 밑줄 (앱을 끌어다 놓으면 그 카테고리로)
