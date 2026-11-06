@@ -1347,7 +1347,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let allFolded = listCollapsed && !searching && !editing
         let showBar = (!widget || editing) && !allFolded
         let bottom = showBar ? barH : 0
-        let w = max(gridW, (showBar || allFolded) ? 340 : 0)
+        // 폭은 접든 펴든 같게 (접으면 높이만 줄어듦). 위쪽 줄 버튼들이 들어갈 최소 폭은 보장
+        let w = max(gridW, showBar ? 340 : 300)
         let left = (w - gridW) / 2 + pad
         var sections = allFolded ? [] : displaySections()
         let runningTab = (tab == 1 || tab == 2) && !searching
