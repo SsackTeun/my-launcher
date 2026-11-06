@@ -289,6 +289,41 @@ let widgetLevels: [(String, NSWindow.Level)] = [
     ("항상 위에", .floating),
 ]
 
+/// 위젯 맨 위 손잡이: 잡고 끌면 창이 움직이고, 더블클릭하면 화면 위쪽 가운데로
+final class DragHandle: NSView {
+    var isLocked: () -> Bool = { false }
+    var onDoubleClick: (() -> Void)?
+    private var hovering = false { didSet { needsDisplay = true } }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let w: CGFloat = hovering ? 44 : 36
+        let r = NSRect(x: (bounds.width - w) / 2, y: (bounds.height - 5) / 2, width: w, height: 5)
+        NSColor.labelColor.withAlphaComponent(hovering ? (isLocked() ? 0.2 : 0.45) : 0.22).setFill()
+        NSBezierPath(roundedRect: r, xRadius: 2.5, yRadius: 2.5).fill()
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect, .cursorUpdate], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) {
+        hovering = true
+        toolTip = isLocked() ? "위치 고정됨 — 🔒 를 눌러 풀 수 있어요" : "잡고 끌어서 옮기기 · 더블클릭하면 화면 위쪽 가운데로"
+    }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func cursorUpdate(with event: NSEvent) {
+        (isLocked() ? NSCursor.arrow : NSCursor.openHand).set()
+    }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { onDoubleClick?(); return }
+        guard !isLocked(), let w = window else { return }
+        NSCursor.closedHand.set()
+        w.performDrag(with: event)
+        NSCursor.openHand.set()
+    }
+}
+
 /// 탭 모드의 카테고리 탭: 글자 + 작은 개수, 고르면 진하게 + 밑줄 (앱을 끌어다 놓으면 그 카테고리로)
 final class CategoryTab: NSView {
     var onClick: (() -> Void)?
@@ -538,7 +573,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return b
     }()
     var showPlayer: Bool { playerEnabled && music.isActive }
-    let topH: CGFloat = 40
+    /// 위쪽 줄 높이 (위젯이면 맨 위 손잡이 자리만큼 더)
+    let barRowH: CGFloat = 40
+    var handleH: CGFloat { widget ? 14 : 0 }
+    var topH: CGFloat { barRowH + handleH }
+    lazy var dragHandle: DragHandle = {
+        let h = DragHandle(frame: .zero)
+        h.isLocked = { [unowned self] in locked }
+        h.onDoubleClick = { [unowned self] in
+            guard !locked, let s = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
+            window.setFrameTopLeftPoint(NSPoint(x: s.midX - window.frame.width / 2, y: s.maxY - 8))
+        }
+        return h
+    }()
 
     let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44, headerH: CGFloat = 28, sectionGap: CGFloat = 10
 
@@ -665,6 +712,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func toggleLocked() {
         locked.toggle()
         updateLockButton()
+        dragHandle.needsDisplay = true
         if settings != nil { syncSettings() }
         d.set(locked, forKey: "locked")
         window.isMovableByWindowBackground = !locked
@@ -1539,15 +1587,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 위쪽 줄: [🔍 앱 찾기 ........] [Finder]
         topBar.frame = NSRect(x: 0, y: h - topH, width: w, height: topH)
+        // 위젯: 맨 위 손잡이
+        if widget {
+            if dragHandle.superview !== topBar { topBar.addSubview(dragHandle) }
+            dragHandle.frame = NSRect(x: 0, y: barRowH, width: w, height: handleH)
+            dragHandle.needsDisplay = true
+        } else {
+            dragHandle.removeFromSuperview()
+        }
         let fb = finderButton.frame.size
-        finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 10, y: (topH - fb.height) / 2))
+        finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 10, y: (barRowH - fb.height) / 2))
         collapseButton.image = NSImage(systemSymbolName: allFolded ? "chevron.down" : "chevron.up", accessibilityDescription: nil)
         collapseButton.toolTip = allFolded ? "앱 목록 펼치기" : "앱 목록 접기"
-        collapseButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 28, y: (topH - 24) / 2))
-        bulkButton.setFrameOrigin(NSPoint(x: collapseButton.frame.minX - 26, y: (topH - 24) / 2))
+        collapseButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 28, y: (barRowH - 24) / 2))
+        bulkButton.setFrameOrigin(NSPoint(x: collapseButton.frame.minX - 26, y: (barRowH - 24) / 2))
         updateLockButton()
-        lockButton.setFrameOrigin(NSPoint(x: bulkButton.frame.minX - 26, y: (topH - 24) / 2))
-        searchField.frame = NSRect(x: 10, y: (topH - 24) / 2, width: lockButton.frame.minX - 14, height: 24)
+        lockButton.setFrameOrigin(NSPoint(x: bulkButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        searchField.frame = NSRect(x: 10, y: (barRowH - 24) / 2, width: lockButton.frame.minX - 14, height: 24)
         scroll.contentView.scroll(to: .zero)
 
         buildStatusMenu()
