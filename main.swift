@@ -1616,8 +1616,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 refresh()
             }
             if tab != 0 || cats.count > 1 {
-                iconButton(catTabMode ? "rectangle.expand.vertical" : "sidebar.left",
-                           catTabMode ? "모두 펼치기 (묶음을 세로로 쭉)" : "모두 접기 (왼쪽 목록에서 하나씩 보기)") { [unowned self] in
+                // 같은 사이드바 아이콘, 켜져 있으면 파란색 (모양이 바뀌면 다른 버튼으로 착각하기 쉬워서)
+                iconButton("sidebar.left",
+                           catTabMode ? "왼쪽 목록 켜짐 — 누르면 끄고 모두 펼쳐 보기" : "왼쪽 목록으로 보기 (하나씩 골라 보기)",
+                           tint: catTabMode ? .controlAccentColor : nil) { [unowned self] in
                     catTabMode.toggle()
                     d.set(catTabMode, forKey: "catTabMode")
                     refresh()
