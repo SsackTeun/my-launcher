@@ -50,15 +50,15 @@ enum Spaces {
         let names = displayNames()
         let multi = displays.count > 1
 
-        // 1) 데스크탑 순서 (Mission Control 순서, 모니터마다 1부터)
+        // 1) 데스크탑 순서: Mission Control 처럼 모니터를 다 합쳐서 1, 2, 3 … 이어서
         var desks: [Desk] = []
+        var n = 0
         var index: [Int: Int] = [:]
         var fullscreen: [Int] = []
         for disp in displays {
             let uuid = (disp["Display Identifier"] as? String ?? "").uppercased()
             let dname = names[uuid] ?? (names.count == 1 ? names.values.first : nil) ?? "모니터"
             let cur = (disp["Current Space"] as? [String: Any])?["ManagedSpaceID"] as? Int
-            var n = 0
             var order = 0
             for sp in disp["Spaces"] as? [[String: Any]] ?? [] {
                 guard let id = sp["ManagedSpaceID"] as? Int else { continue }
