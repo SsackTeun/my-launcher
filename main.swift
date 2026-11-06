@@ -872,6 +872,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// ⓧ 로 끌 때 물어보기 (설정)
     var confirmQuit: Bool = UserDefaults.standard.object(forKey: "confirmQuit") as? Bool ?? true
     var confirmCheck: NSButton!
+    /// 도구함 다시 시작: 1초 뒤 다시 켜도록 맡겨 두고 끔
+    @objc func restartSelf() {
+        let path = Bundle.main.bundlePath
+        let sh = Process()
+        sh.executableURL = URL(fileURLWithPath: "/bin/sh")
+        sh.arguments = ["-c", "sleep 1; open \"\(path)\""]
+        try? sh.run()
+        NSApp.terminate(nil)
+    }
+
+    /// 앱 다시 시작: 정상 종료 → 완전히 꺼지면 다시 켬 (10초 안에 안 꺼지면 그만둠)
+    func restartApp(_ r: NSRunningApplication) {
+        guard let url = r.bundleURL else { return }
+        r.terminate()
+        var tries = 0
+        Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { t in
+            tries += 1
+            if r.isTerminated {
+                t.invalidate()
+                let cfg = NSWorkspace.OpenConfiguration()
+                cfg.activates = true
+                NSWorkspace.shared.openApplication(at: url, configuration: cfg)
+            } else if tries > 40 {
+                t.invalidate()   // 저장할지 묻는 중이거나 응답 없음
+            }
+        }
+    }
+
     /// 데스크탑 탭: 앱 창을 다른 데스크탑으로 (제목 막대 잡고 넘기는 방식이라 잠깐 화면이 넘어감)
     func moveToDesk(_ id: String, _ k: Int) {
         guard desks.indices.contains(k), let r = running(id) else { return }
@@ -1423,6 +1451,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(bulk)
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
+        m.addItem(.separator())
+        m.addItem(Item("도구함 다시 시작") { [unowned self] in restartSelf() })
     }
 
     func categoriesMenu() -> NSMenu {
@@ -1732,6 +1762,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let u = url(id) { m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) }) }
             m.addItem(.separator())
             m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
+            m.addItem(Item("다시 시작") { [unowned self] in restartApp(r) })
             m.addItem(Item("종료") { r.terminate() })
         }
     }
@@ -1943,6 +1974,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let r {
                 m.addItem(.separator())
                 m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
+                m.addItem(Item("다시 시작") { [unowned self] in restartApp(r) })
                 m.addItem(Item("종료") { r.terminate() })
             }
         }
@@ -2471,6 +2503,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         login.state = loginEnabled ? .on : .off
         m.addItem(login)
         m.addItem(.separator())
+        m.addItem(Item("도구함 다시 시작") { [unowned self] in restartSelf() })
         m.addItem(Item("도구함 종료") { NSApp.terminate(nil) })
         statusItem.menu = m
     }
@@ -2746,6 +2779,9 @@ func buildMainMenu(_ delegate: AppDelegate) {
     wid.target = delegate
     appMenu.addItem(wid)
     appMenu.addItem(.separator())
+    let rs = NSMenuItem(title: "도구함 다시 시작", action: #selector(AppDelegate.restartSelf), keyEquivalent: "r")
+    rs.target = delegate
+    appMenu.addItem(rs)
     appMenu.addItem(withTitle: "도구함 종료", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
     appItem.submenu = appMenu
     let editItem = NSMenuItem()
