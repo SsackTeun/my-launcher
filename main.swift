@@ -289,6 +289,52 @@ let widgetLevels: [(String, NSWindow.Level)] = [
     ("항상 위에", .floating),
 ]
 
+/// 탭 모드의 카테고리 탭 (누르면 그 카테고리만 보임, 앱을 끌어다 놓으면 그 카테고리로)
+final class CategoryPill: NSView {
+    var onClick: (() -> Void)?
+    private let selected: Bool
+    private var hovering = false { didSet { needsDisplay = true } }
+    private let label: NSTextField
+
+    init(title: String, count: Int, selected: Bool, menu m: NSMenu, fontScale: CGFloat) {
+        self.selected = selected
+        label = NSTextField(labelWithString: "\(title)  \(count)")
+        super.init(frame: .zero)
+        menu = m
+        label.font = .systemFont(ofSize: 12 * fontScale, weight: selected ? .semibold : .regular)
+        label.textColor = selected ? .white : .labelColor
+        label.sizeToFit()
+        let h = ceil(label.frame.height) + 8
+        frame.size = NSSize(width: ceil(label.frame.width) + 20, height: h)
+        label.setFrameOrigin(NSPoint(x: 10, y: (h - label.frame.height) / 2))
+        addSubview(label)
+        toolTip = "누르면 ‘\(title)’ 만 보기 · 우클릭: 카테고리 메뉴 · 앱을 끌어다 놓으면 이 카테고리로"
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let r = bounds.insetBy(dx: 0.5, dy: 0.5)
+        let path = NSBezierPath(roundedRect: r, xRadius: r.height / 2, yRadius: r.height / 2)
+        if selected {
+            NSColor.controlAccentColor.setFill(); path.fill()
+        } else {
+            NSColor.labelColor.withAlphaComponent(hovering ? 0.14 : 0.07).setFill(); path.fill()
+        }
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick?() }
+    }
+}
+
 /// 카테고리 제목 줄 (이름 + 구분선). 우클릭하면 카테고리 메뉴
 final class HeaderView: NSView {
     var onClick: (() -> Void)?
@@ -397,46 +443,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return a
     }()
     var foldedCats: Set<String> = []
-    /// 마우스를 올려서 잠깐 펼친 카테고리 (밖으로 나가면 다시 접힘)
-    var hoverCat: String?
-    var hoverTimer: Timer?        // 펼치기 대기
-    var hoverCloseTimer: Timer?   // 접기 대기
+    /// 카테고리 보기: 모두 펼치기(세로) / 모두 접기(가로 탭)
+    var catTabMode = false
+    var catTabSel = 0
+    /// 탭 모드에서 카테고리 탭들이 놓인 자리 (끌어다 놓기용)
+    var pillRects: [(cat: Int, rect: NSRect)] = []
 
-    func hoverOpen(_ name: String) {
-        hoverTimer?.invalidate()
-        // 스치듯 지나갈 때 열리지 않게 잠깐 기다렸다가
-        let t = Timer(timeInterval: 0.25, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.hoverCat != name else { return }
-                self.hoverCat = name
-                self.refresh()
-            }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        hoverTimer = t
-    }
-
-    /// 펼친 카테고리 영역 밖으로 나가면 조금 뒤 다시 접음
-    func hoverMoved(_ p: NSPoint?) {
-        if p == nil { hoverTimer?.invalidate() }   // 창 밖으로 나가면 펼치기 대기도 취소
-        guard let name = hoverCat else { return }
-        let inside: Bool = {
-            guard let p, let c = cats.firstIndex(where: { $0.name == name }),
-                  let sec = sectionYs.first(where: { $0.cat == c }) else { return false }
-            return p.y >= sec.top - 2 && p.y <= sec.bottom + sectionGap
-        }()
-        hoverCloseTimer?.invalidate()
-        guard !inside else { return }
-        let t = Timer(timeInterval: 0.35, repeats: false) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, self.hoverCat == name else { return }
-                self.hoverCat = nil
-                self.refresh()
-            }
-        }
-        RunLoop.main.add(t, forMode: .common)
-        hoverCloseTimer = t
-    }
     lazy var collapseButton: ActionButton = {
         let b = ActionButton(title: "", symbol: "chevron.up") { [unowned self] _ in
             listCollapsed.toggle()
@@ -551,6 +563,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if d.object(forKey: "player") != nil { playerEnabled = d.bool(forKey: "player") }
         listCollapsed = d.bool(forKey: "listCollapsed")
         tab = d.integer(forKey: "listTab")
+        catTabMode = d.bool(forKey: "catTabMode")
+        catTabSel = d.integer(forKey: "catTabSel")
         devApps.load()
         foldedCats = Set(d.stringArray(forKey: "foldedCats") ?? [])
         if playerEnabled { music.start(); lyrics.start() }
@@ -865,6 +879,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// 마우스 위치 → 어느 카테고리의 몇 번째 자리인지
     func dropTarget(at p: NSPoint, left: CGFloat, gridW: CGFloat, tile: NSSize) -> DropTarget? {
+        if let pill = pillRects.first(where: { $0.rect.insetBy(dx: -3, dy: -3).contains(p) }) {
+            return DropTarget(cat: pill.cat, index: cats[pill.cat].ids.count, section: pill.rect.insetBy(dx: -3, dy: -3),
+                              caret: NSRect(x: pill.rect.maxX + 2, y: pill.rect.minY, width: 3, height: pill.rect.height))
+        }
         guard !sectionYs.isEmpty else { return nil }
         let sec = sectionYs.first { p.y < $0.bottom + sectionGap / 2 } ?? sectionYs.last!
         let count = cats[sec.cat].ids.count
@@ -1203,10 +1221,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let bottom = showBar ? barH : 0
         let w = max(gridW, (showBar || allFolded) ? 340 : 0)
         let left = (w - gridW) / 2 + pad
-        let sections = allFolded ? [] : displaySections()
+        var sections = allFolded ? [] : displaySections()
         let runningTab = (tab == 1 || tab == 2) && !searching
         let devTab = tab == 2 && !searching
-        let showHeaders = searching || runningTab || cats.count > 1
+        // 모두 접기 = 가로 탭 모드: 고른 카테고리 하나만, 제목 줄 없이
+        let tabMode = catTabMode && tab == 0 && !searching && cats.count > 1 && !allFolded
+        if tabMode {
+            catTabSel = min(max(0, catTabSel), cats.count - 1)
+            sections = sections.filter { $0.cat == catTabSel }
+        }
+        let showHeaders = !tabMode && (searching || runningTab || cats.count > 1)
+        pillRects = []
 
         // 1) 카테고리마다: 제목 줄 → 열 × 행 격자(앱이 많으면 행이 늘어남)
         var views: [NSView] = []
@@ -1257,38 +1282,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     bx = b.frame.maxX + 4
                 }
             }
+            // 전체 탭: 모두 접기(가로 탭) / 모두 펼치기
+            if tab == 0 && cats.count > 1 {
+                let b = ActionButton(title: catTabMode ? "모두 펼치기" : "모두 접기",
+                                     symbol: catTabMode ? "list.bullet.below.rectangle" : "rectangle.split.3x1") { [unowned self] _ in
+                    catTabMode.toggle()
+                    d.set(catTabMode, forKey: "catTabMode")
+                    refresh()
+                }
+                b.controlSize = .small
+                b.font = .systemFont(ofSize: 11)
+                b.toolTip = catTabMode ? "카테고리를 세로로 모두 펼쳐 보기" : "카테고리를 가로 탭으로 접어서 하나씩 보기"
+                b.sizeToFit()
+                b.setFrameOrigin(NSPoint(x: max(seg.frame.maxX + 8, left + gridW - pad * 2 - b.frame.width),
+                                         y: y + (seg.frame.height - b.frame.height) / 2))
+                if b.frame.maxX <= w - 4 { views.append(b) }
+            }
             y += seg.frame.height + 8
+        }
+        if tabMode {
+            // 카테고리 탭들을 가로로 (넘치면 다음 줄로)
+            var px = left, rowH: CGFloat = 0
+            let maxX = left + gridW - pad * 2
+            for (c, cat) in cats.enumerated() {
+                let pill = CategoryPill(title: cat.name, count: cat.ids.count, selected: c == catTabSel,
+                                        menu: categoryMenu(c), fontScale: Tile.fontScale)
+                if px > left && px + pill.frame.width > maxX { px = left; y += rowH + 6; rowH = 0 }
+                pill.setFrameOrigin(NSPoint(x: px, y: y))
+                pill.onClick = { [unowned self] in
+                    catTabSel = c
+                    d.set(c, forKey: "catTabSel")
+                    refresh()
+                }
+                views.append(pill)
+                pillRects.append((c, pill.frame))
+                px += pill.frame.width + 6
+                rowH = max(rowH, pill.frame.height)
+            }
+            y += rowH + 10
         }
         for sec in sections {
             let top = y
-            let foldable = showHeaders && !searching && sec.cat != nil
-            let folded = foldable && foldedCats.contains(sec.title) && hoverCat != sec.title
             if showHeaders {
                 let hm = sec.cat.map { categoryMenu($0) } ?? NSMenu()
-                let hv = HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
-                                    title: sec.title, count: sec.ids.count,
-                                    menu: hm, lineStart: left, folded: foldable ? folded : nil)
-                if foldable {
-                    let name = sec.title
-                    hv.onClick = { [unowned self] in
-                        // 클릭: 접힘 ↔ 펼침을 고정 (호버로 잠깐 펼친 상태에서 누르면 계속 펼쳐 둠)
-                        if foldedCats.contains(name) { foldedCats.remove(name) } else { foldedCats.insert(name) }
-                        d.set(Array(foldedCats), forKey: "foldedCats")
-                        hoverCat = nil
-                        refresh()
-                    }
-                    if folded { hv.onHover = { [unowned self] in hoverOpen(name) } }
-                }
-                views.append(hv)
+                views.append(HeaderView(frame: NSRect(x: 0, y: y, width: w, height: headerH),
+                                        title: sec.title, count: sec.ids.count,
+                                        menu: hm, lineStart: left))
                 y += headerH
             }
             let tilesTop = y
-            if folded {
-                // 접힌 카테고리: 제목 줄만
-                if let c = sec.cat { sectionYs.append((c, top, tilesTop, y)) }
-                y += sectionGap
-                continue
-            }
             let minRows = (searching || runningTab) ? 1 : rows
             let catRows = max(minRows, Int(ceil(Double(sec.ids.count) / Double(cols))))
             for (i, id) in sec.ids.enumerated() {
@@ -1340,7 +1382,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         grid.target = { [unowned self] p in dropTarget(at: p, left: left, gridW: gridW, tile: tile) }
         grid.onDropApps = { [unowned self] urls, t in add(urls, to: t.cat) }
         grid.onMoveApp = { [unowned self] id, t in moveApp(id, toCategory: t.cat, at: t.index) }
-        grid.onMouseMoved = { [unowned self] p in hoverMoved(p) }
         views.forEach(grid.addSubview)
         if widget { grid.menu = backgroundMenu() }
 
