@@ -448,6 +448,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.frame.size = NSSize(width: 24, height: 24)
         return b
     }()
+    /// 위치 고정 자물쇠 (🔒 고정 · 🔓 풀림)
+    lazy var lockButton: ActionButton = {
+        let b = ActionButton(title: "", symbol: "lock.open") { [unowned self] _ in toggleLocked() }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+        b.frame.size = NSSize(width: 24, height: 24)
+        return b
+    }()
+    func updateLockButton() {
+        lockButton.image = NSImage(systemSymbolName: locked ? "lock.fill" : "lock.open", accessibilityDescription: nil)
+        lockButton.contentTintColor = locked ? .controlAccentColor : nil
+        lockButton.toolTip = locked ? "창 위치 고정됨 — 누르면 풀려요" : "누르면 창 위치를 고정해요"
+    }
     lazy var bulkButton: ActionButton = {
         let b = ActionButton(title: "", symbol: "rectangle.stack.badge.minus") { b in popUp(BulkWindows.menu(), under: b) }
         b.isBordered = false
@@ -462,6 +475,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         v.addSubview(finderButton)
         v.addSubview(collapseButton)
         v.addSubview(bulkButton)
+        v.addSubview(lockButton)
         return v
     }()
     var installed: [(id: String, name: String)]?
@@ -626,6 +640,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func toggleLocked() {
         locked.toggle()
+        updateLockButton()
         if settings != nil { syncSettings() }
         d.set(locked, forKey: "locked")
         window.isMovableByWindowBackground = !locked
@@ -1433,7 +1448,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         collapseButton.toolTip = allFolded ? "앱 목록 펼치기" : "앱 목록 접기"
         collapseButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 28, y: (topH - 24) / 2))
         bulkButton.setFrameOrigin(NSPoint(x: collapseButton.frame.minX - 26, y: (topH - 24) / 2))
-        searchField.frame = NSRect(x: 10, y: (topH - 24) / 2, width: bulkButton.frame.minX - 14, height: 24)
+        updateLockButton()
+        lockButton.setFrameOrigin(NSPoint(x: bulkButton.frame.minX - 26, y: (topH - 24) / 2))
+        searchField.frame = NSRect(x: 10, y: (topH - 24) / 2, width: lockButton.frame.minX - 14, height: 24)
         scroll.contentView.scroll(to: .zero)
 
         buildStatusMenu()
