@@ -911,6 +911,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.frame.size = NSSize(width: 24, height: 24)
         return b
     }()
+    lazy var windowPiPButton: ActionButton = {
+        // 일반 창(게임 등)을 작은 창으로 비춰 보기
+        let b = ActionButton(title: "", symbol: "rectangle.on.rectangle") { b in WindowPiP.shared.showPicker(from: b) }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
+        b.contentTintColor = .secondaryLabelColor
+        b.toolTip = "창 PIP: 다른 앱 창(게임 등)을 항상 위 작은 창으로 띄우기"
+        b.frame.size = NSSize(width: 24, height: 24)
+        return b
+    }()
+    lazy var netflixButton: ActionButton = {
+        // Netflix 영상 창 (YouTube 와 같은 작은 창 PIP)
+        let b = ActionButton(title: "N", symbol: nil) { _ in VideoWindow.netflix.show() }
+        b.isBordered = false
+        b.font = .systemFont(ofSize: 15, weight: .heavy)
+        b.contentTintColor = NSColor(red: 0.9, green: 0.04, blue: 0.08, alpha: 1)
+        b.attributedTitle = NSAttributedString(string: "N", attributes: [
+            .font: NSFont.systemFont(ofSize: 15, weight: .heavy),
+            .foregroundColor: NSColor(red: 0.9, green: 0.04, blue: 0.08, alpha: 1)])
+        b.toolTip = "Netflix 열기 (영상을 작은 창으로 띄울 수 있어요)"
+        b.frame.size = NSSize(width: 24, height: 24)
+        return b
+    }()
     // 앱 목록 접기 (전체 / 카테고리별)
     var listCollapsed = false
     /// 앱 목록 탭: 0 전체 · 1 실행 중 · 2 개발자 앱
@@ -1151,6 +1174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         v.addSubview(searchField)
         v.addSubview(finderButton)
         v.addSubview(youtubeButton)
+        v.addSubview(netflixButton)
+        v.addSubview(windowPiPButton)
         v.addSubview(collapseButton)
         v.addSubview(bulkButton)
         v.addSubview(lockButton)
@@ -1319,6 +1344,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         YouTubeWindow.shared.onChange = { [unowned self] in buildStatusMenu() }
+        VideoWindow.netflix.onChange = { [unowned self] in buildStatusMenu() }
         startMemoryWatch()
         OnScreen.start()
         if let data = d.data(forKey: "categories"), let c = try? JSONDecoder().decode([Category].self, from: data), !c.isEmpty {
@@ -1881,6 +1907,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LiveMenu { [unowned self] m in
             guard let r = running(id) else { return }
             fillAppMenu(m, pid: r.processIdentifier)
+            m.addItem(Item("이 앱 창을 PIP로 띄우기…") { WindowPiP.shared.showPicker(from: nil, onlyPID: r.processIdentifier) })
             let addTo = NSMenuItem(title: "도구함에 넣기", action: nil, keyEquivalent: "")
             let sub = NSMenu()
             for (c, cat) in cats.enumerated() {
@@ -2102,6 +2129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let r {
                 m.addItem(.separator())
+                m.addItem(Item("이 앱 창을 PIP로 띄우기…") { WindowPiP.shared.showPicker(from: nil, onlyPID: r.processIdentifier) })
                 m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
                 m.addItem(Item("다시 시작") { [unowned self] in restartApp(r) })
                 m.addItem(Item("종료") { r.terminate() })
@@ -2572,7 +2600,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         collapseButton.image = NSImage(systemSymbolName: allFolded ? "chevron.down" : "chevron.up", accessibilityDescription: nil)
         collapseButton.toolTip = allFolded ? "앱 목록 펼치기" : "앱 목록 접기"
         youtubeButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
-        collapseButton.setFrameOrigin(NSPoint(x: youtubeButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        netflixButton.setFrameOrigin(NSPoint(x: youtubeButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        windowPiPButton.setFrameOrigin(NSPoint(x: netflixButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        collapseButton.setFrameOrigin(NSPoint(x: windowPiPButton.frame.minX - 26, y: (barRowH - 24) / 2))
         bulkButton.setFrameOrigin(NSPoint(x: collapseButton.frame.minX - 26, y: (barRowH - 24) / 2))
         updateLockButton()
         lockButton.setFrameOrigin(NSPoint(x: bulkButton.frame.minX - 26, y: (barRowH - 24) / 2))
@@ -2640,6 +2670,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let an = Item("    쇼츠 끝나면 자동 넘김") { yt.autoNextShorts.toggle() }
             an.state = yt.autoNextShorts ? .on : .off
             m.addItem(an)
+        }
+        let nf = VideoWindow.netflix
+        m.addItem(Item("창 PIP로 띄우기…") { WindowPiP.shared.showPicker(from: nil) })
+        m.addItem(Item("Netflix 창 열기") { nf.show() })
+        if nf.isOpen {
+            m.addItem(Item(nf.inMini ? "    큰 창으로 돌아가기" : "    작은 창으로 보기 (PIP)") { nf.toggleMini() })
+            m.addItem(Item("    Netflix 끄기") { nf.quit() })
         }
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
         pl.state = playerEnabled ? .on : .off

@@ -1,12 +1,13 @@
-// YouTube 영상 창: 도구함 안의 브라우저 창(WKWebView)에서 youtube.com 을 열고,
-// [PIP] 버튼을 누르면 보던 영상을 macOS 화면 속 화면(구석의 작은 창)으로 띄움
+// 영상 창 (YouTube · Netflix): 도구함 안의 브라우저 창(WKWebView)에서 사이트를 열고,
+// [PIP] 버튼을 누르면 보던 영상을 항상 위에 뜨는 작은 창으로 띄움.
+// 사이트마다 다른 것(영상 요소 · 플레이어 조작 · 저장 이름)은 site 로 나눔
 import Cocoa
 import WebKit
 
 /// 페이지 → 앱 메시지 (WKUserContentController 가 대상을 강하게 잡아서 약한 참조로 감쌈)
 private final class WeakHandler: NSObject, WKScriptMessageHandler {
-    weak var target: YouTubeWindow?
-    init(_ t: YouTubeWindow) { target = t }
+    weak var target: VideoWindow?
+    init(_ t: VideoWindow) { target = t }
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
         let body = message.body as? String ?? ""
         MainActor.assumeIsolated { target?.received(body) }
@@ -23,10 +24,21 @@ final class YTWebView: WKWebView {
     override func cursorUpdate(with e: NSEvent) { if !mouseOff { super.cursorUpdate(with: e) } }
 }
 
+/// 예전 이름 (도구함 다른 곳에서 YouTube 창을 이 이름으로 부름)
+typealias YouTubeWindow = VideoWindow
+
 @MainActor
-final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate, NSTextFieldDelegate {
-    static let shared = YouTubeWindow()
-    static let home = URL(string: "https://www.youtube.com/")!
+final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDelegate, NSTextFieldDelegate {
+    enum Site { case youtube, netflix }
+    let site: Site
+    static let shared = VideoWindow(site: .youtube)
+    static let netflix = VideoWindow(site: .netflix)
+    init(site: Site) { self.site = site; super.init() }
+
+    var name: String { site == .youtube ? "YouTube" : "Netflix" }
+    var home: URL { URL(string: site == .youtube ? "https://www.youtube.com/" : "https://www.netflix.com/browse")! }
+    /// 설정 이름 앞머리 (YouTube 는 예전 그대로 yt…)
+    private func k(_ s: String) -> String { (site == .youtube ? "yt" : "nf") + s }
 
     private var webView: YTWebView?
     private var window: NSWindow?
@@ -37,15 +49,16 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
 
     /// 옵션: 영상을 누르면 바로 작은 창(PIP)으로
     var autoPiP: Bool {
-        get { UserDefaults.standard.bool(forKey: "ytAutoPiP") }
-        set { UserDefaults.standard.set(newValue, forKey: "ytAutoPiP"); autoCheck?.state = newValue ? .on : .off; onChange?() }
+        get { UserDefaults.standard.bool(forKey: k("AutoPiP")) }
+        set { UserDefaults.standard.set(newValue, forKey: k("AutoPiP")); autoCheck?.state = newValue ? .on : .off; onChange?() }
     }
     /// 이미 자동으로 작은 창에 띄운 영상 (큰 창으로 돌아온 뒤 같은 영상으로 또 들어가지 않게)
     private var autoDoneFor: String?
 
-    /// 주소에서 영상 ID (watch?v=… · shorts/…)
+    /// 주소에서 영상 ID (YouTube watch?v=… · shorts/… , Netflix watch/숫자)
     static func videoID(_ u: URL?) -> String? {
         guard let u, let c = URLComponents(url: u, resolvingAgainstBaseURL: false) else { return nil }
+        if u.path.hasPrefix("/watch/") { return String(u.path.dropFirst("/watch/".count)) }
         if u.path == "/watch" { return c.queryItems?.first { $0.name == "v" }?.value }
         if u.path.hasPrefix("/shorts/") { return String(u.path.dropFirst("/shorts/".count)) }
         return nil
@@ -74,7 +87,7 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
       document.addEventListener('leavepictureinpicture', () => send(false), true);
       // 영상 크기(비율)를 알게 되거나 바뀌면 알려 줌 → 작은 창 비율 맞춤
       const ratio = e => { const v = e.target;
-        if (v && v.tagName === 'VIDEO' && v.videoWidth && v.videoHeight && (v.classList.contains('html5-main-video') || v.closest('#shorts-player')))
+        if (v && v.tagName === 'VIDEO' && v.videoWidth && v.videoHeight && (v.classList.contains('html5-main-video') || v.closest('#shorts-player') || v.closest('.watch-video')))
           try { webkit.messageHandlers.yt.postMessage('ar:' + (v.videoWidth / v.videoHeight)); } catch(_) {} };
       document.addEventListener('loadedmetadata', ratio, true);
       document.addEventListener('resize', ratio, true);
@@ -162,7 +175,7 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         }
         backButton = button("chevron.left", "뒤로") { [unowned self] in webView?.goBack() }
         forwardButton = button("chevron.right", "앞으로") { [unowned self] in webView?.goForward() }
-        let homeB = button("house", "YouTube 홈") { [unowned self] in webView?.load(URLRequest(url: Self.home)) }
+        let homeB = button("house", "\(name) 홈") { [unowned self] in webView?.load(URLRequest(url: home)) }
         let reload = button("arrow.clockwise", "새로 고침") { [unowned self] in webView?.reload() }
         var x: CGFloat = 8
         for b in [backButton!, forwardButton!, homeB, reload] {
@@ -208,7 +221,7 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         address = NSTextField(frame: NSRect(x: x + 6, y: (barH - 24) / 2,
                                             width: pipButton.frame.minX - x - 120, height: 24))
         address.autoresizingMask = [.width]
-        address.placeholderString = "YouTube 링크 붙여 넣기 또는 검색"
+        address.placeholderString = "\(name) 링크 붙여 넣기 또는 검색"
         address.bezelStyle = .roundedBezel
         address.focusRingType = .none
         address.lineBreakMode = .byTruncatingTail
@@ -226,13 +239,13 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         let w = NSWindow(contentRect: content.frame,
                          styleMask: [.titled, .closable, .miniaturizable, .resizable],
                          backing: .buffered, defer: false)
-        w.title = "YouTube"
+        w.title = name
         w.contentView = content
         w.contentMinSize = NSSize(width: 480, height: 320)
         w.isReleasedWhenClosed = false
         w.delegate = self
-        w.setFrameAutosaveName("YouTubeVideoWindow")
-        if UserDefaults.standard.string(forKey: "NSWindow Frame YouTubeVideoWindow") == nil { w.center() }
+        w.setFrameAutosaveName("\(name)VideoWindow")
+        if UserDefaults.standard.string(forKey: "NSWindow Frame \(name)VideoWindow") == nil { w.center() }
         window = w
 
         urlWatch = wv.observe(\.url, options: [.new]) { [weak self] _, _ in
@@ -248,9 +261,9 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
                 }
             }
         }
-        let start = Self.resumeURL()
+        let start = resumeURL()
         autoDoneFor = Self.videoID(start)       // 이어 보기로 연 영상은 자동 PIP 안 함 (누른 게 아니라서)
-        wv.load(URLRequest(url: start ?? Self.home))     // 마지막에 보던 영상 · 위치부터
+        wv.load(URLRequest(url: start ?? home))     // 마지막에 보던 영상 · 위치부터
         saveBlockedUntil = Date().addingTimeInterval(8)   // 첫 영상이 저장값으로 맞춰지기 전엔 저장 안 함
         startStateWatch(true)
         syncBar()
@@ -307,7 +320,7 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         else if body.hasPrefix("ar:"), let r = Double(body.dropFirst(3)) {
             if inMini { setAspect(r) }
             // 새 영상(광고 → 본편 포함)이 시작될 때마다 최고 화질로
-            if bestQuality { applyBestSoon() }
+            if site == .youtube && bestQuality { applyBestSoon() }
             applySavedSoon()
             // 자동 PIP: 새로 누른 영상이 재생 준비되면 작은 창으로
             if autoPiP, !inMini, let id = Self.videoID(webView?.url), id != autoDoneFor {
@@ -339,8 +352,8 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         if let url = Self.url(from: s) {
             wv.load(URLRequest(url: url))
         } else {
-            var c = URLComponents(string: "https://www.youtube.com/results")!
-            c.queryItems = [URLQueryItem(name: "search_query", value: s)]
+            var c = URLComponents(string: site == .youtube ? "https://www.youtube.com/results" : "https://www.netflix.com/search")!
+            c.queryItems = [URLQueryItem(name: site == .youtube ? "search_query" : "q", value: s)]
             if let u = c.url { wv.load(URLRequest(url: u)) }
         }
         window?.makeFirstResponder(wv)
@@ -383,7 +396,7 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
                                              y: (bar.bounds.height - autoCheck.frame.height) / 2))
             address.frame.size.width = autoCheck.frame.minX - address.frame.minX - 8
         }
-        window?.title = (wv.title?.isEmpty == false) ? wv.title! : "YouTube"
+        window?.title = (wv.title?.isEmpty == false) ? wv.title! : name
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -401,7 +414,25 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     // MARK: 작은 창 (도구함의 PIP)
 
     // 영상만 창 전체에 꽉 차게 (나머지는 숨김). 결과: 영상 가로/세로 비율, 영상이 없으면 0
-    private static let miniCSS = """
+    private var miniCSS: String { site == .youtube ? Self.ytMiniCSS : Self.nfMiniCSS }
+
+    /// Netflix: 영상과 그 위 상자들에 표시(data-mini-v / data-mini-a)를 달아서 같은 방식으로 꽉 채움
+    private static let nfMiniCSS = """
+    html.ytmini, html.ytmini body { overflow: hidden !important; background: #000 !important; }
+    html.ytmini body * { visibility: hidden !important; }
+    html.ytmini video[data-mini-v] {
+      visibility: visible !important; position: fixed !important; inset: 0 !important;
+      left: 0 !important; top: 0 !important; width: 100vw !important; height: 100vh !important;
+      object-fit: contain !important; z-index: 2147483647 !important; background: #000 !important; transform: none !important; }
+    html.ytmini [data-mini-a] { overflow: visible !important; clip-path: none !important; transform: none !important;
+      contain: none !important; filter: none !important; will-change: auto !important; }
+    /* 자막: Netflix 는 영상 위에 따로 글자 층(.player-timedtext)을 얹음 → 그 층은 보이게, 영상보다 위에 */
+    html.ytmini .player-timedtext { visibility: visible !important; position: fixed !important; inset: 0 !important;
+      z-index: 2147483647 !important; pointer-events: none !important; }
+    html.ytmini .player-timedtext * { visibility: visible !important; }
+    """
+
+    private static let ytMiniCSS = """
     html.ytmini, html.ytmini body { overflow: hidden !important; background: #000 !important; }
     html.ytmini body * { visibility: hidden !important; }
     /* 일반 영상은 #movie_player, 쇼츠는 #shorts-player (쇼츠 페이지에도 빈 #movie_player 가 숨어 있어서 나눔) */
@@ -417,19 +448,24 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     html.ytmini:not(.ytmini-s) #movie_player, html.ytmini.ytmini-s #shorts-player, html.ytmini .html5-video-container {
       overflow: visible !important; clip-path: none !important; transform: none !important; contain: none !important;
       filter: none !important; will-change: auto !important; }
+    /* 자막: YouTube 도 영상 위 글자 층(.ytp-caption-window-container) → 보이게, 영상보다 위에 */
+    html.ytmini .ytp-caption-window-container { visibility: visible !important; z-index: 2147483647 !important;
+      position: absolute !important; inset: 0 !important; pointer-events: none !important; }
+    html.ytmini .ytp-caption-window-container * { visibility: visible !important; }
     """
 
     private func applyMiniCSS(_ on: Bool, _ done: @escaping (Double) -> Void) {
         let js = """
-        const css = \(Self.jsString(Self.miniCSS));
+        const css = \(Self.jsString(miniCSS));
         let st = document.getElementById('__ytmini');
         if (\(on) && !st) { st = document.createElement('style'); st.id = '__ytmini'; st.textContent = css; document.documentElement.appendChild(st); }
         if (!\(on) && st) st.remove();
         document.documentElement.classList.toggle('ytmini', \(on));
         document.documentElement.classList.toggle('ytmini-s', \(on) && location.pathname.startsWith('/shorts'));
         window.dispatchEvent(new Event('resize'));
-        const v = (location.pathname.startsWith('/shorts') ? document.querySelector('#shorts-player video') : document.querySelector('#movie_player video.html5-main-video'))
-               || [...document.querySelectorAll('video')].find(x => x.readyState > 0);
+        const v = \(jsV) || [...document.querySelectorAll('video')].find(x => x.readyState > 0);
+        document.querySelectorAll('[data-mini-v],[data-mini-a]').forEach(e => { e.removeAttribute('data-mini-v'); e.removeAttribute('data-mini-a'); });
+        if (\(on) && v) { v.setAttribute('data-mini-v', ''); for (let e = v.parentElement; e && e !== document.body; e = e.parentElement) e.setAttribute('data-mini-a', ''); }
         if (!v) return 0;
         return v.videoWidth && v.videoHeight ? v.videoWidth / v.videoHeight : -1;
         """
@@ -500,7 +536,7 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     private func logMini() {
         guard inMini, let p = mini, let wv = webView else { return }
         let js = """
-        (() => { const v = (location.pathname.startsWith('/shorts') ? document.querySelector('#shorts-player video') : document.querySelector('#movie_player video.html5-main-video'));
+        (() => { const v = \(jsV);
           if (!v) return 'novideo'; const r = v.getBoundingClientRect();
           return JSON.stringify({rect: [r.x, r.y, r.width, r.height], inner: [innerWidth, innerHeight], video: [v.videoWidth, v.videoHeight], url: location.href}); })()
         """
@@ -547,12 +583,14 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         p.contentView!.layer?.masksToBounds = true
         p.contentView!.layer?.backgroundColor = NSColor.black.cgColor
         p.minSize = NSSize(width: 200, height: 112)
-        p.setFrameAutosaveName("YouTubeMiniWindow")
+        p.setFrameAutosaveName(site == .youtube ? "YouTubeMiniWindow" : "\(name)MiniWindow")
         let o = MiniOverlay(frame: p.contentView!.bounds)
         o.autoresizingMask = [.width, .height]
-        o.onClick = { [unowned self] in webView?.evaluateJavaScript(Self.mediaJS("v.paused ? v.play() : v.pause()")) }
+        o.accent = site == .youtube ? NSColor(red: 1, green: 0, blue: 0.2, alpha: 1)       // YouTube 빨강
+                                    : NSColor(red: 0.9, green: 0.04, blue: 0.08, alpha: 1)  // Netflix 빨강
+        o.onClick = { [unowned self] in playPause() }
         o.onDoubleClick = { [unowned self] in exitMini(showMain: true) }
-        o.onSeekTo = { [unowned self] t in webView?.evaluateJavaScript(Self.mediaJS("v.currentTime = \(t)")) }
+        o.onSeekTo = { [unowned self] t in seek(t) }
         o.onPlayPause = o.onClick
         o.onExpand = o.onDoubleClick
         o.onQuality = { [unowned self] v in showQualityMenu(from: v) }
@@ -570,7 +608,16 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     }
 
     // 재생바용: 지금 시간 · 길이 · 멈춤 여부 (생방송이면 되감을 수 있는 범위)
-    private static let timeJS = """
+    private var timeJS: String { site == .youtube ? Self.ytTimeJS : Self.nfTimeJS }
+    private static let nfTimeJS = """
+    (() => { const p = \(nfPlayer); const v = \(nfVideo); if (!v) return null;
+      const t = p && p.getCurrentTime ? p.getCurrentTime() / 1000 : v.currentTime;
+      const d = p && p.getDuration ? p.getDuration() / 1000 : (isFinite(v.duration) ? v.duration : 0);
+      const paused = p && p.isPaused ? p.isPaused() : v.paused;
+      const vol = (p && p.getVolume ? p.getVolume() : v.volume) * 100, muted = p && p.isMuted ? p.isMuted() : v.muted;
+      return [t, 0, d, paused ? 1 : 0, 0, vol, muted ? 1 : 0]; })()
+    """
+    private static let ytTimeJS = """
     (() => { const v = (location.pathname.startsWith('/shorts') ? document.querySelector('#shorts-player video') : document.querySelector('#movie_player video.html5-main-video'));
       if (!v) return null;
       let s = 0, e = v.duration;
@@ -587,8 +634,8 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
         guard on else { return }
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
-                guard let self, self.inMini, let o = self.miniOverlay, o.showing else { return }
-                self.webView?.evaluateJavaScript(Self.timeJS) { r, _ in
+                guard let self, self.inMini, let o = self.miniOverlay else { return }
+                self.webView?.evaluateJavaScript(self.timeJS) { r, _ in
                     guard let a = r as? [NSNumber], a.count == 7 else { return }
                     MainActor.assumeIsolated {
                         o.update(time: a[0].doubleValue, start: a[1].doubleValue, end: a[2].doubleValue,
@@ -603,14 +650,22 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
 
     // MARK: 마지막 상태 기억 (볼륨 · 음소거 · 재생 속도 · 보던 영상과 위치)
 
-    private enum Key {
-        static let vol = "ytVolume", muted = "ytMuted", rate = "ytRate", url = "ytLastURL", time = "ytLastTime"
-    }
+    private var keyVol: String { k("Volume") }
+    private var keyMuted: String { k("Muted") }
+    private var keyRate: String { k("Rate") }
+    private var keyURL: String { k("LastURL") }
+    private var keyTime: String { k("LastTime") }
     private var stateTimer: Timer?
     /// 새 영상이 막 시작된 직후엔 YouTube 기본값이 잠깐 보이므로 저장하지 않음
     private var saveBlockedUntil = Date.distantPast
 
-    private static let stateJS = """
+    private var stateJS: String { site == .youtube ? Self.ytStateJS : Self.nfStateJS }
+    private static let nfStateJS = """
+    (() => { const p = \(nfPlayer); const v = \(nfVideo); if (!p || !v || !p.getVolume) return null;
+      return JSON.stringify({ vol: p.getVolume() * 100, muted: p.isMuted(), t: p.getCurrentTime() / 1000,
+        live: false, url: location.href, ad: false }); })()
+    """
+    private static let ytStateJS = """
     (() => { const mp = (location.pathname.startsWith('/shorts') ? document.getElementById('shorts-player') : document.getElementById('movie_player'));
       const v = (location.pathname.startsWith('/shorts') ? document.querySelector('#shorts-player video') : document.querySelector('#movie_player video.html5-main-video'));
       if (!mp || !mp.getVolume || !v) return null;
@@ -629,21 +684,21 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     }
 
     private func saveState() {
-        webView?.evaluateJavaScript(Self.stateJS) { [weak self] r, _ in
+        webView?.evaluateJavaScript(stateJS) { [weak self] r, _ in
             MainActor.assumeIsolated {
                 guard let self, let str = r as? String, let d = str.data(using: .utf8),
                       let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any],
                       o["ad"] as? Bool != true else { return }
                 let ud = UserDefaults.standard
                 if Date() > self.saveBlockedUntil {
-                    if let v = o["vol"] as? Double { ud.set(v, forKey: Key.vol) }
-                    if let m = o["muted"] as? Bool { ud.set(m, forKey: Key.muted) }
-                    if let r = o["rate"] as? Double, r > 0 { ud.set(r, forKey: Key.rate) }
+                    if let v = o["vol"] as? Double { ud.set(v, forKey: self.keyVol) }
+                    if let m = o["muted"] as? Bool { ud.set(m, forKey: self.keyMuted) }
+                    if let r = o["rate"] as? Double, r > 0 { ud.set(r, forKey: self.keyRate) }
                 }
-                if let u = o["url"] as? String, u.contains("/watch") || u.contains("/shorts/") {
-                    ud.set(u, forKey: Key.url)
+                if let u = o["url"] as? String, u.contains("/watch") || u.contains("/shorts/") {   // Netflix 도 /watch/숫자
+                    ud.set(u, forKey: self.keyURL)
                     let live = o["live"] as? Bool ?? false
-                    ud.set(live ? 0 : (o["t"] as? Double ?? 0), forKey: Key.time)
+                    ud.set(live ? 0 : (o["t"] as? Double ?? 0), forKey: self.keyTime)
                 }
             }
         }
@@ -652,12 +707,15 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     /// 새 영상마다 저장해 둔 볼륨 · 음소거 · 속도로 맞춤
     private func applySavedSoon() {
         let ud = UserDefaults.standard
-        guard ud.object(forKey: Key.vol) != nil else { return }
-        let vol = Int(ud.double(forKey: Key.vol).rounded())
-        let muted = ud.bool(forKey: Key.muted)
-        let rate = ud.object(forKey: Key.rate) as? Double ?? 1
+        guard ud.object(forKey: keyVol) != nil else { return }
+        let vol = Int(ud.double(forKey: keyVol).rounded())
+        let muted = ud.bool(forKey: keyMuted)
+        let rate = ud.object(forKey: keyRate) as? Double ?? 1
         saveBlockedUntil = Date().addingTimeInterval(5)
-        let js = """
+        let js = site == .netflix ? """
+        (() => { const p = \(Self.nfPlayer); if (!p || !p.setVolume) return 0;
+          p.setVolume(\(Double(vol) / 100)); if (p.setMuted) p.setMuted(\(muted)); return 1; })()
+        """ : """
         (() => { const mp = (location.pathname.startsWith('/shorts') ? document.getElementById('shorts-player') : document.getElementById('movie_player')); if (!mp || !mp.setVolume) return 0;
           mp.setVolume(\(vol)); \(muted ? "mp.mute();" : "mp.unMute();")
           if (mp.setPlaybackRate && mp.getPlaybackRate && mp.getPlaybackRate() !== \(rate)) mp.setPlaybackRate(\(rate));
@@ -669,13 +727,13 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     }
 
     /// 마지막에 보던 영상 주소 (보던 위치 t= 붙여서)
-    private static func resumeURL() -> URL? {
+    private func resumeURL() -> URL? {
         let ud = UserDefaults.standard
-        guard let s = ud.string(forKey: Key.url), var c = URLComponents(string: s) else { return nil }
-        let t = Int(ud.double(forKey: Key.time))
+        guard let s = ud.string(forKey: keyURL), var c = URLComponents(string: s) else { return nil }
+        let t = Int(ud.double(forKey: keyTime))
         if s.contains("/watch") {
             var items = (c.queryItems ?? []).filter { $0.name != "t" }
-            if t > 5 { items.append(URLQueryItem(name: "t", value: "\(t)s")) }
+            if t > 5 { items.append(URLQueryItem(name: "t", value: site == .youtube ? "\(t)s" : "\(t)")) }
             c.queryItems = items
         }
         return c.url
@@ -737,9 +795,17 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     // 작은 창의 볼륨 조절
     private func setVolume(_ v: Double) {
         let n = Int(v.rounded())
+        if site == .netflix {
+            webView?.evaluateJavaScript("(() => { const p = \(Self.nfPlayer); if (p && p.setVolume) { p.setVolume(\(Double(n) / 100)); if (\(n) > 0 && p.isMuted && p.isMuted()) p.setMuted(false); } })()")
+            return
+        }
         webView?.evaluateJavaScript("(() => { const mp = (location.pathname.startsWith('/shorts') ? document.getElementById('shorts-player') : document.getElementById('movie_player')); if (mp && mp.setVolume) { mp.setVolume(\(n)); if (\(n) > 0 && mp.isMuted()) mp.unMute(); } })()")
     }
     private func toggleMute() {
+        if site == .netflix {
+            webView?.evaluateJavaScript("(() => { const p = \(Self.nfPlayer); if (p && p.setMuted) p.setMuted(!p.isMuted()); })()")
+            return
+        }
         webView?.evaluateJavaScript("(() => { const mp = (location.pathname.startsWith('/shorts') ? document.getElementById('shorts-player') : document.getElementById('movie_player')); if (mp && mp.isMuted) { mp.isMuted() ? mp.unMute() : mp.mute(); } })()")
     }
 
@@ -811,6 +877,14 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     /// 화질 메뉴: 지금 영상이 지원하는 화질 + '항상 최고 화질' 체크
     func showQualityMenu(from view: NSView) {
         guard let wv = webView else { return }
+        if site == .netflix {
+            let m = NSMenu()
+            let it = NSMenuItem(title: "화질은 Netflix 가 인터넷 속도에 맞춰 자동으로 골라요", action: nil, keyEquivalent: "")
+            it.isEnabled = false
+            m.addItem(it)
+            m.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
+            return
+        }
         wv.evaluateJavaScript(Self.qualityInfoJS) { [weak self] r, _ in
             MainActor.assumeIsolated {
                 guard let self else { return }
@@ -852,6 +926,33 @@ final class YouTubeWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindo
     private static func mediaJS(_ body: String) -> String {
         "(() => { const v = (location.pathname.startsWith('/shorts') ? document.querySelector('#shorts-player video') : document.querySelector('#movie_player video.html5-main-video')) || document.querySelector('video'); if (v) { \(body); } })()"
     }
+
+    // MARK: 사이트별 영상 · 플레이어
+
+    /// 지금 보고 있는 영상 요소 (JS 식)
+    private var jsV: String {
+        site == .youtube
+            ? "(location.pathname.startsWith('/shorts') ? document.querySelector('#shorts-player video') : document.querySelector('#movie_player video.html5-main-video'))"
+            : Self.nfVideo
+    }
+    private static let nfVideo = "(document.querySelector('.watch-video video') || document.querySelector('video'))"
+    /// Netflix 플레이어 (영상 위치를 직접 바꾸면 Netflix 가 오류를 내서, 재생 · 이동 · 볼륨은 이걸로)
+    private static let nfPlayer = "(() => { try { const vp = netflix.appContext.state.playerApp.getAPI().videoPlayer; const ids = vp.getAllPlayerSessionIds(); return ids.length ? vp.getVideoPlayerBySessionId(ids[ids.length - 1]) : null; } catch (e) { return null; } })()"
+
+    private func playPause() {
+        if site == .netflix {
+            webView?.evaluateJavaScript("(() => { const p = \(Self.nfPlayer); if (p && p.isPaused) { p.isPaused() ? p.play() : p.pause(); } else { const v = \(Self.nfVideo); if (v) v.paused ? v.play() : v.pause(); } })()")
+        } else {
+            webView?.evaluateJavaScript(Self.mediaJS("v.paused ? v.play() : v.pause()"))
+        }
+    }
+    private func seek(_ t: Double) {
+        if site == .netflix {
+            webView?.evaluateJavaScript("(() => { const p = \(Self.nfPlayer); if (p && p.seek) p.seek(\(Int(t * 1000))); })()")
+        } else {
+            webView?.evaluateJavaScript(Self.mediaJS("v.currentTime = \(t)"))
+        }
+    }
 }
 
 /// 작은 창 위에 덮는 판: 끌면 창이 움직이고, 한 번 누르면 재생/멈춤, 두 번 누르면 큰 창.
@@ -886,6 +987,15 @@ final class MiniOverlay: NSView {
     private var volButton: NSButton!
     private let volSlider = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     var onClose: (() -> Void)?
+    /// 일반 창 PIP 처럼 영상이 아닐 때: 재생바 · 화질 · 가운데 재생 버튼 없이 이동 · 크기 · 닫기만
+    func useWindowMode(closeTip: String, expandTip: String) {
+        bar.isHidden = true
+        controls[3].isHidden = true          // 화질 버튼
+        centerButton?.isHidden = true
+        dimView.isHidden = true
+        controls[0].toolTip = closeTip
+        controls[1].toolTip = expandTip
+    }
     private var controls: [NSView] = []
     private let bar = NSView()
     private let slider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
@@ -989,7 +1099,7 @@ final class MiniOverlay: NSView {
         g.startPoint = CGPoint(x: 0.5, y: 0); g.endPoint = CGPoint(x: 0.5, y: 1)
         bar.layer = g
         bar.autoresizingMask = [.width, .maxYMargin]
-        let pb = ActionButton(title: "", symbol: "play.fill") { [unowned self] _ in onPlayPause?() }
+        let pb = ActionButton(title: "", symbol: "play.fill") { [unowned self] _ in onPlayPause?(); flipPaused() }
         pb.isBordered = false
         pb.symbolConfiguration = .init(pointSize: 13, weight: .bold)
         pb.contentTintColor = .white
@@ -1002,7 +1112,11 @@ final class MiniOverlay: NSView {
             l.shadow = { let s = NSShadow(); s.shadowColor = .black; s.shadowBlurRadius = 2; return s }()
         }
         endLabel.alignment = .right
-        slider.controlSize = .small
+        let pc = ProgressCell()
+        pc.fill = accent
+        slider.cell = pc
+        slider.minValue = 0
+        slider.maxValue = 1
         slider.isContinuous = true
         slider.target = self
         slider.action = #selector(scrub)
@@ -1042,9 +1156,30 @@ final class MiniOverlay: NSView {
             v.alphaValue = 0
             edgeBars.append(v)
         }
+        // 멈춤 표시: 화면을 살짝 어둡게 (컨트롤보다 아래)
+        dimView.wantsLayer = true
+        dimView.layer?.backgroundColor = NSColor.black.cgColor
+        dimView.alphaValue = 0
+        dimView.frame = bounds
+        dimView.autoresizingMask = [.width, .height]
+        addSubview(dimView)
+        // 가운데 큰 재생 / 멈춤 버튼
+        let cb = ActionButton(title: "", symbol: "play.fill") { [unowned self] _ in onPlayPause?(); flipPaused() }
+        cb.isBordered = false
+        cb.symbolConfiguration = .init(pointSize: 24, weight: .bold)
+        cb.contentTintColor = .white
+        cb.toolTip = "재생 / 멈춤"
+        cb.wantsLayer = true
+        cb.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.45).cgColor
+        cb.layer?.cornerRadius = 30
+        cb.frame.size = NSSize(width: 60, height: 60)
+        cb.alphaValue = 0
+        centerButton = cb
+        addSubview(cb)
         controls.forEach { $0.alphaValue = 0; addSubview($0) }
         edgeBars.forEach { addSubview($0) }
         layoutControls()
+        layoutCenter()
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -1078,7 +1213,7 @@ final class MiniOverlay: NSView {
 
     /// 재생바 새로 그리기 (끄는 중이면 손대지 않음)
     func update(time: Double, start: Double, end: Double, paused: Bool, live: Bool, volume: Double, muted: Bool) {
-        playButton.image = NSImage(systemSymbolName: paused ? "play.fill" : "pause.fill", accessibilityDescription: nil)
+        if paused != self.paused { setPaused(paused) }
         let vs = muted || volume == 0 ? "speaker.slash.fill" : (volume < 34 ? "speaker.wave.1.fill" : (volume < 67 ? "speaker.wave.2.fill" : "speaker.wave.3.fill"))
         volButton.image = NSImage(systemSymbolName: vs, accessibilityDescription: nil)
         if NSEvent.pressedMouseButtons & 1 == 0 { volSlider.doubleValue = muted ? 0 : volume }
@@ -1102,7 +1237,55 @@ final class MiniOverlay: NSView {
         curLabel.stringValue = live ? "-" + Self.clock(slider.maxValue - t) : Self.clock(t)
         onSeekTo?(t)
     }
-    override func resizeSubviews(withOldSize oldSize: NSSize) { layoutControls(); layoutEdgeBars() }
+    override func resizeSubviews(withOldSize oldSize: NSSize) { layoutControls(); layoutEdgeBars(); layoutCenter() }
+
+    // MARK: 가운데 재생 버튼 · 멈춤 어둡게
+
+    private let dimView = NSView()
+    private var centerButton: NSButton!
+    private(set) var paused = false
+    /// 재생바에서 이미 본 부분 색 (YouTube 빨강 · Netflix 빨강)
+    var accent: NSColor = .systemRed { didSet { (slider.cell as? ProgressCell)?.fill = accent; slider.needsDisplay = true } }
+    private func layoutCenter() {
+        guard let cb = centerButton else { return }
+        let d: CGFloat = min(60, max(40, min(bounds.width, bounds.height) * 0.22))
+        cb.frame = NSRect(x: bounds.midX - d / 2, y: bounds.midY - d / 2, width: d, height: d)
+        cb.layer?.cornerRadius = d / 2
+        cb.symbolConfiguration = .init(pointSize: d * 0.4, weight: .bold)
+    }
+    /// 재생 상태 반영: 멈추면 어둡게 + 가운데 ▶ 항상, 재생 중이면 가운데 ⏸ 는 마우스 올렸을 때만
+    func setPaused(_ p: Bool, animated: Bool = true) {
+        let changed = p != paused
+        paused = p
+        centerButton?.image = NSImage(systemSymbolName: p ? "play.fill" : "pause.fill", accessibilityDescription: nil)
+        playButton?.image = NSImage(systemSymbolName: p ? "play.fill" : "pause.fill", accessibilityDescription: nil)
+        guard changed || !animated else { refreshCenter(); return }
+        NSAnimationContext.runAnimationGroup { c in
+            c.duration = animated ? 0.2 : 0
+            dimView.animator().alphaValue = p ? 0.35 : 0
+        }
+        refreshCenter()
+    }
+    private func refreshCenter() {
+        NSAnimationContext.runAnimationGroup { c in
+            c.duration = 0.18
+            centerButton?.animator().alphaValue = (paused || showing) ? 1 : 0
+        }
+    }
+    /// 누른 순간 바로 바뀐 것처럼 보이게 (실제 상태는 0.5초마다 다시 맞춤) + 살짝 커졌다 돌아오는 효과
+    func flipPaused() {
+        setPaused(!paused)
+        guard let l = centerButton?.layer else { return }
+        let b = l.bounds
+        l.anchorPoint = CGPoint(x: 0.5, y: 0.5)
+        l.position = CGPoint(x: centerButton.frame.midX, y: centerButton.frame.midY)
+        l.bounds = b
+        let a = CAKeyframeAnimation(keyPath: "transform.scale")
+        a.values = [1, 1.18, 1]
+        a.keyTimes = [0, 0.4, 1]
+        a.duration = 0.25
+        l.add(a, forKey: "pulse")
+    }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
@@ -1115,6 +1298,7 @@ final class MiniOverlay: NSView {
             c.duration = 0.18
             controls.forEach { $0.animator().alphaValue = a }
         }
+        refreshCenter()
     }
     override func mouseEntered(with event: NSEvent) { showing = true; fade(1) }
     override func mouseExited(with event: NSEvent) {
@@ -1208,7 +1392,7 @@ final class MiniOverlay: NSView {
         layoutGrip()
         setCursor(e)
         // 가운데를 한 번 누르면 재생/멈춤 (손잡이 · 가장자리를 누른 건 제외)
-        if !dragged && !wasHandle && event.clickCount == 1 { onClick?() }
+        if !dragged && !wasHandle && event.clickCount == 1 { onClick?(); flipPaused() }
     }
 }
 
@@ -1222,4 +1406,46 @@ final class MenuAction: NSMenuItem {
     }
     required init(coder: NSCoder) { fatalError() }
     @objc private func fire() { run() }
+}
+
+/// 작은 창 재생바: 본 부분은 빨강, 남은 부분은 반투명 흰색, 손잡이는 작은 흰 동그라미 (YouTube 처럼)
+final class ProgressCell: NSSliderCell {
+    var fill: NSColor = .systemRed
+    override func drawBar(inside rect: NSRect, flipped: Bool) {
+        let r = NSRect(x: rect.minX, y: rect.midY - 2, width: rect.width, height: 4)
+        NSColor.white.withAlphaComponent(0.3).setFill()
+        NSBezierPath(roundedRect: r, xRadius: 2, yRadius: 2).fill()
+        let span = maxValue - minValue
+        let frac = span > 0 ? max(0, min(1, (doubleValue - minValue) / span)) : 0
+        var f = r
+        f.size.width = r.width * frac
+        if f.width > 0 {
+            fill.setFill()
+            NSBezierPath(roundedRect: f, xRadius: 2, yRadius: 2).fill()
+        }
+    }
+    override func knobRect(flipped: Bool) -> NSRect {
+        guard let cv = controlView else { return super.knobRect(flipped: flipped) }
+        let b = barRect(flipped: flipped)
+        let span = maxValue - minValue
+        let frac = span > 0 ? max(0, min(1, (doubleValue - minValue) / span)) : 0
+        let d: CGFloat = 12
+        _ = cv
+        return NSRect(x: b.minX + b.width * frac - d / 2, y: b.midY - d / 2, width: d, height: d)
+    }
+    override func drawKnob(_ knobRect: NSRect) {
+        let r = NSRect(x: knobRect.midX - 6, y: knobRect.midY - 6, width: 12, height: 12)
+        let sh = NSShadow()
+        sh.shadowColor = NSColor.black.withAlphaComponent(0.5)
+        sh.shadowBlurRadius = 2
+        NSGraphicsContext.saveGraphicsState()
+        sh.set()
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: r).fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    override func barRect(flipped: Bool) -> NSRect {
+        guard let cv = controlView else { return super.barRect(flipped: flipped) }
+        return cv.bounds.insetBy(dx: 7, dy: 0)
+    }
 }
