@@ -11,6 +11,16 @@ FW=(-framework Cocoa -framework ServiceManagement -framework WebKit -framework S
 TMP=$(mktemp -d)
 mkdir -p "$A/Contents/MacOS"
 cp Info.plist "$A/Contents/Info.plist"
+# 커밋 단위 버전: 빌드 번호 = 커밋 수, 커밋 ID, 커밋 안 한 수정이 있었는지, 빌드한 때
+PL="$A/Contents/Info.plist"
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  BN=$(git rev-list --count HEAD)
+  GH=$(git rev-parse --short HEAD)
+  [ -n "$(git status --porcelain --untracked-files=no)" ] && GD=true || GD=false
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BN" "$PL"
+  for k in GitCommit GitDirty BuildDate; do /usr/libexec/PlistBuddy -c "Delete :$k" "$PL" 2>/dev/null || true; done
+  /usr/libexec/PlistBuddy -c "Add :GitCommit string $GH" -c "Add :GitDirty bool $GD" -c "Add :BuildDate string $(date '+%Y-%m-%d %H:%M')" "$PL"
+fi
 for arch in arm64 x86_64; do
   swiftc -O -swift-version 5 -target $arch-apple-macos26.0 $SRC -o "$TMP/Launcher-$arch" $FW
 done

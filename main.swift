@@ -2617,6 +2617,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func buildStatusMenu() {
         let m = NSMenu()
         m.autoenablesItems = false
+        // 맨 위: 버전 (누르면 그 커밋 페이지)
+        let ver = Item("도구함 \(AppVersion.text)") {
+            if !AppVersion.commit.isEmpty, let u = URL(string: "https://github.com/SsackTeun/my-launcher/commit/\(AppVersion.commit)") {
+                NSWorkspace.shared.open(u)
+            }
+        }
+        ver.toolTip = "빌드 번호 = 커밋 수 · 괄호 = 커밋 ID\(AppVersion.date.isEmpty ? "" : " · 빌드한 때 \(AppVersion.date)")\(AppVersion.dirty ? "\n+수정: 커밋하지 않은 수정이 들어 있는 빌드" : "")\n누르면 GitHub 에서 그 커밋을 열어요"
+        m.addItem(ver)
+        m.addItem(.separator())
         for cat in cats {
             if cats.count > 1 { m.addItem(headerItem(cat.name)) }
             for id in cat.ids {
@@ -2739,7 +2748,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func buildSettings() {
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 442),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        p.title = "도구함 설정"
+        p.title = "도구함 설정 — \(AppVersion.text)"
         p.isReleasedWhenClosed = false
         let v = p.contentView!
 
@@ -2951,6 +2960,22 @@ extension AppDelegate: NSSearchFieldDelegate {
     @objc func focusSearch() {
         showWindow()
         window.makeFirstResponder(searchField)
+    }
+}
+
+/// 버전 표시: 1.1 · 빌드 75 (bfa3091) — 빌드 번호는 커밋 수, 괄호는 커밋 ID (build.sh 가 넣음)
+enum AppVersion {
+    static var info: [String: Any] { Bundle.main.infoDictionary ?? [:] }
+    static var release: String { info["CFBundleShortVersionString"] as? String ?? "?" }
+    static var build: String { info["CFBundleVersion"] as? String ?? "?" }
+    static var commit: String { info["GitCommit"] as? String ?? "" }
+    static var dirty: Bool { info["GitDirty"] as? Bool ?? false }
+    static var date: String { info["BuildDate"] as? String ?? "" }
+    /// 짧게: "1.1 · 빌드 75 (bfa3091)" — 커밋 안 한 수정이 들어 있으면 "+수정"
+    static var text: String {
+        var s = "\(release) · 빌드 \(build)"
+        if !commit.isEmpty { s += " (\(commit)\(dirty ? "+수정" : ""))" }
+        return s
     }
 }
 

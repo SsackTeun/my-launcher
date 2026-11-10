@@ -1247,6 +1247,7 @@ final class MiniOverlay: NSView {
     /// 재생바에서 이미 본 부분 색 (YouTube 빨강 · Netflix 빨강)
     var accent: NSColor = .systemRed { didSet { (slider.cell as? ProgressCell)?.fill = accent; slider.needsDisplay = true } }
     private func layoutCenter() {
+        dimView.frame = bounds          // 어둡게 하는 판은 항상 창 전체 (크기를 바꿔도 따라감)
         guard let cb = centerButton else { return }
         let d: CGFloat = min(60, max(40, min(bounds.width, bounds.height) * 0.22))
         cb.frame = NSRect(x: bounds.midX - d / 2, y: bounds.midY - d / 2, width: d, height: d)
