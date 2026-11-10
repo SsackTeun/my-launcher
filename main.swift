@@ -156,6 +156,55 @@ final class Tile: NSView {
     private var runDot: NSView?
     private var quitButton: ActionButton?
 
+    // MARK: 메모리 사용량 표시
+    /// 설정: 실행 중인 앱에 메모리 사용량 표시
+    static var showMemory = UserDefaults.standard.object(forKey: "showMemory") as? Bool ?? true
+    /// 가장 최근에 잰 값 (새로 그린 칸도 바로 숫자가 보이게)
+    static var memCache: [pid_t: UInt64] = [:]
+    /// 지금 화면에 있는, 메모리를 보여 주는 칸들
+    static let memTiles = NSHashTable<Tile>.weakObjects()
+    private(set) var memPID: pid_t = 0
+    private var memLabel: NSTextField?
+    private var iconFrame: NSRect = .zero
+    private var memRight: CGFloat = 0
+    private var isRow = false
+
+    /// 실행 중인 앱 칸에 메모리 숫자 달기
+    func trackMemory(pid: pid_t) {
+        guard Tile.showMemory, pid > 0 else { return }
+        memPID = pid
+        let l = NSTextField(labelWithString: "")
+        l.font = .monospacedDigitSystemFont(ofSize: isRow ? 11 * Tile.fontScale : 9, weight: isRow ? .regular : .medium)
+        l.alignment = isRow ? .right : .left
+        l.textColor = .secondaryLabelColor
+        addSubview(l)
+        memLabel = l
+        Tile.memTiles.add(self)
+        setMemory(Tile.memCache[pid])
+    }
+
+    func setMemory(_ bytes: UInt64?) {
+        guard let l = memLabel else { return }
+        guard let bytes, bytes > 0 else {
+            l.isHidden = true
+            if !isRow { runDot?.frame = NSRect(x: frame.width / 2 - 3, y: 1, width: 6, height: 6) }
+            return
+        }
+        l.isHidden = false
+        l.stringValue = AppMemory.text(bytes)
+        l.toolTip = "메모리 \(AppMemory.text(bytes)) (도우미 프로세스 포함, 활동 모니터 '메모리' 기준)"
+        if isRow {
+            l.frame = NSRect(x: memRight - 56, y: (frame.height - 15) / 2, width: 56, height: 15)
+        } else {
+            // 이름 아래 초록 점 줄에 "● 110 MB" 로 (이름 · 아이콘과 안 겹치게)
+            l.sizeToFit()
+            let tw = ceil(l.frame.width), total = 6 + 4 + tw
+            let x0 = max(1, (frame.width - total) / 2)
+            runDot?.frame = NSRect(x: x0, y: 3, width: 6, height: 6)
+            l.frame = NSRect(x: x0 + 10, y: 0, width: tw, height: 12)
+        }
+    }
+
     /// 실행 중인 앱 종료 버튼 (마우스를 올렸을 때만 보임). ⌥ 누르고 누르면 강제 종료
     func addQuitButton(_ quit: @escaping (_ force: Bool) -> Void) {
         let b = ActionButton(title: "", symbol: "xmark.circle.fill") { _ in
@@ -203,6 +252,7 @@ final class Tile: NSView {
         iv.imageScaling = .scaleProportionallyUpOrDown
         if !found { iv.alphaValue = 0.35 }
         addSubview(iv)
+        iconFrame = iv.frame
 
         let label = NSTextField(labelWithString: name)
         label.frame = NSRect(x: 2, y: 10, width: s.width - 4, height: ceil(16 * Tile.fontScale))
@@ -277,6 +327,9 @@ final class Tile: NSView {
             addSubview(dot)
             runDot = dot
             right -= 14
+            // 메모리 숫자 자리 (trackMemory 가 채움)
+            isRow = true
+            if Tile.showMemory { memRight = right; right -= 60 }
         }
         if let badge {
             let b = NSTextField(labelWithString: badge)
@@ -539,6 +592,7 @@ final class DragArea: NSView {
     override func mouseDown(with event: NSEvent) {
         guard !isLocked(), let w = window else { return }
         w.performDrag(with: event)
+        OnScreen.fix(w)        // 모니터 밖으로 끌었으면 다시 안으로
     }
 }
 
@@ -574,6 +628,7 @@ final class DragHandle: NSView {
         NSCursor.closedHand.set()
         w.performDrag(with: event)
         NSCursor.openHand.set()
+        OnScreen.fix(w)
     }
 }
 
@@ -621,6 +676,7 @@ final class ResizeHandle: NSView {
         }
         NSCursor.pop()
         startY = nil
+        OnScreen.fix(w)
     }
 }
 
@@ -843,6 +899,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.frame.size = NSSize(width: 24, height: 24)
         return b
     }()
+    lazy var youtubeButton: ActionButton = {
+        // YouTube 영상 창 (PIP 버튼이 있음). 누르면 창, 클립보드에 YouTube 링크가 있으면 바로 그 영상
+        let b = ActionButton(title: "", symbol: "play.rectangle.fill") { _ in
+            YouTubeWindow.shared.show(YouTubeWindow.shared.isOpen ? nil : YouTubeWindow.clipboardLink())
+        }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
+        b.contentTintColor = .systemRed
+        b.toolTip = "YouTube 열기 (영상을 PIP 로 띄울 수 있어요)"
+        b.frame.size = NSSize(width: 24, height: 24)
+        return b
+    }()
     // 앱 목록 접기 (전체 / 카테고리별)
     var listCollapsed = false
     /// 앱 목록 탭: 0 전체 · 1 실행 중 · 2 개발자 앱
@@ -882,6 +950,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var scrollCrossesCategory = true
     var crossCheck: NSButton!
     /// ⓧ 로 끌 때 물어보기 (설정)
+    // MARK: 앱별 메모리 (2초마다 다시 잼, 화면에 숫자가 있을 때만)
+    var memTimer: Timer?
+    private var memBusy = false
+    func startMemoryWatch() {
+        memTimer?.invalidate()
+        let t = Timer(timeInterval: 2, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.updateMemory() } }
+        RunLoop.main.add(t, forMode: .common)
+        memTimer = t
+        updateMemory()
+    }
+    func updateMemory() {
+        guard Tile.showMemory, !memBusy, window?.isVisible == true else { return }
+        let tiles = Tile.memTiles.allObjects
+        let pids = Set(tiles.map(\.memPID).filter { $0 > 0 })
+        guard !pids.isEmpty else { return }
+        memBusy = true
+        DispatchQueue.global(qos: .utility).async {
+            let m = AppMemory.snapshot(apps: pids)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    self.memBusy = false
+                    Tile.memCache = m
+                    Tile.memTiles.allObjects.forEach { $0.setMemory(m[$0.memPID]) }
+                }
+            }
+        }
+    }
+    var memoryCheck: NSButton!
+    @objc func memoryChecked(_ b: NSButton) {
+        Tile.showMemory = b.state == .on
+        d.set(Tile.showMemory, forKey: "showMemory")
+        refresh()
+        updateMemory()
+    }
+
     var confirmQuit: Bool = UserDefaults.standard.object(forKey: "confirmQuit") as? Bool ?? true
     var confirmCheck: NSButton!
     /// 도구함 다시 시작: 1초 뒤 다시 켜도록 맡겨 두고 끔
@@ -1047,6 +1150,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         v.isLocked = { [unowned self] in locked }
         v.addSubview(searchField)
         v.addSubview(finderButton)
+        v.addSubview(youtubeButton)
         v.addSubview(collapseButton)
         v.addSubview(bulkButton)
         v.addSubview(lockButton)
@@ -1214,6 +1318,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44, headerH: CGFloat = 28, sectionGap: CGFloat = 10
 
     func applicationDidFinishLaunching(_ n: Notification) {
+        YouTubeWindow.shared.onChange = { [unowned self] in buildStatusMenu() }
+        startMemoryWatch()
+        OnScreen.start()
         if let data = d.data(forKey: "categories"), let c = try? JSONDecoder().decode([Category].self, from: data), !c.isEmpty {
             cats = c
         } else {
@@ -2205,6 +2312,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                              onRemove: { [unowned self] in remove(id) },
                              badge: devTab ? devApps.badge(id) : nil,
                              listWidth: listMode ? tile.width : nil)
+                if let r = running(id) { t.trackMemory(pid: r.processIdentifier) }
                 // 실행 중 탭: 마우스를 올리면 개별 종료 버튼
                 if (tab == 1 || tab == 3) && !searching, let r = running(id), r.processIdentifier != ProcessInfo.processInfo.processIdentifier {
                     t.addQuitButton { [unowned self] force in
@@ -2463,7 +2571,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 8, y: (barRowH - fb.height) / 2))
         collapseButton.image = NSImage(systemSymbolName: allFolded ? "chevron.down" : "chevron.up", accessibilityDescription: nil)
         collapseButton.toolTip = allFolded ? "앱 목록 펼치기" : "앱 목록 접기"
-        collapseButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        youtubeButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        collapseButton.setFrameOrigin(NSPoint(x: youtubeButton.frame.minX - 26, y: (barRowH - 24) / 2))
         bulkButton.setFrameOrigin(NSPoint(x: collapseButton.frame.minX - 26, y: (barRowH - 24) / 2))
         updateLockButton()
         lockButton.setFrameOrigin(NSPoint(x: bulkButton.frame.minX - 26, y: (barRowH - 24) / 2))
@@ -2516,6 +2625,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(Item("    전체 가사 보기") { [unowned self] in lyrics.show() })
             m.addItem(Item("    YouTube Music 창 열기") { [unowned self] in music.showWindow() })
             m.addItem(.separator())
+        }
+        let yt = YouTubeWindow.shared
+        m.addItem(Item("YouTube 창 열기") { yt.show() })
+        if yt.isOpen {
+            m.addItem(Item(yt.inMini ? "    큰 창으로 돌아가기" : "    작은 창으로 보기 (PIP)") { yt.toggleMini() })
+            m.addItem(Item(yt.inPiP ? "    macOS PIP 끄기" : "    macOS PIP 로 보기 (구석 고정)") { yt.togglePiP() })
+            m.addItem(Item("    YouTube 끄기") { yt.quit() })
+        }
+        do {
+            let ap = Item("    영상 누르면 바로 PIP") { yt.autoPiP.toggle() }
+            ap.state = yt.autoPiP ? .on : .off
+            m.addItem(ap)
+            let an = Item("    쇼츠 끝나면 자동 넘김") { yt.autoNextShorts.toggle() }
+            an.state = yt.autoNextShorts ? .on : .off
+            m.addItem(an)
         }
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
         pl.state = playerEnabled ? .on : .off
@@ -2576,7 +2700,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 412),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 442),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
         p.title = "도구함 설정"
         p.isReleasedWhenClosed = false
@@ -2615,6 +2739,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             v.addSubview(n)
             return (f, s)
         }
+
+        label("메모리", y: 402)
+        memoryCheck = NSButton(checkboxWithTitle: "실행 중인 앱에 메모리 사용량 표시", target: self, action: #selector(memoryChecked(_:)))
+        memoryCheck.frame = NSRect(x: 106, y: 401, width: 250, height: 22)
+        memoryCheck.toolTip = "도우미 프로세스까지 합친 값 (활동 모니터의 '메모리' 칸과 같은 기준), 2초마다 새로"
+        v.addSubview(memoryCheck)
 
         label("앱 종료", y: 372)
         confirmCheck = NSButton(checkboxWithTitle: "ⓧ 로 끌 때 먼저 물어보기", target: self, action: #selector(confirmChecked(_:)))
@@ -2713,6 +2843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         lockCheck.state = locked ? .on : .off
         crossCheck.state = scrollCrossesCategory ? .on : .off
         confirmCheck.state = confirmQuit ? .on : .off
+        memoryCheck.state = Tile.showMemory ? .on : .off
         uiScaleLabel.stringValue = (uiScaleAuto ? "자동 " : "") + "\(Int((uiScale * 100).rounded()))%"
         colsField.integerValue = cols; colsStepper.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows

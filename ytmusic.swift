@@ -92,6 +92,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         webView = nil
         window = nil
         state = nil
+        volumeRestored = false
         art = nil
         artURL = ""
         isActive = false
@@ -204,11 +205,29 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                     st.byline = "제목을 눌러 YouTube Music 열기"
                     st.has = []
                 }
+                if st.has.contains("volume") { self.rememberVolume(st) }
                 self.state = st
                 self.onUpdate?(st, self.art)
                 self.loadArt(st.artURL)
             }
         }
+    }
+
+    // MARK: 볼륨 기억 (껐다 켜도 마지막 볼륨 · 음소거 그대로)
+
+    private var volumeRestored = false
+    private func rememberVolume(_ st: PlayerState) {
+        let ud = UserDefaults.standard
+        if !volumeRestored {
+            volumeRestored = true
+            guard ud.object(forKey: "ytmVolume") != nil else { return }
+            let vol = ud.double(forKey: "ytmVolume"), muted = ud.bool(forKey: "ytmMuted")
+            if abs(vol - st.volume) > 0.5 { setVolume(vol) }
+            if muted != st.muted { press("mute") }
+            return
+        }
+        ud.set(st.volume, forKey: "ytmVolume")
+        ud.set(st.muted, forKey: "ytmMuted")
     }
 
     // MARK: 앨범 사진 (페이지에 있는 이미지 주소로 바로 받음)
@@ -296,11 +315,18 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     const sleep = ms => new Promise(r => setTimeout(r, ms));
     const title = ((document.querySelector('ytmusic-player-bar .title') || {}).textContent || '').trim();
     const layout = document.querySelector('ytmusic-app-layout');
+    // 플레이어 화면이 닫혀 있으면 잠깐 열어서 가사를 읽고, 다 읽으면 다시 닫음 (보던 검색 · 목록 화면 그대로)
+    let opened = false;
+    const toggleBtn = () => [...document.querySelectorAll('ytmusic-player-bar button, ytmusic-player-bar tp-yt-paper-icon-button')]
+      .find(b => { const a = (b.getAttribute('aria-label') || '').trim().toLowerCase(); return a.includes('플레이어 페이지') || a.includes('player page'); })
+      || document.querySelector('ytmusic-player-bar .toggle-player-page-button');
+    const closeAgain = () => { if (opened && layout && layout.hasAttribute('player-page-open')) { const b = toggleBtn(); if (b) b.click(); } };
     if (layout && !layout.hasAttribute('player-page-open')) {
-      const b = [...document.querySelectorAll('ytmusic-player-bar button, ytmusic-player-bar tp-yt-paper-icon-button')]
-        .find(b => ['플레이어 페이지 열기', 'Open player page'].includes((b.getAttribute('aria-label') || '').trim()));
-      if (b) { b.click(); await sleep(800); }
+      if (!mayOpen) return {title, status: 'skip'};
+      const b = toggleBtn();
+      if (b) { b.click(); opened = true; await sleep(800); }
     }
+    try {
     const tab = [...document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab')]
       .find(t => ['가사', 'Lyrics', 'LYRICS'].includes(t.textContent.trim()));
     if (!tab || tab.hasAttribute('disabled') || tab.getAttribute('aria-disabled') === 'true') return {title, status: 'none'};
@@ -311,13 +337,17 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     const source = sh ? ((sh.querySelector('.footer') || {}).innerText || '') : '';
     if (!text.trim()) return {title, status: (tr && tr.innerText.trim()) ? 'none' : 'loading'};
     return {title, status: 'ok', text, source};
+    } finally { closeAgain(); }
     """
 
     func fetchLyrics(_ done: @escaping (Lyrics) -> Void) {
         guard let wv = webView else { done(Lyrics(status: "none")); return }
-        wv.callAsyncJavaScript(Self.lyricsJS, arguments: [:], in: nil, in: .page) { result in
+        // YouTube Music 창을 보고 있으면 플레이어 화면을 열지 않음 (검색 결과 등을 가리지 않게)
+        let watching = window?.isVisible == true && window?.occlusionState.contains(.visible) == true
+        wv.callAsyncJavaScript(Self.lyricsJS, arguments: ["mayOpen": !watching], in: nil, in: .page) { result in
             MainActor.assumeIsolated {
                 guard case .success(let v) = result, let o = v as? [String: Any] else { done(Lyrics(status: "loading")); return }
+                if o["status"] as? String == "skip" { return }     // 지금 가사 그대로 두고 다음에 다시
                 done(Lyrics(title: o["title"] as? String ?? "", status: o["status"] as? String ?? "none",
                             text: o["text"] as? String ?? "", source: o["source"] as? String ?? ""))
             }
