@@ -85,13 +85,23 @@ final class HoverTip {
     }
 
     /// 마우스가 칸에 들어왔을 때: 잠깐 머물면 보여 준다
+    private var pending = ""
     func schedule(_ text: String?, for view: NSView) {
         hide()
         guard let text, !text.isEmpty else { return }
         owner = view
+        pending = text
         showTimer = Timer.scheduledTimer(withTimeInterval: 0.7, repeats: false) { [weak self] _ in
-            self?.show(text)
+            guard let self else { return }
+            self.show(self.pending)
         }
+    }
+
+    /// 보여 줄 글을 바꿈 (그 칸이 주인일 때만). 이미 떠 있으면 바로 고쳐 그림
+    func update(_ text: String, for view: NSView) {
+        guard view === owner else { return }
+        pending = text
+        if panel.isVisible { show(text) }
     }
 
     /// view 가 주인일 때만 숨긴다 (nil 이면 무조건)
@@ -998,9 +1008,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self.memBusy = false
                     Tile.memCache = m
                     Tile.memTiles.allObjects.forEach { $0.setMemory(m[$0.memPID]) }
+                    self.resortIfNeeded()
                 }
             }
         }
+    }
+    /// 실행 중 탭: 메모리를 많이 쓰는 앱부터 (아직 못 잰 앱은 원래 순서대로 뒤에)
+    func memSorted(_ ids: [String]) -> [String] {
+        guard Tile.showMemory else { return ids }
+        let mem = ids.map { id in running(id).flatMap { Tile.memCache[$0.processIdentifier] } ?? 0 }
+        return ids.indices.sorted { mem[$0] != mem[$1] ? mem[$0] > mem[$1] : $0 < $1 }.map { ids[$0] }
+    }
+    /// 지금 실행 중 탭에 보이는 순서 · 마지막으로 다시 정렬한 때
+    var runOrder: [String] = []
+    private var lastMemSort = Date.distantPast
+    /// 메모리를 새로 잰 뒤 순서가 달라졌으면 다시 그림 (너무 자주 흔들리지 않게 8초에 한 번까지)
+    private func resortIfNeeded() {
+        guard tab == 1, Tile.showMemory, query.trimmingCharacters(in: .whitespaces).isEmpty,
+              Date().timeIntervalSince(lastMemSort) > 8 else { return }
+        let run = runningIDs()
+        let now = memSorted(allIds.filter { run.contains($0) }) + memSorted(run.filter { locate($0) == nil })
+        guard now != runOrder else { return }
+        lastMemSort = Date()
+        refresh()
     }
     var memoryCheck: NSButton!
     @objc func memoryChecked(_ b: NSButton) {
@@ -1489,6 +1519,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if widget { w.orderFrontRegardless() } else { showWindow() }
         EdgeDock.shared.present = { [unowned self] w in if widget { w.orderFrontRegardless() } else { showWindow() } }
         EdgeDock.shared.appSize = { [unowned self] in listMode ? Tile.listIcon(iconSize) : iconSize }
+        EdgeDock.shared.onChange = { [unowned self] in buildStatusMenu() }
         EdgeDock.shared.attach(w)
     }
 
@@ -1903,8 +1934,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if q.isEmpty && tab == 1 {
             // 실행 중 탭: 도구함 앱 중 켜진 것 + 그 밖에 켜진 앱
             let run = runningIDs()
-            let mine = allIds.filter { run.contains($0) }
-            let others = run.filter { locate($0) == nil }
+            let mine = memSorted(allIds.filter { run.contains($0) })
+            let others = memSorted(run.filter { locate($0) == nil })
+            runOrder = mine + others
             return [("도구함 앱", nil, mine), ("다른 앱", nil, others)]
         }
         if q.isEmpty { return cats.enumerated().map { ($0.element.name, $0.offset, $0.element.ids) } }
@@ -1929,7 +1961,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             addTo.submenu = sub
             m.addItem(addTo)
-            m.addItem(Item(FavBar.shared.contains(id) ? "자주 쓰는 앱 막대에서 빼기" : "자주 쓰는 앱 막대에 넣기") { FavBar.shared.toggle(id) })
+            m.addItem(FavBar.menuItem(for: id))
             if let u = url(id) { m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) }) }
             m.addItem(.separator())
             m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
@@ -1950,7 +1982,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         addTo.submenu = sub
         m.addItem(addTo)
-        m.addItem(Item(FavBar.shared.contains(id) ? "자주 쓰는 앱 막대에서 빼기" : "자주 쓰는 앱 막대에 넣기") { FavBar.shared.toggle(id) })
+        m.addItem(FavBar.menuItem(for: id))
         if let u = url(id) {
             m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) })
         }
@@ -2140,7 +2172,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let tools = NSMenuItem(title: "도구함", action: nil, keyEquivalent: "")
             tools.submenu = launcherMenu(id)
             m.addItem(tools)
-            m.addItem(Item(FavBar.shared.contains(id) ? "자주 쓰는 앱 막대에서 빼기" : "자주 쓰는 앱 막대에 넣기") { FavBar.shared.toggle(id) })
+            m.addItem(FavBar.menuItem(for: id))
             if let u = url(id) {
                 m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) })
             }
@@ -2707,9 +2739,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
         pl.state = playerEnabled ? .on : .off
         m.addItem(pl)
+        let ac = Item("도구함 창 자동 접기 (화면 끝에 붙였을 때)") { EdgeDock.shared.autoCollapse.toggle() }
+        ac.state = EdgeDock.shared.autoCollapse ? .on : .off
+        m.addItem(ac)
         let fav = Item("자주 쓰는 앱 막대") { FavBar.shared.enabled.toggle() }
         fav.state = FavBar.shared.enabled ? .on : .off
         m.addItem(fav)
+        m.addItem(Item("    자주 쓰는 앱 막대 추가") { FavBar.addBar() })
         let sushi = Item("화면 아래 회전 초밥 (실행 중인 앱)") { [unowned self] in
             SushiBelt.shared.enabled.toggle()
             buildStatusMenu()

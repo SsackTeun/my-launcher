@@ -64,6 +64,78 @@ enum AppMemory {
         return out
     }
 
+    // MARK: CPU
+
+    /// rusage 의 CPU 시간 단위를 나노초로 (Apple 실리콘에서는 mach 틱으로 나옴)
+    private static let timebase: (UInt64, UInt64) = {
+        var i = mach_timebase_info_data_t()
+        mach_timebase_info(&i)
+        return (UInt64(max(1, i.numer)), UInt64(max(1, i.denom)))
+    }()
+
+    /// 프로세스 하나의 (메모리, 지금까지 쓴 CPU 시간 ns)
+    private static func usageOf(_ pid: pid_t) -> (mem: UInt64, cpu: UInt64)? {
+        var info = rusage_info_v4()
+        let r = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V4, $0) }
+        }
+        guard r == 0 else { return nil }
+        let ticks = info.ri_user_time + info.ri_system_time
+        return (info.ri_phys_footprint, ticks * timebase.0 / timebase.1)
+    }
+
+    /// 앱 pid → (메모리 합계, CPU 시간 합계 ns). 도우미 프로세스까지 합침
+    static func usage(apps: Set<pid_t>) -> [pid_t: (mem: UInt64, cpu: UInt64)] {
+        guard !apps.isEmpty else { return [:] }
+        var out: [pid_t: (mem: UInt64, cpu: UInt64)] = [:]
+        var parents: [pid_t: pid_t] = [:]
+        var each: [pid_t: (mem: UInt64, cpu: UInt64)] = [:]
+        for pid in allPIDs() {
+            guard let u = usageOf(pid) else { continue }
+            each[pid] = u
+            parents[pid] = parent(pid)
+        }
+        for (pid, u) in each {
+            var owner: pid_t? = nil
+            if let resp = responsible?(pid), apps.contains(resp) { owner = resp }
+            if owner == nil {
+                var p = pid, hops = 0
+                while p > 1 && hops < 16 {
+                    if apps.contains(p) { owner = p; break }
+                    p = parents[p] ?? 0
+                    hops += 1
+                }
+            }
+            if let o = owner {
+                let cur = out[o] ?? (0, 0)
+                out[o] = (cur.mem + u.mem, cur.cpu + u.cpu)
+            }
+        }
+        return out
+    }
+
+    /// 잠깐(interval 초) 재서 앱 pid → (메모리, CPU %). 100% = 코어 하나를 꽉 씀 (활동 모니터와 같음)
+    /// 기다리는 동안 멈추므로 메인 스레드 말고 뒤에서 부를 것
+    static func sample(apps: Set<pid_t>, interval: Double = 0.5) -> [pid_t: (mem: UInt64, cpu: Double)] {
+        let a = usage(apps: apps)
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        Thread.sleep(forTimeInterval: interval)
+        let b = usage(apps: apps)
+        let dt = Double(DispatchTime.now().uptimeNanoseconds - t0)
+        var out: [pid_t: (mem: UInt64, cpu: Double)] = [:]
+        for (pid, u) in b {
+            let before = a[pid]?.cpu ?? u.cpu
+            let used = u.cpu >= before ? Double(u.cpu - before) : 0
+            out[pid] = (u.mem, dt > 0 ? used / dt * 100 : 0)
+        }
+        return out
+    }
+
+    /// 12% · 0.4% · 130% 처럼 짧게
+    static func cpuText(_ p: Double) -> String {
+        p < 10 ? String(format: "%.1f%%", p) : String(format: "%.0f%%", p)
+    }
+
     /// 1.2 GB · 340 MB 처럼 짧게
     static func text(_ bytes: UInt64) -> String {
         let mb = Double(bytes) / 1_048_576

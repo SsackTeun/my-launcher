@@ -26,6 +26,15 @@ final class EdgeDock {
         get { d.bool(forKey: "dockCollapsed") }
         set { d.set(newValue, forKey: "dockCollapsed") }
     }
+    /// 자동 접기: 붙은 창에서 마우스가 벗어나면 저절로 접고, 접힌 손잡이에 마우스를 올리면 저절로 폄
+    var autoCollapse: Bool {
+        get { d.bool(forKey: "dockAutoCollapse") }
+        set { d.set(newValue, forKey: "dockAutoCollapse"); outSince = nil; onChange() }
+    }
+    var onChange: () -> Void = {}
+    private var outSince: Date?
+    /// 막 펼친 직후엔 잠깐 자동 접기를 쉼 (메뉴 · 단축키로 띄웠을 때 마우스가 멀리 있어도 바로 접히지 않게)
+    private var grace = Date.distantPast
     /// 창을 다시 보여 줄 때 쓰는 동작 (일반 창은 앞으로 가져오며 활성화)
     var present: (NSWindow) -> Void = { $0.orderFrontRegardless() }
 
@@ -40,7 +49,7 @@ final class EdgeDock {
             MainActor.assumeIsolated { EdgeDock.shared.windowMoved() }
         }
         if timer == nil {
-            let t = Timer(timeInterval: 0.3, repeats: true) { _ in MainActor.assumeIsolated { EdgeDock.shared.sync() } }
+            let t = Timer(timeInterval: 0.15, repeats: true) { _ in MainActor.assumeIsolated { EdgeDock.shared.sync() } }
             RunLoop.main.add(t, forMode: .common)
             timer = t
         }
@@ -53,6 +62,10 @@ final class EdgeDock {
 
     // MARK: 끄는 동안 붙을 자리 보여 주기
 
+    /// 화면 끝 손잡이 폭 (붙은 창은 이만큼 떨어져서 손잡이 옆에 놓임)
+    static let tabW: CGFloat = 16
+    /// 붙은 창과 화면 끝 사이 간격 (0 = 화면 끝에 딱 붙고, 손잡이는 창 안쪽 가장자리에 얹힘)
+    static let inset: CGFloat = 0
     /// 가장자리에서 이만큼 안에 놓으면 붙음 (점) = 도구함에 보이는 앱 아이콘 한 개 크기
     var appSize: () -> CGFloat = { 32 }
     static var zone: CGFloat { max(16, EdgeDock.shared.appSize()) }
@@ -62,6 +75,7 @@ final class EdgeDock {
     /// 창을 끌기 시작할 때 (도구함 손잡이 · 빈 곳에서 부름)
     func beginWatch() {
         guard let w = window, watch == nil, !collapsed else { return }
+        userDragging = true
         dragStart = (w.frame, NSEvent.mouseLocation)
         let t = Timer(timeInterval: 1.0 / 30, repeats: true) { _ in MainActor.assumeIsolated { EdgeDock.shared.watchTick() } }
         RunLoop.main.add(t, forMode: .common)
@@ -69,7 +83,13 @@ final class EdgeDock {
     }
 
     private func watchTick() {
-        guard let w = window, let st = dragStart, NSEvent.pressedMouseButtons != 0 else { stopWatch(); return }
+        guard let w = window, let st = dragStart else { stopWatch(); return }
+        if NSEvent.pressedMouseButtons == 0 {
+            // 손을 뗐음 → 창 자리가 자리 잡은 뒤 붙을지 판단
+            stopWatch()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) { MainActor.assumeIsolated { EdgeDock.shared.checkDock() } }
+            return
+        }
         let m = NSEvent.mouseLocation
         // 끄는 동안 창 자리가 늦게 갱신될 수 있어서 마우스가 움직인 만큼으로 계산
         var f = st.frame
@@ -80,12 +100,23 @@ final class EdgeDock {
         if !otherScreen(beyond: .left, of: s) { cands.append((.left, f.minX - vf.minX)) }
         if !otherScreen(beyond: .right, of: s) { cands.append((.right, vf.maxX - f.maxX)) }
         guard let (e, dist) = cands.min(by: { $0.1 < $1.1 }), dist < 240 else { EdgeIndicator.shared.hide(); return }
-        let active = dist <= Self.zone
+        let active = dist <= Self.zone + Self.inset
         var ghost = f
-        ghost.origin.x = e == .left ? vf.minX : vf.maxX - f.width
-        ghost.origin.y = min(max(f.minY, vf.minY), vf.maxY - f.height)
-        EdgeIndicator.shared.show(screen: s, edge: e == .left ? .left : .right, zone: Self.zone, active: active,
-                                  ghost: active ? ghost : nil, text: "놓으면 여기에 붙어요 · 손잡이로 접을 수 있어요")
+        ghost.origin.x = e == .left ? vf.minX + Self.inset : vf.maxX - Self.inset - f.width
+        ghost.origin.y = alignY(f, vf: vf)
+        let slots = slotYs(h: f.height, vf: vf).map { NSRect(x: ghost.minX, y: $0, width: f.width, height: f.height) }
+        EdgeIndicator.shared.show(screen: s, edge: e == .left ? .left : .right, zone: Self.zone + Self.inset, active: active,
+                                  ghost: active ? ghost : nil, slots: active ? slots : [],
+                                  text: "놓으면 여기에 붙어요 · 손잡이로 접을 수 있어요")
+    }
+
+    /// 가장자리를 따라 세 자리 (아래 · 가운데 · 위) 중 창 가운데에 가장 가까운 곳의 y
+    private func slotYs(h: CGFloat, vf: NSRect) -> [CGFloat] {
+        guard h < vf.height else { return [vf.maxY - h] }
+        return [vf.minY, vf.midY - h / 2, vf.maxY - h]
+    }
+    private func alignY(_ f: NSRect, vf: NSRect) -> CGFloat {
+        slotYs(h: f.height, vf: vf).min { abs($0 + f.height / 2 - f.midY) < abs($1 + f.height / 2 - f.midY) }!
     }
 
     private func stopWatch() {
@@ -97,9 +128,15 @@ final class EdgeDock {
 
     // MARK: 붙었는지 판단 (창을 옮기고 마우스를 놓은 뒤)
 
+    /// 사람이 창을 끌고 있는 중인지 (프로그램이 옮긴 건 붙이기 · 떼기 판단을 안 함)
+    private var userDragging = false
+    /// 마지막으로 본 창 크기 (붙은 채로 크기가 바뀔 때만 가장자리에 다시 맞춤)
+    private var lastSize = NSSize.zero
+
     private func windowMoved() {
         guard !animating else { return }
         if watch == nil, NSEvent.pressedMouseButtons != 0 { beginWatch() }   // 제목 막대로 끄는 일반 창
+        guard userDragging else { return }
         moveCheck?.cancel()
         let job = DispatchWorkItem { MainActor.assumeIsolated { EdgeDock.shared.checkDock() } }
         moveCheck = job
@@ -107,18 +144,24 @@ final class EdgeDock {
     }
 
     private func checkDock() {
-        guard let w = window, !animating, !collapsed else { return }
+        guard let w = window, !animating, !collapsed, userDragging else { return }
         if NSEvent.pressedMouseButtons != 0 { windowMoved(); return }   // 아직 끄는 중
+        userDragging = false
         let s = screen(of: w)
         let vf = s.visibleFrame, f = w.frame
         var new: Side?
-        if f.minX <= vf.minX + Self.zone, !otherScreen(beyond: .left, of: s) { new = .left }
-        else if f.maxX >= vf.maxX - Self.zone, !otherScreen(beyond: .right, of: s) { new = .right }
+        if f.minX <= vf.minX + Self.zone + Self.inset, !otherScreen(beyond: .left, of: s) { new = .left }
+        else if f.maxX >= vf.maxX - Self.zone - Self.inset, !otherScreen(beyond: .right, of: s) { new = .right }
         if new != side { side = new }
         if let new {
-            // 가장자리에 딱 붙임
-            let x = new == .left ? vf.minX : vf.maxX - f.width
-            if abs(f.minX - x) > 0.5 { animating = true; w.setFrameOrigin(NSPoint(x: x, y: f.minY)); animating = false }
+            // 가장자리에 딱 붙이고, 위 · 가운데 · 아래 중 가까운 자리로 맞춤
+            let x = new == .left ? vf.minX + Self.inset : vf.maxX - Self.inset - f.width
+            let y = alignY(f, vf: vf)
+            if abs(f.minX - x) > 0.5 || abs(f.minY - y) > 0.5 {
+                animating = true
+                w.setFrame(NSRect(x: x, y: y, width: f.width, height: f.height), display: true, animate: true)
+                animating = false
+            }
         }
         sync()
     }
@@ -165,6 +208,7 @@ final class EdgeDock {
     func expand() {
         guard let w = window, collapsed else { return }
         collapsed = false
+        grace = Date().addingTimeInterval(2.5)
         guard let side else { present(w); sync(); return }
         let s = screen(of: w)
         let docked = w.frame
@@ -187,35 +231,53 @@ final class EdgeDock {
     func windowShown() {
         guard collapsed else { return }
         collapsed = false
+        grace = Date().addingTimeInterval(2.5)
         sync()
     }
 
     /// 접혔는지 · 붙었는지에 맞춰 손잡이 자리 · 모양 · 보이기를 맞춤 (0.3초마다, 창 크기가 바뀌어도 따라감)
     func sync() {
         guard let w = window else { tab?.orderOut(nil); return }
-        // 붙은 채로 창이 커지거나 작아지면 가장자리에 다시 맞춤
-        if let side, !collapsed, !animating, NSEvent.pressedMouseButtons == 0, w.isVisible {
+        // 붙은 채로 창 크기가 바뀌었을 때만 가장자리에 다시 맞춤 (위치만 옮긴 건 건드리지 않음)
+        let sizeChanged = w.frame.size != lastSize
+        lastSize = w.frame.size
+        if let side, sizeChanged, !collapsed, !animating, !userDragging, NSEvent.pressedMouseButtons == 0, w.isVisible {
             let vf = screen(of: w).visibleFrame
-            let x = side == .left ? vf.minX : vf.maxX - w.frame.width
+            let x = side == .left ? vf.minX + Self.inset : vf.maxX - Self.inset - w.frame.width
             if abs(w.frame.minX - x) > 0.5 { animating = true; w.setFrameOrigin(NSPoint(x: x, y: w.frame.minY)); animating = false }
         }
         guard let side, collapsed || w.isVisible else { tab?.orderOut(nil); return }
+        let m = NSEvent.mouseLocation
+        // 자동 접기: 창 밖으로 마우스가 나가고 1초 지나면 접음 (끄는 중 · 메뉴가 열려 있을 때 · 글자 입력 중엔 안 함)
+        if autoCollapse, !collapsed, !animating, !userDragging, w.isVisible {
+            let inside = w.frame.insetBy(dx: -6, dy: -6).contains(m) || (tab?.isVisible == true && tab!.frame.contains(m))
+            let typing = w.isKeyWindow && ((w.firstResponder as? NSTextView)?.string.isEmpty == false)   // 검색칸에 글자를 쓰는 중
+            let menuOpen = NSApp.windows.contains { $0.isVisible && $0.className.contains("Menu") }
+            if inside || typing || menuOpen || NSEvent.pressedMouseButtons != 0 || Date() < grace {
+                outSince = nil
+            } else {
+                if outSince == nil { outSince = Date() }
+                if Date().timeIntervalSince(outSince!) > 1.0 { outSince = nil; collapse(); return }
+            }
+        }
         let t = makeTab()
         tabView?.update(side: side, collapsed: collapsed)
-        let sz = NSSize(width: 16, height: 72)
+        let sz = NSSize(width: Self.tabW, height: 72)
         let s = screen(of: w)
         let vf = s.visibleFrame
         let wf = w.frame
-        var x: CGFloat
-        if collapsed && !animating {
-            x = side == .left ? vf.minX : vf.maxX - sz.width
-        } else {
-            // 창 바깥쪽 옆 (가장자리 반대편) 에 서랍 손잡이처럼
-            x = side == .left ? wf.maxX - 2 : wf.minX - sz.width + 2
-        }
+        // 손잡이는 접었을 때나 폈을 때나 늘 화면 끝에 (창은 그 바로 옆에 붙음)
+        let x = side == .left ? vf.minX : vf.maxX - sz.width
         let y = min(max(wf.midY - sz.height / 2, vf.minY), vf.maxY - sz.height)
         t.level = collapsed ? .floating : w.level
-        t.setFrame(NSRect(x: x, y: y, width: sz.width, height: sz.height), display: true)
+        let tf = NSRect(x: x, y: y, width: sz.width, height: sz.height)
+        // 펼쳐져 있을 땐 창 안 버튼을 가리지 않게, 마우스가 그 가장자리 근처에 올 때만 손잡이를 보여 줌
+        if !collapsed && !animating {
+            let near = side == .left ? m.x <= wf.minX + 28 : m.x >= wf.maxX - 28
+            let show = (near && m.y >= wf.minY && m.y <= wf.maxY) || tf.contains(m)
+            if !show { if t.isVisible { t.orderOut(nil) }; return }
+        }
+        t.setFrame(tf, display: true)
         if !t.isVisible { t.orderFrontRegardless() }
         // 펼친 상태면 창 바로 위에 (다른 창 사이로 손잡이만 뜨지 않게)
         if !collapsed, w.isVisible { t.order(.above, relativeTo: w.windowNumber) }
@@ -267,8 +329,27 @@ private final class DockTabView: NSView {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
-    override func mouseEntered(with e: NSEvent) { hovering = true }
-    override func mouseExited(with e: NSEvent) { hovering = false }
+    override func mouseEntered(with e: NSEvent) {
+        hovering = true
+        // 자동 접기를 켰으면 접힌 손잡이에 마우스를 올리기만 해도 펴짐
+        guard collapsed, EdgeDock.shared.autoCollapse else { return }
+        hoverOpen?.cancel()
+        let job = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated { if self?.hovering == true { EdgeDock.shared.expand() } }
+        }
+        hoverOpen = job
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: job)
+    }
+    override func mouseExited(with e: NSEvent) { hovering = false; hoverOpen?.cancel() }
+
+    override func rightMouseDown(with e: NSEvent) {
+        let m = NSMenu()
+        m.addItem(MenuAction(collapsed ? "펴기" : "접기") { EdgeDock.shared.toggle() })
+        let a = MenuAction("자동 접기 (마우스가 벗어나면 접고, 올리면 펴기)") { EdgeDock.shared.autoCollapse.toggle() }
+        a.state = EdgeDock.shared.autoCollapse ? .on : .off
+        m.addItem(a)
+        NSMenu.popUpContextMenu(m, with: e, for: self)
+    }
 
     override func draw(_ r: NSRect) {
         // 가장자리 쪽은 각지고 안쪽은 둥근 손잡이
@@ -314,7 +395,7 @@ final class EdgeIndicator {
     private var panel: NSPanel?
     private let view = EdgeIndicatorView()
 
-    func show(screen s: NSScreen, edge: Edge, zone: CGFloat, active: Bool, ghost: NSRect?, text: String? = nil) {
+    func show(screen s: NSScreen, edge: Edge, zone: CGFloat, active: Bool, ghost: NSRect?, slots: [NSRect] = [], text: String? = nil) {
         let p = panel ?? make()
         if p.frame != s.frame { p.setFrame(s.frame, display: false) }
         let o = s.frame.origin
@@ -324,6 +405,7 @@ final class EdgeIndicator {
         view.vf = s.visibleFrame.offsetBy(dx: -o.x, dy: -o.y)
         view.ghost = ghost?.offsetBy(dx: -o.x, dy: -o.y)
         view.text = text
+        view.slots = slots.map { $0.offsetBy(dx: -o.x, dy: -o.y) }
         view.needsDisplay = true
         if !p.isVisible { p.orderFrontRegardless() }
     }
@@ -352,6 +434,7 @@ final class EdgeIndicatorView: NSView {
     var vf = NSRect.zero
     var ghost: NSRect?
     var text: String?
+    var slots: [NSRect] = []
 
     override func draw(_ r: NSRect) {
         let accent = NSColor.controlAccentColor
@@ -390,6 +473,16 @@ final class EdgeIndicatorView: NSView {
         }
         accent.withAlphaComponent(active ? 0.95 : 0.4).setFill()
         NSBezierPath(roundedRect: strip, xRadius: t / 2, yRadius: t / 2).fill()
+        // 정렬 자리들 (위 · 가운데 · 아래 또는 왼 · 가운데 · 오른) 은 옅은 점선
+        for sl in slots where ghost.map({ !$0.equalTo(sl) }) ?? true {
+            let p = NSBezierPath(roundedRect: sl.insetBy(dx: 2, dy: 2), xRadius: 12, yRadius: 12)
+            p.lineWidth = 1.5
+            p.setLineDash([6, 5], count: 2, phase: 0)
+            accent.withAlphaComponent(0.5).setStroke()
+            accent.withAlphaComponent(0.05).setFill()
+            p.fill()
+            p.stroke()
+        }
         // 붙을 자리 미리보기
         if let g = ghost {
             let p = NSBezierPath(roundedRect: g.insetBy(dx: 1, dy: 1), xRadius: 14, yRadius: 14)
