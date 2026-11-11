@@ -591,6 +591,7 @@ final class DragArea: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     override func mouseDown(with event: NSEvent) {
         guard !isLocked(), let w = window else { return }
+        EdgeDock.shared.beginWatch()   // 끄는 동안 붙을 자리 보여 주기
         w.performDrag(with: event)
         OnScreen.fix(w)        // 모니터 밖으로 끌었으면 다시 안으로
     }
@@ -626,6 +627,7 @@ final class DragHandle: NSView {
         // 끌어서 옮기기만 (여러 번 눌러도 다른 동작 없음)
         guard !isLocked(), let w = window else { return }
         NSCursor.closedHand.set()
+        EdgeDock.shared.beginWatch()   // 끄는 동안 붙을 자리 보여 주기
         w.performDrag(with: event)
         NSCursor.openHand.set()
         OnScreen.fix(w)
@@ -1347,6 +1349,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         VideoWindow.netflix.onChange = { [unowned self] in buildStatusMenu() }
         startMemoryWatch()
         OnScreen.start()
+        SushiBelt.shared.open = { [unowned self] id in launch(id) }
+        SushiBelt.shared.quit = { [unowned self] id in quit(id) }
+        SushiBelt.shared.nowPlaying = { [unowned self] in showPlayer ? music.state?.title : nil }
+        SushiBelt.shared.start()
+        FavBar.shared.open = { [unowned self] id in launch(id) }
+        FavBar.shared.launcherApps = { [unowned self] in allIds }
+        FavBar.shared.onChange = { [unowned self] in buildStatusMenu() }
+        FavBar.shared.start()
         if let data = d.data(forKey: "categories"), let c = try? JSONDecoder().decode([Category].self, from: data), !c.isEmpty {
             cats = c
         } else {
@@ -1477,6 +1487,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             w.center()
         }
         if widget { w.orderFrontRegardless() } else { showWindow() }
+        EdgeDock.shared.present = { [unowned self] w in if widget { w.orderFrontRegardless() } else { showWindow() } }
+        EdgeDock.shared.appSize = { [unowned self] in listMode ? Tile.listIcon(iconSize) : iconSize }
+        EdgeDock.shared.attach(w)
     }
 
     func setWidget(_ on: Bool) {
@@ -1699,6 +1712,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showWindow() {
+        EdgeDock.shared.windowShown()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
@@ -1915,6 +1929,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             addTo.submenu = sub
             m.addItem(addTo)
+            m.addItem(Item(FavBar.shared.contains(id) ? "자주 쓰는 앱 막대에서 빼기" : "자주 쓰는 앱 막대에 넣기") { FavBar.shared.toggle(id) })
             if let u = url(id) { m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) }) }
             m.addItem(.separator())
             m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
@@ -1935,6 +1950,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         addTo.submenu = sub
         m.addItem(addTo)
+        m.addItem(Item(FavBar.shared.contains(id) ? "자주 쓰는 앱 막대에서 빼기" : "자주 쓰는 앱 막대에 넣기") { FavBar.shared.toggle(id) })
         if let u = url(id) {
             m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) })
         }
@@ -2124,6 +2140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let tools = NSMenuItem(title: "도구함", action: nil, keyEquivalent: "")
             tools.submenu = launcherMenu(id)
             m.addItem(tools)
+            m.addItem(Item(FavBar.shared.contains(id) ? "자주 쓰는 앱 막대에서 빼기" : "자주 쓰는 앱 막대에 넣기") { FavBar.shared.toggle(id) })
             if let u = url(id) {
                 m.addItem(Item("Finder에서 보기") { NSWorkspace.shared.activateFileViewerSelecting([u]) })
             }
@@ -2690,6 +2707,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
         pl.state = playerEnabled ? .on : .off
         m.addItem(pl)
+        let fav = Item("자주 쓰는 앱 막대") { FavBar.shared.enabled.toggle() }
+        fav.state = FavBar.shared.enabled ? .on : .off
+        m.addItem(fav)
+        let sushi = Item("화면 아래 회전 초밥 (실행 중인 앱)") { [unowned self] in
+            SushiBelt.shared.enabled.toggle()
+            buildStatusMenu()
+        }
+        sushi.state = SushiBelt.shared.enabled ? .on : .off
+        m.addItem(sushi)
         let dockItem = Item("켜져 있는 동안 Dock 가리기") { [unowned self] in setHideDock(!hideDock) }
         dockItem.state = hideDock ? .on : .off
         m.addItem(dockItem)

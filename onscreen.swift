@@ -28,7 +28,7 @@ enum OnScreen {
 
     /// 창 하나를 화면 안으로 (이미 안이면 그대로)
     static func fix(_ w: NSWindow, animate: Bool = true) {
-        guard w.isVisible, !w.styleMask.contains(.fullScreen) else { return }
+        guard w.isVisible, !w.styleMask.contains(.fullScreen), !EdgeDock.shared.ignores(w) else { return }
         let r = clamp(w.frame)
         guard abs(r.minX - w.frame.minX) > 0.5 || abs(r.minY - w.frame.minY) > 0.5 else { return }
         w.setFrame(r, display: true, animate: animate)
@@ -38,6 +38,7 @@ enum OnScreen {
     static func fixAll(animate: Bool = true) {
         for w in NSApp.windows where w.isVisible && w.frame.width >= 150 && w.frame.height >= 60
             && w.level.rawValue < NSWindow.Level.statusBar.rawValue
+            && !["sushi", "favbar", "edgedock"].contains(w.identifier?.rawValue ?? "")
             && !w.className.contains("Menu") && !w.className.contains("StatusBar") && !w.className.contains("Tool") {
             fix(w, animate: animate)
         }
