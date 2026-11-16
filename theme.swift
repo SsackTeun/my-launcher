@@ -35,6 +35,27 @@ enum Theme {
     /// 테마에 맞는 창 모양 (곰은 밝은 모양으로 고정 → 글씨가 짙게)
     static var appearance: NSAppearance? { isBear ? NSAppearance(named: .aqua) : nil }
 
+    // MARK: 위젯 모양 (바탕화면 위젯처럼: 부드러운 둥근 모서리 · 옅은 테두리 · 어두운 유리)
+
+    static let cardRadius: CGFloat = 24
+    static let playerRadius: CGFloat = 20
+
+    /// 카드 맨 아래에 어두운 유리 바탕, 맨 위에 옅은 테두리를 깔기
+    @MainActor
+    static func chrome(_ v: NSView, radius: CGFloat) {
+        let tint = v.subviews.first { $0 is CardTint } as? CardTint ?? CardTint()
+        tint.frame = v.bounds; tint.autoresizingMask = [.width, .height]; tint.radius = radius
+        if isBear { tint.removeFromSuperview() }
+        else if v.subviews.first !== tint && !(v.subviews.first is ThemeBackdrop) {
+            tint.removeFromSuperview(); v.addSubview(tint, positioned: .below, relativeTo: v.subviews.first)
+        } else if tint.superview == nil { v.addSubview(tint, positioned: .below, relativeTo: v.subviews.first) }
+        tint.needsDisplay = true
+        let line = v.subviews.first { $0 is CardBorder } as? CardBorder ?? CardBorder()
+        line.frame = v.bounds; line.autoresizingMask = [.width, .height]; line.radius = radius
+        if v.subviews.last !== line { line.removeFromSuperview(); v.addSubview(line) }
+        line.needsDisplay = true
+    }
+
     // MARK: 그림
 
     static var folder: URL {
@@ -115,7 +136,7 @@ final class ThemeBackdrop: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
     override func draw(_ r: NSRect) {
-        let clip = NSBezierPath(roundedRect: bounds, xRadius: corner, yRadius: corner)
+        let clip = continuousRect(bounds, radius: corner)
         clip.addClip()
         Theme.milk.withAlphaComponent(0.88).setFill()
         bounds.fill()
@@ -134,5 +155,32 @@ final class ThemeBackdrop: NSView {
             st.draw(in: NSRect(x: bounds.maxX - sz.width - 14, y: y, width: sz.width, height: sz.height),
                     from: .zero, operation: .sourceOver, fraction: 0.95)
         }
+    }
+}
+
+/// 카드 바탕을 위젯처럼 조금 더 어둡고 깊게 (위는 살짝 밝고 아래로 갈수록 진하게)
+final class CardTint: NSView {
+    var radius: CGFloat = 24
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ r: NSRect) {
+        continuousRect(bounds, radius: radius).addClip()
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        let g = dark
+            ? NSGradient(starting: NSColor(white: 0.10, alpha: 0.30), ending: NSColor(white: 0.0, alpha: 0.42))
+            : NSGradient(starting: NSColor(white: 1, alpha: 0.10), ending: NSColor(white: 0.9, alpha: 0.22))
+        g?.draw(in: bounds, angle: -90)
+    }
+}
+
+/// 카드 가장자리 옅은 테두리 (위젯처럼 유리 가장자리가 살짝 빛나게). 마우스는 통과
+final class CardBorder: NSView {
+    var radius: CGFloat = 24
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func draw(_ r: NSRect) {
+        let p = continuousRect(bounds.insetBy(dx: 0.5, dy: 0.5), radius: radius - 0.5)
+        p.lineWidth = 1
+        let dark = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        NSColor(white: dark ? 1 : 0, alpha: dark ? 0.16 : 0.10).setStroke()
+        p.stroke()
     }
 }

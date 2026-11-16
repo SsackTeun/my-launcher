@@ -29,8 +29,11 @@ enum OnScreen {
     /// 창 하나를 화면 안으로 (이미 안이면 그대로)
     static func fix(_ w: NSWindow, animate: Bool = true) {
         guard w.isVisible, !w.styleMask.contains(.fullScreen), !EdgeDock.ignoresAny(w) else { return }
-        let r = clamp(w.frame)
-        guard abs(r.minX - w.frame.minX) > 0.5 || abs(r.minY - w.frame.minY) > 0.5 else { return }
+        var r = clamp(w.frame)
+        // 제목 막대가 있는 도구함 창(메일 · 설정 · 답장 등)도 막대 자리를 비켜 줌 (막대 자리 비워 두기를 켰을 때)
+        if BarReserve.enabled, w.styleMask.contains(.titled), let nf = BarReserve.fitted(r) { r = nf }
+        guard abs(r.minX - w.frame.minX) > 0.5 || abs(r.minY - w.frame.minY) > 0.5
+            || abs(r.width - w.frame.width) > 0.5 || abs(r.height - w.frame.height) > 0.5 else { return }
         w.setFrame(r, display: true, animate: animate)
     }
 
@@ -59,5 +62,34 @@ enum OnScreen {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1) { MainActor.assumeIsolated { fixAll(animate: false) } }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { MainActor.assumeIsolated { fixAll(animate: false) } }
+        // 제목 막대로 옮기거나 · 테두리로 크기를 바꾸거나 · 새로 띄운 창은 마우스 놓기를 못 볼 수 있어서 따로 살핌
+        let nc = NotificationCenter.default
+        for name in [NSWindow.didMoveNotification, NSWindow.didEndLiveResizeNotification, NSWindow.didBecomeKeyNotification] {
+            nc.addObserver(forName: name, object: nil, queue: .main) { n in
+                MainActor.assumeIsolated {
+                    guard let w = n.object as? NSWindow, w.styleMask.contains(.titled) else { return }
+                    afterRelease(w)
+                }
+            }
+        }
+    }
+
+    private static var waiting = Set<ObjectIdentifier>()
+    /// 마우스를 놓은 다음에 한 번 고침 (끄는 도중엔 건드리지 않음)
+    private static func afterRelease(_ w: NSWindow) {
+        let id = ObjectIdentifier(w)
+        guard !waiting.contains(id) else { return }
+        waiting.insert(id)
+        func check() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak w] in
+                MainActor.assumeIsolated {
+                    guard let w else { waiting.remove(id); return }
+                    if NSEvent.pressedMouseButtons != 0 { check(); return }
+                    waiting.remove(id)
+                    fix(w)
+                }
+            }
+        }
+        check()
     }
 }

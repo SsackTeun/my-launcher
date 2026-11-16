@@ -371,7 +371,7 @@ final class EdgeDock {
         guard let w = window, collapsed else { return }
         collapsed = false
         grace = Date().addingTimeInterval(2.5)
-        guard let side else { present(w); sync(); return }
+        guard let side else { present(w); HoverRaise.raiseWhileHovered(w); sync(); return }
         let s = screen(of: w)
         let docked = w.frame
         var out = docked
@@ -379,6 +379,7 @@ final class EdgeDock {
         animating = true
         w.setFrame(out, display: false)
         present(w)
+        HoverRaise.raiseWhileHovered(w)   // 바탕화면 위 · 일반 창 높이여도 펼친 동안은 맨 앞에
         NSAnimationContext.runAnimationGroup({ c in
             c.duration = Motion.duration
             c.timingFunction = CAMediaTimingFunction(name: .easeOut)

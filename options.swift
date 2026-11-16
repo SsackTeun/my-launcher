@@ -37,14 +37,24 @@ enum Options {
         f.buttons([("막대 추가", { FavBar.addBar() })] +
                   Spaces.numbered().desks.map { dk in ("데스크탑 \(dk.n) 막대 추가", { FavBar.addDesktopBar(dk.n); Options.reload?() }) },
                   disabled: Set(Spaces.numbered().desks.filter { FavBar.hasBar(forDesktop: $0.n) }.map { "데스크탑 \($0.n) 막대 추가" }))
-        f.check("막대 자리 비워 두기 (다른 앱 창이 막대를 덮지 않게 옆으로 밀거나 줄임)", BarReserve.enabled) { BarReserve.enabled = $0 }
-        f.check("초록 버튼을 누르면 전체 화면 대신 최대화 (막대 자리는 빼고, 다시 누르면 원래대로)", GreenZoom.enabled) { GreenZoom.enabled = $0 }
+        f.popup("데스크탑 막대", [("왼쪽", 0), ("오른쪽", 1), ("위 (가로)", 2), ("아래 (가로)", 3)],
+                ["left": 0, "right": 1, "top": 2, "bottom": 3][FavBar.all.first(where: \.isDesktop)?.edge.rawValue ?? "left"] ?? 0) {
+            FavBar.setEdgeForAll([FavBar.Edge.left, .right, .top, .bottom][Int($0)])
+        }
+        f.note("데스크탑 막대(1 · 2 · 3 · 4)를 한 번에 옮겨요. 위 · 아래로 두면 가로로 늘어서요. 막대 하나만 옮기려면 막대 끝 손잡이를 잡고 원하는 가장자리로 끌어 놓으면 돼요.")
+                f.check("막대 자리 비워 두기 (다른 앱 창이 막대를 덮지 않게 옆으로 밀거나 줄임)", BarReserve.enabled) { BarReserve.enabled = $0 }
+        f.check("게임은 비키게 하지 않기 (롤 · 스팀 등 게임 창은 그대로)", BarReserve.skipGames) { BarReserve.skipGames = $0 }
+                f.check("초록 버튼을 누르면 전체 화면 대신 최대화 (막대 자리는 빼고, 다시 누르면 원래대로)", GreenZoom.enabled) { GreenZoom.enabled = $0 }
         f.note("막대마다 이름 · 붙는 곳 · 앱 · 종류는 막대를 오른쪽 클릭해서 바꿔요. 자리 비워 두기는 손쉬운 사용 권한이 있어야 해요.")
 
         f.header("도구함 · 떼어 낸 플레이어 창")
         f.popup("놓는 방식", [("자석", 1), ("자유", 0)], EdgeDock.magnet ? 1 : 0) { EdgeDock.magnet = $0 > 0.5 }
         f.note("자석: 끌어서 놓으면 앱 아이콘 크기 격자에 맞고, 화면 끝 가까이 놓으면 붙어요 · 자유: 놓은 자리 그대로 (끝에 붙지도, 막대를 비키지도 않음)")
-        f.check("화면 끝에 붙였을 때 자동 접기 (벗어나면 접힘)", EdgeDock.shared.autoCollapse) { EdgeDock.shared.autoCollapse = $0 }
+        if let lv = Options.level {
+            f.popup("놓이는 곳", [("바탕화면 위", 0), ("일반 창처럼", 1), ("항상 위", 2)], Double(lv.get())) { lv.set(Int($0)) }
+            f.note("바탕화면 위: 위젯처럼 다른 창 뒤에 깔려 있다가, 창을 치우면 보여요 · 일반 창처럼: 누르면 앞으로 · 항상 위: 다른 창 위에 늘 떠 있음")
+        }
+                f.check("화면 끝에 붙였을 때 자동 접기 (벗어나면 접힘)", EdgeDock.shared.autoCollapse) { EdgeDock.shared.autoCollapse = $0 }
         f.check("접힌 손잡이에 마우스를 대면 펴기 (막대도 같이)", EdgeDock.hoverExpand) { EdgeDock.hoverExpand = $0 }
 
         f.header("열리고 닫히는 속도")
@@ -56,7 +66,7 @@ enum Options {
             Motion.duration = 0.22; Motion.openDelay = 0.2; Motion.closeDelay = 1.0
             Options.reload?()
         })])
-        return f.view
+        return f.scrolled()
     }
 
     private static func themeTab() -> NSView {
@@ -86,7 +96,7 @@ enum Options {
             Theme.stickerSize = $0; Options.relayout?()
         }
         f.note("인터넷에서 마음에 드는 그림을 받아 두고 여기서 골라 주세요. 그림 폴더에 background · sticker 라는 이름으로 넣어도 돼요. 스티커는 창 오른쪽 아래 앱 아이콘 뒤에 깔려요.")
-        return f.view
+        return f.scrolled()
     }
 
     private static func videoTab() -> NSView {
@@ -98,7 +108,7 @@ enum Options {
         f.check("쇼츠가 끝나면 다음 쇼츠로 자동 넘김", yt.autoNextShorts) { yt.autoNextShorts = $0 }
         f.header("Netflix")
         f.check("영상을 누르면 바로 작은 창(PIP)으로", nf.autoPiP) { nf.autoPiP = $0 }
-        return f.view
+        return f.scrolled()
     }
 
     private static func mailTab() -> NSView {
@@ -139,13 +149,15 @@ enum Options {
         f.check("새 메일이 오면 화면 오른쪽 위에 알림 (보낸 사람 · 제목)", MailWatch.toast) { MailWatch.toast = $0 }
         f.note("웍스 메일에서 먼저 IMAP 을 켜 주세요: 메일 › 환경 설정 › IMAP/SMTP › 사용 (보내기도 쓰려면 SMTP 도). 회사 관리자가 막아 두었으면 관리자에게 허용을 부탁해야 해요.")
         f.note("2분마다 안 읽은 메일을 확인해요. 답장은 보내는 서버(SMTP)로 보내고 보낸 편지함에도 넣어요. 비밀번호는 이 맥의 키체인에만 저장되고, 메일 내용은 이 맥 밖으로 보내지 않아요.")
-        return f.view
+        return f.scrolled()
     }
 
     /// 창을 다시 그리는 동작 (기본값으로 되돌릴 때 등)
     static var reload: (() -> Void)?
     /// 도구함 창 배치를 다시 (컴팩트 옵션을 바꿨을 때)
     static var relayout: (() -> Void)?
+    /// 도구함 · 떼어 낸 플레이어가 놓이는 높이 (지금 값, 바꾸기)
+    static var level: (get: () -> Int, set: (Int) -> Void)?
 }
 
 /// 위에서부터 한 줄씩 쌓는 간단한 설정 화면
@@ -154,6 +166,18 @@ private final class Form {
     let view = FlippedForm(frame: NSRect(x: 0, y: 0, width: 440, height: 480))
     private var y: CGFloat = 14
     private let left: CGFloat = 20, width: CGFloat = 400
+
+    /// 내용이 길면 위아래로 스크롤 (항목이 늘어 창 아래로 잘리던 것)
+    func scrolled() -> NSView {
+        view.frame.size.height = max(480, y + 14)
+        let sv = NSScrollView(frame: NSRect(x: 0, y: 0, width: 440, height: 480))
+        sv.hasVerticalScroller = true
+        sv.autohidesScrollers = true
+        sv.drawsBackground = false
+        sv.autoresizingMask = [.width, .height]
+        sv.documentView = view
+        return sv
+    }
 
     func header(_ t: String) {
         if y > 20 { y += 8 }

@@ -158,7 +158,39 @@ enum BarReserve {
         }
     }
 
+    /// 게임은 건드리지 않기 (옵션, 기본 켬): 게임 창을 밀거나 줄이면 화면이 깨지거나 클릭 자리가 어긋남
+    static var skipGames: Bool {
+        get { UserDefaults.standard.object(forKey: "reserveSkipGames") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "reserveSkipGames"); exemptCache.removeAll() }
+    }
+    private static var exemptCache: [pid_t: Bool] = [:]
+    /// 게임 앱인지: 라이엇(롤 클라이언트 · 게임) 이거나, 앱 분류가 게임이거나 (앱 안에 든 도우미 앱이면 바깥 앱의 분류)
+    static func isGame(pid: pid_t) -> Bool {
+        if let c = exemptCache[pid] { return c }
+        var game = false
+        if let a = NSRunningApplication(processIdentifier: pid) {
+            let id = (a.bundleIdentifier ?? "").lowercased()
+            if id.hasPrefix("com.riotgames") || id.hasPrefix("com.blizzard") || id.contains("steam") { game = true }
+            var u = a.bundleURL
+            while !game, let url = u {
+                if let info = NSDictionary(contentsOf: url.appendingPathComponent("Contents/Info.plist")),
+                   let cat = info["LSApplicationCategoryType"] as? String, cat.contains("games") { game = true }
+                // 바깥쪽 .app 으로 올라가 봄
+                var up = url.deletingLastPathComponent()
+                while up.path != "/" && up.pathExtension != "app" { up = up.deletingLastPathComponent() }
+                u = up.pathExtension == "app" ? up : nil
+            }
+        }
+        exemptCache[pid] = game
+        return game
+    }
+    /// 화면 전체를 덮는 창 (테두리 없는 전체 화면 게임 · 영상 등) 은 건드리지 않음
+    private static func coversScreen(_ f: NSRect) -> Bool {
+        NSScreen.screens.contains { s in abs(f.width - s.frame.width) < 2 && abs(f.height - s.frame.height) < 2 }
+    }
+
     private static func fix(pid: pid_t) {
+        if skipGames && isGame(pid: pid) { return }
         let ax = AXUIElementCreateApplication(pid)
         var v: CFTypeRef?
         guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success,
@@ -166,7 +198,7 @@ enum BarReserve {
         let primaryH = NSScreen.screens.first?.frame.height ?? 0
         for w in wins {
             guard let f = frame(w, primaryH: primaryH), f.width > 120, f.height > 80,
-                  !flag(w, "AXFullScreen"), !flag(w, kAXMinimizedAttribute as String),
+                  !flag(w, "AXFullScreen"), !flag(w, kAXMinimizedAttribute as String), !coversScreen(f),
                   (role(w) ?? "") == (kAXStandardWindowSubrole as String),
                   let nf = fitted(f) else { continue }
             // 크기를 바꿔야 하는데 못 바꾸는 창이면 위치만

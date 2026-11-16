@@ -584,13 +584,38 @@ final class WidgetWindow: NSWindow {
 }
 
 /// 둥근 모서리 마스크 (위젯 카드 모양)
+/// 위젯처럼 부드럽게 굽은 모서리(연속 곡률, "스쿼클") 사각형
+func continuousRect(_ rect: NSRect, radius r0: CGFloat) -> NSBezierPath {
+    let k: CGFloat = 1.52866
+    let r = max(0, min(r0, min(rect.width, rect.height) / 2 / k))
+    let pts: [(CGFloat, CGFloat)] = [(1.08849, 0), (0.86840, 0.02134), (0.66993, 0.06359),
+                                     (0.37081, 0.16201), (0.16201, 0.37081), (0.06359, 0.66993),
+                                     (0.02134, 0.86840), (0, 1.08849), (0, k)]
+    let corners: [(NSPoint, NSPoint, NSPoint)] = [
+        (NSPoint(x: rect.minX, y: rect.maxY), NSPoint(x: 1, y: 0), NSPoint(x: 0, y: -1)),
+        (NSPoint(x: rect.minX, y: rect.minY), NSPoint(x: 0, y: 1), NSPoint(x: 1, y: 0)),
+        (NSPoint(x: rect.maxX, y: rect.minY), NSPoint(x: -1, y: 0), NSPoint(x: 0, y: 1)),
+        (NSPoint(x: rect.maxX, y: rect.maxY), NSPoint(x: 0, y: -1), NSPoint(x: -1, y: 0)),
+    ]
+    let p = NSBezierPath()
+    for (i, (c, u, v)) in corners.enumerated() {
+        func pt(_ a: (CGFloat, CGFloat)) -> NSPoint { NSPoint(x: c.x + (a.0 * u.x + a.1 * v.x) * r, y: c.y + (a.0 * u.y + a.1 * v.y) * r) }
+        let start = pt((k, 0))
+        if i == 0 { p.move(to: start) } else { p.line(to: start) }
+        for j in stride(from: 0, to: 9, by: 3) { p.curve(to: pt(pts[j + 2]), controlPoint1: pt(pts[j]), controlPoint2: pt(pts[j + 1])) }
+    }
+    p.close()
+    return p
+}
+
 func roundedMask(_ r: CGFloat) -> NSImage {
-    let img = NSImage(size: NSSize(width: r * 2 + 1, height: r * 2 + 1), flipped: false) { rect in
+    let e = ceil(r * 1.53) + 1
+    let img = NSImage(size: NSSize(width: e * 2 + 1, height: e * 2 + 1), flipped: false) { rect in
         NSColor.black.setFill()
-        NSBezierPath(roundedRect: rect, xRadius: r, yRadius: r).fill()
+        continuousRect(rect, radius: r).fill()
         return true
     }
-    img.capInsets = NSEdgeInsets(top: r, left: r, bottom: r, right: r)
+    img.capInsets = NSEdgeInsets(top: e, left: e, bottom: e, right: e)
     img.resizingMode = .stretch
     return img
 }
@@ -608,11 +633,65 @@ let widgetLevels: [(String, NSWindow.Level)] = [
 enum WindowDrag {
     static func run(_ w: NSWindow) {
         let start = NSEvent.mouseLocation, origin = w.frame.origin
+        var moving = false
         w.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { ev, stop in
             guard let ev, ev.type != .leftMouseUp else { stop.pointee = true; return }
             let m = NSEvent.mouseLocation
+            // 누르기만 해서는 옮기기(격자 표시)로 안 들어감: 4pt 넘게 움직여야 시작
+            if !moving {
+                guard hypot(m.x - start.x, m.y - start.y) >= 4 else { return }
+                moving = true
+                EdgeDock.dock(for: w)?.beginWatch()   // 끄는 동안 붙을 자리 보여 주기 (도구함 창 · 떼어 낸 플레이어)
+            }
             w.setFrameOrigin(NSPoint(x: (origin.x + m.x - start.x).rounded(), y: (origin.y + m.y - start.y).rounded()))
         }
+    }
+}
+
+/// 마우스를 올리면 잠깐 맨 앞으로 (바탕화면 위 · 일반 창처럼 둔 카드가 다른 창 뒤에 가려 있어도 보이게), 벗어나면 원래 높이로
+/// 카드 맨 아래에 깔리는 투명한 판 (마우스는 통과, 들어오고 나가는 것만 봄)
+final class HoverRaise: NSView {
+    /// 원래 놓이는 높이
+    var base: () -> NSWindow.Level = { .normal }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) {
+        guard let w = window, base().rawValue < NSWindow.Level.floating.rawValue else { return }
+        w.level = .floating
+        w.orderFrontRegardless()
+    }
+    override func mouseExited(with event: NSEvent) { lower() }
+    /// 화면 끝에서 펼쳤을 때: 다른 창 뒤에 깔리는 높이면 잠깐 맨 앞으로, 마우스가 창을 벗어나면 원래 높이로
+    static func raiseWhileHovered(_ w: NSWindow) {
+        let base = w.level
+        guard base.rawValue < NSWindow.Level.floating.rawValue else { return }
+        w.level = .floating
+        w.orderFrontRegardless()
+        func check() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak w] in
+                MainActor.assumeIsolated {
+                    guard let w, w.level == .floating else { return }
+                    if w.isVisible && (NSEvent.pressedMouseButtons != 0 || NSMouseInRect(NSEvent.mouseLocation, w.frame.insetBy(dx: -4, dy: -4), false)) { check(); return }
+                    w.level = base
+                }
+            }
+        }
+        // 펼치는 동안 마우스가 아직 손잡이 쪽에 있을 수 있어서 처음엔 조금 넉넉히 기다림
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { check() }
+    }
+    /// 끄는 중 · 버튼을 누르고 있으면 놓은 다음에 내림 (마우스가 다시 안에 있으면 그대로)
+    private func lower() {
+        // 판이 새로 깔려도(다시 그리기) 내릴 수 있게, 기억 대신 지금 창 높이로 판단
+        guard let w = window, w.level == .floating, base().rawValue < NSWindow.Level.floating.rawValue else { return }
+        if NSEvent.pressedMouseButtons != 0 || NSMouseInRect(NSEvent.mouseLocation, w.frame, false) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in MainActor.assumeIsolated { self?.lower() } }
+            return
+        }
+        w.level = base()
     }
 }
 
@@ -626,7 +705,6 @@ final class DragArea: NSView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         guard !isLocked(), let w = window else { return }
-        EdgeDock.dock(for: w)?.beginWatch()   // 끄는 동안 붙을 자리 보여 주기 (도구함 창 · 떼어 낸 플레이어)
         WindowDrag.run(w)
         OnScreen.fix(w)        // 모니터 밖으로 끌었으면 다시 안으로
     }
@@ -707,7 +785,6 @@ final class DragHandle: NSView {
         // 끌어서 옮기기만 (여러 번 눌러도 다른 동작 없음)
         guard !isLocked(), let w = window else { return }
         NSCursor.closedHand.set()
-        EdgeDock.dock(for: w)?.beginWatch()   // 끄는 동안 붙을 자리 보여 주기 (도구함 창 · 떼어 낸 플레이어)
         WindowDrag.run(w)
         NSCursor.openHand.set()
         OnScreen.fix(w)
@@ -1485,14 +1562,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fx.material = .hudWindow
             fx.blendingMode = .behindWindow
             fx.state = .active
-            fx.maskImage = roundedMask(16)
+            fx.maskImage = roundedMask(Theme.playerRadius)
             p.contentView = fx
         }
         let top = p.frame.maxY
         p.setFrame(NSRect(x: p.frame.minX, y: top - size.height, width: size.width, height: size.height), display: false)
         fx.frame = NSRect(origin: .zero, size: size)
         p.appearance = Theme.appearance
-        Theme.attach(to: fx, corner: 16, sticker: false)
+        Theme.attach(to: fx, corner: Theme.playerRadius, sticker: false)
         let grip = fx.subviews.first(where: { $0 is DragHandle }) as? DragHandle ?? {
             let g = DragHandle(frame: .zero)
             g.isLocked = { [unowned self] in locked }
@@ -1514,7 +1591,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             r.frame = NSRect(x: x, y: 0, width: 6, height: size.height)
             fx.addSubview(r)
         }
-        p.level = widget ? widgetLevels[widgetLevel].1 : .floating
+        Theme.chrome(fx, radius: Theme.playerRadius)
+        if widget { hoverRaise(fx) }
+        // 마우스를 올려 잠깐 맨 앞으로 나와 있는 중이면 그대로 둠
+        if !(p.level == .floating && NSMouseInRect(NSEvent.mouseLocation, p.frame, false)) {
+            p.level = widget ? widgetLevels[widgetLevel].1 : .floating
+        }
         p.collectionBehavior = widget ? [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone] : []
         // 화면 끝에 접어 둔 상태면 다시 띄우지 않음
         if EdgeDock.dock(for: p)?.collapsed != true { p.orderFrontRegardless() }
@@ -1567,6 +1649,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     /// 테두리로 줄일 수 있는 가장 좁은 폭 (좁은 배치가 찌그러지지 않고 다 들어가는 폭)
     static let minWidth: CGFloat = 276
+    /// 모서리 대각선 크기 조절 칸 크기
+    static let cornerGrab: CGFloat = 32
     /// 사용자가 테두리로 정한 창 폭 (nil 이면 기본 폭)
     var userWidth: CGFloat? = {
         let v = UserDefaults.standard.double(forKey: "userWidth")
@@ -1826,11 +1910,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc func toggleWidgetAction() { setWidget(!widget) }
 
+    /// 카드에 '마우스 올리면 잠깐 맨 앞' 판을 깔기
+    func hoverRaise(_ v: NSView) {
+        let h = v.subviews.first { $0 is HoverRaise } as? HoverRaise ?? {
+            let h = HoverRaise(frame: v.bounds)
+            h.autoresizingMask = [.width, .height]
+            h.base = { [unowned self] in widgetLevels[widgetLevel].1 }
+            v.addSubview(h, positioned: .below, relativeTo: v.subviews.first)
+            return h
+        }()
+        h.frame = v.bounds
+    }
+
     func setWidgetLevel(_ l: Int) {
         widgetLevel = l
         d.set(l, forKey: "widgetLevel")
         window.level = widgetLevels[l].1
         window.orderFrontRegardless()
+        if let p = playerPanel, p.isVisible { p.level = widgetLevels[l].1; p.orderFrontRegardless() }   // 떼어 낸 플레이어도 같이
         buildStatusMenu()
     }
 
@@ -2900,7 +2997,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fx.material = .hudWindow
             fx.blendingMode = .behindWindow
             fx.state = .active
-            fx.maskImage = roundedMask(20)
+            fx.maskImage = roundedMask(Theme.cardRadius)
             content = fx
         } else {
             content = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
@@ -2920,7 +3017,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         content.frame = NSRect(x: 0, y: 0, width: w, height: h)
         window.appearance = Theme.appearance
-        Theme.attach(to: content, corner: 20, sticker: true)
+        Theme.attach(to: content, corner: Theme.cardRadius, sticker: true)
         content.addSubview(scroll)
         if hdrH > 0 {
             headerBar.setFrameOrigin(NSPoint(x: 0, y: bottom + grip + viewH))
@@ -2935,8 +3032,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 왼쪽 · 오른쪽 테두리로 폭 조절 (위젯 카드일 때)
         if widget {
             // 변 두께 · 모서리 크기. 창 모서리가 둥글게(20) 깎여 투명한 곳은 클릭이 뒤로 빠지므로
-            // 모서리 칸을 둥근 선 안쪽까지 넉넉히 (24)
-            let e: CGFloat = 6, c: CGFloat = 24
+            // 모서리 칸을 둥근 선 안쪽까지 넉넉히
+            let e: CGFloat = 6, c = Self.cornerGrab
             let canH = grip > 0
             for r in frameResizers {
                 let s = r.edges
@@ -2955,7 +3052,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         if grip > 0 {
-            resizeHandle.frame = NSRect(x: 0, y: 0, width: w, height: grip)
+            // 양 끝은 모서리(대각선) 칸 자리로 비워 둠 (겹치면 아래 손잡이가 커서를 위아래로 덮어써서 모서리가 안 잡힌 것처럼 보였음)
+            let c = widget ? Self.cornerGrab : 0
+            resizeHandle.frame = NSRect(x: c, y: 0, width: w - 2 * c, height: grip)
             content.addSubview(resizeHandle)
             resizeHandle.needsDisplay = true
         }
@@ -2981,6 +3080,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 테두리 폭 조절 띠는 맨 위에 (플레이어 · 목록에 가려지지 않게)
         for r in frameResizers where r.superview != nil { r.removeFromSuperview(); content.addSubview(r) }
+        if widget {
+            Theme.chrome(content, radius: Theme.cardRadius)
+            hoverRaise(content)
+        }
         // 위쪽 줄: [🔍 앱 찾기 ........] [Finder]
         topBar.frame = NSRect(x: 0, y: h - topH, width: w, height: topH)
         // 위젯: 맨 위 손잡이
@@ -3309,6 +3412,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         Options.reload = { [unowned self] in reloadOptionTabs() }
         Options.relayout = { [unowned self] in playerBar.needsLayout = true; refresh() }
+        Options.level = ({ [unowned self] in widgetLevel }, { [unowned self] in setWidgetLevel($0) })
         p.center()
         settings = p
     }

@@ -325,7 +325,7 @@ final class FavBar {
         hide()
         Self.keys = Self.keys.filter { $0 != key }
         Self.bars[key] = nil
-        for k in ["favApps", "favEdge", "favPos", "favCollapsed", "favScreen", "favName", "favDesktop", "favOrder", "favDesktopID"] { Self.d.removeObject(forKey: k + "." + key) }
+        for k in ["favApps", "favEdge", "favPos", "favCollapsed", "favScreen", "favName", "favDesktop", "favOrder", "favDesktopID", "favLane"] { Self.d.removeObject(forKey: k + "." + key) }
         onChange()
     }
 
@@ -389,6 +389,41 @@ final class FavBar {
         list[i].pos = list[j].pos
         list[j].pos = p
         Self.layoutAll(animate: true)
+    }
+
+    /// 가장자리에서 몇 번째 줄 (0 = 화면 끝에 붙은 줄, 1 = 그 옆 줄 …). 같은 가장자리에 막대를 옆으로 나란히 놓을 때
+    var lane: Int {
+        get { d.integer(forKey: k("favLane")) }
+        set { d.set(newValue, forKey: k("favLane")) }
+    }
+    /// 줄 사이 간격
+    static let laneGap: CGFloat = 6
+
+    /// 끄는 막대 가운데 c 가 가장자리에서 얼마나 떨어졌는지로 몇 번째 줄인지 (있는 줄 + 1 까지만)
+    private func laneAt(_ c: NSPoint, edge e: Edge, screen s: NSScreen, size sz: NSSize) -> Int {
+        let vf = s.visibleFrame
+        let thick = e.vertical ? sz.width : sz.height
+        let dist: CGFloat
+        switch e {
+        case .left: dist = c.x - vf.minX
+        case .right: dist = vf.maxX - c.x
+        case .top: dist = vf.maxY - c.y
+        case .bottom: dist = c.y - vf.minY
+        }
+        let unit = FavBarView.thick + Self.laneGap
+        let n = Int((max(0, dist - thick / 2) / unit + 0.5).rounded(.down))
+        let others = Self.all.filter { $0 !== self && $0.edge == e && $0.screen == s }
+        let top = (others.map(\.lane).max() ?? -1) + 1
+        return min(max(n, 0), top)
+    }
+    /// 줄 번호를 0 부터 빈틈없이 다시 매김 (가운데 줄이 비면 바깥 줄을 안으로 당김)
+    static func compactLanes() {
+        var groups: [String: [FavBar]] = [:]
+        for b in all { groups["\(b.edge.rawValue)|\(NSStringFromRect(b.screen.frame))", default: []].append(b) }
+        for g in groups.values {
+            let used = Set(g.map(\.lane)).sorted()
+            for b in g { b.lane = used.firstIndex(of: b.lane) ?? 0 }
+        }
     }
 
     var collapsed: Bool {
@@ -503,7 +538,7 @@ final class FavBar {
         place(animate: animate)
     }
 
-    private var screen: NSScreen {
+    fileprivate var screen: NSScreen {
         let n = d.integer(forKey: k("favScreen"))
         return NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue == n }
             ?? NSScreen.screens.first ?? NSScreen.main!
@@ -515,6 +550,7 @@ final class FavBar {
     /// 모든 막대 자리 정하기: 같은 모니터 · 같은 가장자리의 막대들은 겹치지 않게 가장자리를 따라 나란히
     /// (원래 가려던 자리 순서는 지키고, 겹치면 옆으로 밀고, 화면 끝을 넘으면 반대로 당김)
     static func layoutAll(animate: Bool) {
+        compactLanes()
         defer {
             // 막대 자리가 바뀌었으면 다른 앱 창도 다시 비켜 줌 (옵션)
             if BarReserve.enabled {
@@ -537,19 +573,38 @@ final class FavBar {
     }
 
     /// 막대가 놓일 자리 계산값 (끌고 있는 막대가 있으면 그 막대를 '지금 놓으면' 자리로 넣어서)
-    struct Plan { var edge: Edge; var pos: CGFloat; var order: Double?; var size: NSSize; var screen: NSScreen }
+    struct Plan { var edge: Edge; var pos: CGFloat; var order: Double?; var size: NSSize; var screen: NSScreen; var lane = 0 }
     static func computeFrames(override: (bar: FavBar, plan: Plan)? = nil, orders: [ObjectIdentifier: Double] = [:]) -> [(bar: FavBar, f: NSRect)] {
         var out: [(bar: FavBar, f: NSRect)] = []
         // 막대마다: 가장자리 · 자리 · 순서 · 크기 · 모니터 (끌고 있는 막대는 지금 놓으면 될 값으로)
         typealias It = (bar: FavBar, f: NSRect, edge: Edge, order: Double?, vf: NSRect)
         var groups: [String: [It]] = [:]
+        // 먼저 막대마다 놓일 값을 정하고, 줄마다 두께(가장 두꺼운 막대)를 잼
+        var plans: [(b: FavBar, pl: Plan)] = []
+        var laneThick: [String: CGFloat] = [:]
         for b in all {
             guard let p = b.panel, let v = p.contentView as? FavBase else { continue }
-            var pl = override?.bar === b ? override!.plan : Plan(edge: b.edge, pos: b.pos, order: b.order, size: v.wantSize, screen: b.screen)
+            var pl = override?.bar === b ? override!.plan : Plan(edge: b.edge, pos: b.pos, order: b.order, size: v.wantSize, screen: b.screen, lane: b.lane)
             if let o = orders[ObjectIdentifier(b)] { pl.order = o }
+            plans.append((b, pl))
+            let side = "\(pl.edge.rawValue)|\(NSStringFromRect(pl.screen.visibleFrame))"
+            let t = pl.edge.vertical ? pl.size.width : pl.size.height
+            laneThick["\(side)|\(pl.lane)"] = max(laneThick["\(side)|\(pl.lane)"] ?? 0, t)
+        }
+        for (b, pl) in plans {
             let vf = pl.screen.visibleFrame
-            let f = b.frame(edge: pl.edge, pos: pl.pos, size: pl.size, vf: vf)
-            groups["\(pl.edge.rawValue)|\(NSStringFromRect(vf))", default: []].append((b, f, pl.edge, pl.order, vf))
+            var f = b.frame(edge: pl.edge, pos: pl.pos, size: pl.size, vf: vf)
+            // 안쪽 줄들의 두께만큼 화면 안쪽으로 비켜 놓음
+            let side = "\(pl.edge.rawValue)|\(NSStringFromRect(vf))"
+            var off: CGFloat = 0
+            if pl.lane > 0 { for l in 0..<pl.lane { if let t = laneThick["\(side)|\(l)"] { off += t + laneGap } } }
+            switch pl.edge {
+            case .left: f.origin.x += off
+            case .right: f.origin.x -= off
+            case .top: f.origin.y -= off
+            case .bottom: f.origin.y += off
+            }
+            groups["\(side)|\(pl.lane)", default: []].append((b, f, pl.edge, pl.order, vf))
         }
         let gap: CGFloat = 8
         // 왼쪽 · 오른쪽 막대를 먼저 놓고, 위 · 아래 막대는 그 막대들을 피해서 (모서리에서 겹치지 않게)
@@ -703,8 +758,9 @@ final class FavBar {
         let c = NSPoint(x: p.frame.midX, y: p.frame.midY)
         let (e, ps, s, sz) = target(c, size: v.wantSize)
         let vf = s.visibleFrame
-        // 같은 가장자리 · 모니터의 다른 막대들을 끌기 전 자리 순서대로 세우고, 끄는 막대 가운데가 몇 개를 넘었는지로 끼어들 자리
-        let mine = Self.restFrames.filter { $0.bar.edge == e && vf.intersects($0.f) }
+        let ln = laneAt(c, edge: e, screen: s, size: sz)
+        // 같은 가장자리 · 모니터 · 같은 줄의 다른 막대들을 끌기 전 자리 순서대로 세우고, 끄는 막대 가운데가 몇 개를 넘었는지로 끼어들 자리
+        let mine = Self.restFrames.filter { $0.bar.edge == e && $0.bar.lane == ln && vf.intersects($0.f) }
             .sorted { e.vertical ? $0.f.midY < $1.f.midY : $0.f.midX < $1.f.midX }
         let at = mine.filter { e.vertical ? $0.f.midY < c.y : $0.f.midX < c.x }.count
         var orders: [ObjectIdentifier: Double] = [:]
@@ -713,7 +769,7 @@ final class FavBar {
         let ord = mine.isEmpty ? Double(e.vertical ? (c.y - vf.minY) / vf.height : (c.x - vf.minX) / vf.width) : (Double(at) + 0.5) / n
         orders[ObjectIdentifier(self)] = ord
         Self.liveOrders = orders
-        let frames = Self.computeFrames(override: (self, Plan(edge: e, pos: ps, order: ord, size: sz, screen: s)), orders: orders)
+        let frames = Self.computeFrames(override: (self, Plan(edge: e, pos: ps, order: ord, size: sz, screen: s, lane: ln)), orders: orders)
         // 다른 막대들은 그 자리로 미끄러져 비켜 줌 (사이에 끼어들 빈자리가 생김)
         for it in frames where it.bar !== self {
             guard let bp = it.bar.panel, bp.isVisible else { continue }
@@ -738,7 +794,8 @@ final class FavBar {
         EdgeIndicator.shared.hide()
         guard let p = panel, let v = p.contentView as? FavBase else { return }
         let c = NSPoint(x: p.frame.midX, y: p.frame.midY)
-        let (e, ps, s, _) = target(c, size: v.wantSize)
+        let (e, ps, s, sz) = target(c, size: v.wantSize)
+        lane = laneAt(c, edge: e, screen: s, size: sz)
         edge = e
         pos = ps
         // 끄는 동안 보여 준 순서 그대로 저장 (그 사이에 끼어 들어감)
@@ -752,6 +809,22 @@ final class FavBar {
         Self.restFrames = []
         d.set((s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0, forKey: k("favScreen"))
         rebuild()
+    }
+
+    /// 데스크탑 막대들을 한꺼번에 한 가장자리로 (위 · 아래면 가로로 늘어섬). 순서는 지금 늘어선 차례 그대로
+    static func setEdgeForAll(_ e: Edge) {
+        let sorted = all.filter(\.isDesktop).sorted { a, b in
+            let fa = a.panel?.frame ?? .zero, fb = b.panel?.frame ?? .zero
+            return a.edge.vertical ? fa.midY > fb.midY : fa.minX < fb.minX   // 세로였으면 위에서부터 → 가로에선 왼쪽부터
+        }
+        let n = Double(max(1, sorted.count))
+        for (i, b) in sorted.enumerated() {
+            b.edge = e
+            // 세로(아래가 0)는 위에 있던 게 위로 · 가로는 왼쪽부터
+            b.order = e.vertical ? 1 - (Double(i) + 0.5) / n : (Double(i) + 0.5) / n
+        }
+        for b in all { b.rebuild(animate: true) }
+        shared.onChange()
     }
 
     // MARK: [+] 메뉴
