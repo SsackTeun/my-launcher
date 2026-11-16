@@ -347,7 +347,9 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         wv.callAsyncJavaScript(Self.lyricsJS, arguments: ["mayOpen": !watching], in: nil, in: .page) { result in
             MainActor.assumeIsolated {
                 guard case .success(let v) = result, let o = v as? [String: Any] else { done(Lyrics(status: "loading")); return }
-                if o["status"] as? String == "skip" { return }     // 지금 가사 그대로 두고 다음에 다시
+                // YouTube Music 창을 보고 있어서 가사 탭을 못 읽음: 가사는 다음에 다시 읽되, 곡이 바뀐 건 알려 줌
+                // (예전엔 여기서 그냥 끝내서, 창을 보는 동안 곡이 바뀌면 이전 곡 가사가 계속 남았음)
+                if o["status"] as? String == "skip" { done(Lyrics(title: o["title"] as? String ?? "", status: "skip")); return }
                 done(Lyrics(title: o["title"] as? String ?? "", status: o["status"] as? String ?? "none",
                             text: o["text"] as? String ?? "", source: o["source"] as? String ?? ""))
             }

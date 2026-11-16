@@ -152,15 +152,19 @@ final class Tile: NSView {
     static var fontScale: CGFloat = 1
 
     static func size(icon: CGFloat) -> NSSize {
-        NSSize(width: max(icon + 32, 76 * min(1.2, fontScale)), height: icon + 26 + ceil(16 * fontScale))
+        NSSize(width: max(icon + 32, 76 * min(1.2, fontScale)), height: icon + 20 + ceil(16 * fontScale) + memLine)
     }
+    /// 실행 중 탭처럼 다 켜져 있는 목록에서는 초록 점을 안 그림 (격자 보기)
+    static var hideRunDot = false
+    /// 격자 보기 이름 밑 메모리 줄 높이 (메모리 표시를 켰을 때만)
+    static var memLine: CGFloat { showMemory ? ceil(11 * max(0.8, fontScale)) : 0 }
 
     var onClick: (() -> Void)?
     private var hovering = false {
         didSet {
             needsDisplay = true
             quitButton?.isHidden = !hovering
-            if quitButton != nil { runDot?.isHidden = hovering }   // ⓧ 가 나오면 초록 점은 가림
+            if quitButton != nil { runDot?.isHidden = hovering || (!isRow && Tile.hideRunDot) }   // ⓧ 가 나오면 초록 점은 가림
         }
     }
     private var runDot: NSView?
@@ -184,9 +188,9 @@ final class Tile: NSView {
         guard Tile.showMemory, pid > 0 else { return }
         memPID = pid
         let l = NSTextField(labelWithString: "")
-        l.font = .monospacedDigitSystemFont(ofSize: isRow ? 11 * Tile.fontScale : 9, weight: isRow ? .regular : .medium)
-        l.alignment = isRow ? .right : .left
-        l.textColor = .secondaryLabelColor
+        l.font = .monospacedDigitSystemFont(ofSize: isRow ? 11 * Tile.fontScale : 9 * max(0.8, Tile.fontScale), weight: .regular)
+        l.alignment = isRow ? .right : .center
+        l.textColor = isRow ? .secondaryLabelColor : .tertiaryLabelColor   // 격자 보기: 이름 밑 연한 작은 글자
         addSubview(l)
         memLabel = l
         Tile.memTiles.add(self)
@@ -197,7 +201,6 @@ final class Tile: NSView {
         guard let l = memLabel else { return }
         guard let bytes, bytes > 0 else {
             l.isHidden = true
-            if !isRow { runDot?.frame = NSRect(x: frame.width / 2 - 3, y: 1, width: 6, height: 6) }
             return
         }
         l.isHidden = false
@@ -206,12 +209,9 @@ final class Tile: NSView {
         if isRow {
             l.frame = NSRect(x: memRight - 56, y: (frame.height - 15) / 2, width: 56, height: 15)
         } else {
-            // 이름 아래 초록 점 줄에 "● 110 MB" 로 (이름 · 아이콘과 안 겹치게)
-            l.sizeToFit()
-            let tw = ceil(l.frame.width), total = 6 + 4 + tw
-            let x0 = max(1, (frame.width - total) / 2)
-            runDot?.frame = NSRect(x: x0, y: 3, width: 6, height: 6)
-            l.frame = NSRect(x: x0 + 10, y: 0, width: tw, height: 12)
+            // 격자 보기: 이름 밑 가운데에 "2.3 GB" (숫자가 있으면 켜져 있다는 뜻이라 초록 점은 숨김)
+            l.frame = NSRect(x: 2, y: 3, width: frame.width - 4, height: Tile.memLine)
+            runDot?.isHidden = true
         }
     }
 
@@ -257,7 +257,7 @@ final class Tile: NSView {
         }
 
         // 칸 안쪽은 아래에서 위로: 초록 점 → 이름 → 아이콘
-        let iv = NSImageView(frame: NSRect(x: (s.width - iconSize) / 2, y: 14 + ceil(16 * Tile.fontScale), width: iconSize, height: iconSize))
+        let iv = NSImageView(frame: NSRect(x: (s.width - iconSize) / 2, y: 9 + ceil(16 * Tile.fontScale) + Tile.memLine, width: iconSize, height: iconSize))
         iv.image = icon
         iv.imageScaling = .scaleProportionallyUpOrDown
         if !found { iv.alphaValue = 0.35 }
@@ -265,7 +265,7 @@ final class Tile: NSView {
         iconFrame = iv.frame
 
         let label = NSTextField(labelWithString: name)
-        label.frame = NSRect(x: 2, y: 10, width: s.width - 4, height: ceil(16 * Tile.fontScale))
+        label.frame = NSRect(x: 2, y: 5 + Tile.memLine, width: s.width - 4, height: ceil(16 * Tile.fontScale))
         label.alignment = .center
         label.font = .systemFont(ofSize: (iconSize < 40 ? 10 : 12) * Tile.fontScale)
         label.lineBreakMode = .byTruncatingTail
@@ -278,7 +278,7 @@ final class Tile: NSView {
             b.alignment = .center
             b.wantsLayer = true
             b.drawsBackground = false
-            b.layer?.backgroundColor = (badge == "업데이트" ? NSColor.systemOrange : NSColor.controlAccentColor).cgColor
+            b.layer?.backgroundColor = (badge == "업데이트" ? NSColor.systemOrange : NSColor.launcherAccent).cgColor
             b.layer?.cornerRadius = 7
             b.sizeToFit()
             let bw = b.frame.width + 10
@@ -286,10 +286,11 @@ final class Tile: NSView {
             addSubview(b)
         }
         if running {
-            let dot = NSView(frame: NSRect(x: s.width / 2 - 3, y: 1, width: 6, height: 6))
+            let dot = NSView(frame: NSRect(x: s.width / 2 - 2, y: 0, width: 4, height: 4))
             dot.wantsLayer = true
             dot.layer?.backgroundColor = NSColor.systemGreen.cgColor
-            dot.layer?.cornerRadius = 3
+            dot.layer?.cornerRadius = 2
+            dot.isHidden = Tile.hideRunDot
             addSubview(dot)
             runDot = dot
         }
@@ -347,7 +348,7 @@ final class Tile: NSView {
             b.textColor = .white
             b.alignment = .center
             b.wantsLayer = true
-            b.layer?.backgroundColor = (badge == "업데이트" ? NSColor.systemOrange : NSColor.controlAccentColor).cgColor
+            b.layer?.backgroundColor = (badge == "업데이트" ? NSColor.systemOrange : NSColor.launcherAccent).cgColor
             b.layer?.cornerRadius = 7
             b.sizeToFit()
             let bw = b.frame.width + 10
@@ -557,13 +558,13 @@ final class GridView: NSView {
     override func draw(_ dirtyRect: NSRect) {
         guard let t = current else { return }
         // 들어갈 카테고리 영역은 옅게, 들어갈 자리는 세로 막대로
-        NSColor.controlAccentColor.withAlphaComponent(0.10).setFill()
+        NSColor.launcherAccent.withAlphaComponent(0.10).setFill()
         let p = NSBezierPath(roundedRect: t.section, xRadius: 10, yRadius: 10)
         p.fill()
-        NSColor.controlAccentColor.withAlphaComponent(0.6).setStroke()
+        NSColor.launcherAccent.withAlphaComponent(0.6).setStroke()
         p.lineWidth = 1.5
         p.stroke()
-        NSColor.controlAccentColor.setFill()
+        NSColor.launcherAccent.setFill()
         NSBezierPath(roundedRect: t.caret, xRadius: 1.5, yRadius: 1.5).fill()
     }
 }
@@ -601,9 +602,53 @@ final class DragArea: NSView {
     override var mouseDownCanMoveWindow: Bool { false }
     override func mouseDown(with event: NSEvent) {
         guard !isLocked(), let w = window else { return }
-        EdgeDock.shared.beginWatch()   // 끄는 동안 붙을 자리 보여 주기
+        EdgeDock.dock(for: w)?.beginWatch()   // 끄는 동안 붙을 자리 보여 주기 (도구함 창 · 떼어 낸 플레이어)
         w.performDrag(with: event)
         OnScreen.fix(w)        // 모니터 밖으로 끌었으면 다시 안으로
+    }
+}
+
+/// 앱 목록 접기 손잡이: 어두운 알약 + 화살표 (화면 끝 접기 손잡이와 같은 모양, 가로로)
+final class FoldPill: NSView {
+    private let folded: Bool
+    private let action: () -> Void
+    private var hovering = false { didSet { needsDisplay = true } }
+    init(folded: Bool, action: @escaping () -> Void) {
+        self.folded = folded
+        self.action = action
+        super.init(frame: .zero)
+        toolTip = folded ? "앱 목록 펼치기" : "앱 목록 접기"
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with e: NSEvent) { hovering = true }
+    override func mouseExited(with e: NSEvent) { hovering = false }
+    override func mouseDown(with e: NSEvent) {}
+    override func mouseUp(with e: NSEvent) {
+        if bounds.contains(convert(e.locationInWindow, from: nil)) { action() }
+    }
+    override func draw(_ r: NSRect) {
+        let p = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: bounds.height / 2, yRadius: bounds.height / 2)
+        NSColor(white: hovering ? 0.24 : 0.16, alpha: 0.95).setFill()
+        p.fill()
+        NSColor(white: 1, alpha: 0.15).setStroke()
+        p.lineWidth = 1
+        p.stroke()
+        guard let img = NSImage(systemSymbolName: folded ? "chevron.down" : "chevron.up", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 8, weight: .bold)) else { return }
+        let tinted = NSImage(size: img.size, flipped: false) { rr in
+            img.draw(in: rr)
+            NSColor(white: 1, alpha: self.hovering ? 0.95 : 0.7).set()
+            rr.fill(using: .sourceAtop)
+            return true
+        }
+        let sz = tinted.size
+        tinted.draw(in: NSRect(x: bounds.midX - sz.width / 2, y: bounds.midY - sz.height / 2, width: sz.width, height: sz.height))
     }
 }
 
@@ -637,7 +682,7 @@ final class DragHandle: NSView {
         // 끌어서 옮기기만 (여러 번 눌러도 다른 동작 없음)
         guard !isLocked(), let w = window else { return }
         NSCursor.closedHand.set()
-        EdgeDock.shared.beginWatch()   // 끄는 동안 붙을 자리 보여 주기
+        EdgeDock.dock(for: w)?.beginWatch()   // 끄는 동안 붙을 자리 보여 주기 (도구함 창 · 떼어 낸 플레이어)
         w.performDrag(with: event)
         NSCursor.openHand.set()
         OnScreen.fix(w)
@@ -645,6 +690,91 @@ final class DragHandle: NSView {
 }
 
 /// 아래 손잡이: 위아래로 끌면 앱 목록 높이 조절, 더블클릭하면 자동 높이
+/// 창 왼쪽 · 오른쪽 테두리: 잡고 끌면 창 폭 조절 (보이지 않는 얇은 띠, 마우스를 대면 ↔ 커서)
+final class EdgeResizer: NSView {
+    var onBegin: (() -> Void)?
+    var onDrag: ((CGFloat) -> Void)?      // 처음 누른 곳에서 오른쪽으로 움직인 거리
+    var onReset: (() -> Void)?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect, .cursorUpdate], owner: self))
+    }
+    // 창 밖에서 들어올 때는 cursorUpdate 가 안 오는 경우가 있어서 (창이 키 창이 아닐 때) 들어오고 · 움직일 때도 직접 바꿈
+    override func cursorUpdate(with event: NSEvent) { NSCursor.resizeLeftRight.set() }
+    override func mouseEntered(with event: NSEvent) {
+        toolTip = "좌우로 끌어서 창 폭 조절 · 더블클릭하면 기본 폭"
+        NSCursor.resizeLeftRight.set()
+    }
+    override func mouseMoved(with event: NSEvent) { NSCursor.resizeLeftRight.set() }
+    override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { onReset?(); return }
+        guard let w = window else { return }
+        let start = NSEvent.mouseLocation.x
+        onBegin?()
+        NSCursor.resizeLeftRight.push()
+        w.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { [weak self] ev, stop in
+            guard let self, let ev, ev.type != .leftMouseUp else { stop.pointee = true; return }
+            self.onDrag?(NSEvent.mouseLocation.x - start)
+        }
+        NSCursor.pop()
+    }
+}
+
+/// 창 테두리 · 모서리를 잡고 크기 조절 (어느 변 · 모서리인지에 따라 커서도 바뀜)
+final class FrameResizer: NSView {
+    struct Edges: OptionSet { let rawValue: Int
+        static let left = Edges(rawValue: 1), right = Edges(rawValue: 2), top = Edges(rawValue: 4), bottom = Edges(rawValue: 8) }
+    let edges: Edges
+    var onBegin: (() -> Void)?
+    var onDrag: ((CGFloat, CGFloat) -> Void)?   // 처음 누른 곳에서 마우스가 움직인 거리 (x 오른쪽 +, y 위 +)
+    var onReset: (() -> Void)?
+    init(_ e: Edges) { edges = e; super.init(frame: .zero) }
+    required init?(coder: NSCoder) { fatalError() }
+    private var cursor: NSCursor {
+        let pos: NSCursor.FrameResizePosition
+        switch (edges.contains(.left), edges.contains(.right), edges.contains(.top), edges.contains(.bottom)) {
+        case (true, _, true, _): pos = .topLeft
+        case (_, true, true, _): pos = .topRight
+        case (true, _, _, true): pos = .bottomLeft
+        case (_, true, _, true): pos = .bottomRight
+        case (true, _, _, _): pos = .left
+        case (_, true, _, _): pos = .right
+        case (_, _, true, _): pos = .top
+        default: pos = .bottom
+        }
+        return NSCursor.frameResize(position: pos, directions: .all)
+    }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect, .cursorUpdate], owner: self))
+    }
+    override func cursorUpdate(with event: NSEvent) { cursor.set() }
+    override func mouseEntered(with event: NSEvent) { cursor.set() }
+    override func mouseMoved(with event: NSEvent) { cursor.set() }
+    override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }   // 다른 앱을 쓰다가 바로 잡아도 됨
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { onReset?(); return }
+        guard let w = window else { return }
+        let start = NSEvent.mouseLocation
+        onBegin?()
+        cursor.push()
+        w.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { [weak self] ev, stop in
+            guard let self, let ev, ev.type != .leftMouseUp else { stop.pointee = true; return }
+            let m = NSEvent.mouseLocation
+            self.onDrag?(m.x - start.x, m.y - start.y)
+        }
+        NSCursor.pop()
+        OnScreen.fix(w)
+    }
+}
+
 final class ResizeHandle: NSView {
     var onBegin: (() -> Void)?
     var onDrag: ((CGFloat) -> Void)?      // 처음 누른 곳에서 아래로 움직인 거리
@@ -661,15 +791,20 @@ final class ResizeHandle: NSView {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect, .cursorUpdate], owner: self))
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect, .cursorUpdate], owner: self))
     }
+    // 창 밖에서 들어올 때는 cursorUpdate 가 안 올 수 있어서 (창이 키 창이 아닐 때) 들어오고 · 움직일 때도 직접 바꿈
     override func mouseEntered(with event: NSEvent) {
         hovering = true
         toolTip = "위아래로 끌어서 목록 높이 조절 · 더블클릭하면 내용에 맞춤"
+        NSCursor.resizeUpDown.set()
     }
-    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func mouseMoved(with event: NSEvent) { NSCursor.resizeUpDown.set() }
+    override func mouseExited(with event: NSEvent) { hovering = false; NSCursor.arrow.set() }
     override func cursorUpdate(with event: NSEvent) { NSCursor.resizeUpDown.set() }
     override var mouseDownCanMoveWindow: Bool { false }
+    // 다른 앱을 쓰다가 바로 잡아도 첫 클릭부터 끌림 (없으면 첫 클릭은 창을 앞으로 가져오기만 함)
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 { onReset?(); return }
         guard let w = window else { return }
@@ -761,13 +896,13 @@ final class CategoryTab: NSView {
                 NSBezierPath(roundedRect: bounds.insetBy(dx: 0, dy: 1), xRadius: 6, yRadius: 6).fill()
             }
             if selected {
-                NSColor.controlAccentColor.setFill()
+                NSColor.launcherAccent.setFill()
                 NSBezierPath(roundedRect: NSRect(x: 2, y: 6, width: 3, height: bounds.height - 12), xRadius: 1.5, yRadius: 1.5).fill()
             }
             return
         }
         guard selected else { return }
-        NSColor.controlAccentColor.setFill()
+        NSColor.launcherAccent.setFill()
         NSBezierPath(roundedRect: NSRect(x: 0, y: 1, width: bounds.width, height: 2.5), xRadius: 1.25, yRadius: 1.25).fill()
     }
     override func updateTrackingAreas() {
@@ -923,16 +1058,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.frame.size = NSSize(width: 24, height: 24)
         return b
     }()
-    lazy var windowPiPButton: ActionButton = {
-        // 일반 창(게임 등)을 작은 창으로 비춰 보기
-        let b = ActionButton(title: "", symbol: "rectangle.on.rectangle") { b in WindowPiP.shared.showPicker(from: b) }
-        b.isBordered = false
-        b.symbolConfiguration = .init(pointSize: 13, weight: .semibold)
-        b.contentTintColor = .secondaryLabelColor
-        b.toolTip = "창 PIP: 다른 앱 창(게임 등)을 항상 위 작은 창으로 띄우기"
-        b.frame.size = NSSize(width: 24, height: 24)
-        return b
-    }()
     lazy var netflixButton: ActionButton = {
         // Netflix 영상 창 (YouTube 와 같은 작은 창 PIP)
         let b = ActionButton(title: "N", symbol: nil) { _ in VideoWindow.netflix.show() }
@@ -946,6 +1071,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.frame.size = NSSize(width: 24, height: 24)
         return b
     }()
+    /// 메일 (안 읽은 수 배지 · 누르면 최근 메일)
+    lazy var mailButton: MailButton = {
+        let b = MailButton()
+        // 아직 연결 전이면 누르면 바로 메일 설정으로
+        // 누르면 메일 창 (왼쪽 목록 · 오른쪽 본문), 오른쪽 클릭은 짧은 목록 메뉴
+        b.onClick = { [unowned self] _ in MailWatch.shared.configured ? MailWindow.shared.show() : openSettingsTab("메일") }
+        b.onRightClick = { [unowned self] b in MailWatch.shared.configured ? showMailMenu(from: b) : openSettingsTab("메일") }
+        return b
+    }()
+    func showMailMenu(from b: NSView) {
+        let w = MailWatch.shared
+        let m = NSMenu()
+        if let e = w.lastError {
+            let i = NSMenuItem(title: "⚠︎ " + e, action: nil, keyEquivalent: "")
+            m.addItem(i)
+            m.addItem(.separator())
+        }
+        let head = NSMenuItem(title: w.unreadCount > 0 ? "안 읽은 메일 \(w.unreadCount)개" : "안 읽은 메일 없음", action: nil, keyEquivalent: "")
+        m.addItem(head)
+        let df = DateFormatter()
+        for it in w.unread {
+            df.dateFormat = Calendar.current.isDateInToday(it.date ?? .distantPast) ? "HH:mm" : "M/d"
+            let when = it.date.map { df.string(from: $0) } ?? ""
+            let uid = it.uid
+            let i = Item("\(it.from) — \(it.subject)") { MailWindow.shared.show(); MailWindow.shared.box.selected = uid }
+            let t = NSMutableAttributedString(string: it.from, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold)])
+            t.append(NSAttributedString(string: "  \(when)\n", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]))
+            let subj = it.subject.count > 46 ? String(it.subject.prefix(46)) + "…" : it.subject
+            t.append(NSAttributedString(string: subj, attributes: [.font: NSFont.systemFont(ofSize: 12)]))
+            i.attributedTitle = t
+            m.addItem(i)
+        }
+        if w.unreadCount > w.unread.count { m.addItem(NSMenuItem(title: "… 외 \(w.unreadCount - w.unread.count)개", action: nil, keyEquivalent: "")) }
+        m.addItem(.separator())
+        m.addItem(Item("메일 창 열기") { MailWindow.shared.show() })
+        m.addItem(Item("메일함 열기 (웹)") { MailWatch.shared.openWeb() })
+        m.addItem(Item(w.checking ? "확인하는 중…" : "지금 확인") { MailWatch.shared.check() })
+        let all = Item("모두 읽음으로…") { MailWatch.shared.confirmMarkAllRead() }
+        all.isEnabled = w.unreadCount > 0
+        m.addItem(all)
+        m.addItem(Item("메일 설정…") { [unowned self] in openSettingsTab("메일") })
+        m.popUp(positioning: nil, at: NSPoint(x: 0, y: b.bounds.height + 4), in: b)
+    }
+    func updateMailButton() {
+        let w = MailWatch.shared
+        mailButton.count = w.unreadCount
+        mailButton.failed = w.lastError != nil
+    }
     // 앱 목록 접기 (전체 / 카테고리별)
     var listCollapsed = false
     /// 앱 목록 탭: 0 전체 · 1 실행 중 · 2 개발자 앱
@@ -1168,17 +1341,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
     }
 
-    lazy var collapseButton: ActionButton = {
-        let b = ActionButton(title: "", symbol: "chevron.up") { [unowned self] _ in
-            listCollapsed.toggle()
-            d.set(listCollapsed, forKey: "listCollapsed")
-            refresh()
-        }
-        b.isBordered = false
-        b.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
-        b.frame.size = NSSize(width: 24, height: 24)
-        return b
-    }()
     /// 위치 고정 자물쇠 (🔒 고정 · 🔓 풀림)
     lazy var lockButton: ActionButton = {
         let b = ActionButton(title: "", symbol: "lock.open") { [unowned self] _ in toggleLocked() }
@@ -1189,7 +1351,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     func updateLockButton() {
         lockButton.image = NSImage(systemSymbolName: locked ? "lock.fill" : "lock.open", accessibilityDescription: nil)
-        lockButton.contentTintColor = locked ? .controlAccentColor : nil
+        lockButton.contentTintColor = locked ? .launcherAccent : nil
         lockButton.toolTip = locked ? "창 위치 고정됨 — 누르면 풀려요" : "누르면 창 위치를 고정해요"
     }
     lazy var bulkButton: ActionButton = {
@@ -1207,8 +1369,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         v.addSubview(finderButton)
         v.addSubview(youtubeButton)
         v.addSubview(netflixButton)
-        v.addSubview(windowPiPButton)
-        v.addSubview(collapseButton)
+        v.addSubview(mailButton)
         v.addSubview(bulkButton)
         v.addSubview(lockButton)
         return v
@@ -1255,6 +1416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         playerBar.detached = on
         lyrics.model.stripDetached = on
         lyricsPanel?.orderOut(nil)
+        if !on { EdgeDock.player.windowShown() }   // 합치면 접힌 손잡이도 정리
         refresh()
     }
 
@@ -1275,7 +1437,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let off: CGFloat = part == .player ? 0 : 140
             p.setFrameTopLeftPoint(NSPoint(x: main.frame.maxX + 12, y: main.frame.maxY - off))
         }
-        if part == .player { playerPanel = p } else { lyricsPanel = p }
+        if part == .player {
+            playerPanel = p
+            // 떼어 낸 플레이어도 화면 끝에 붙이고 접을 수 있게
+            EdgeDock.player.present = { $0.orderFrontRegardless() }
+            EdgeDock.player.attach(p)
+        } else { lyricsPanel = p }
         return p
     }
 
@@ -1283,8 +1450,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func showDetached(_ part: Part, view: NSView, width: CGFloat, height: CGFloat, below: (NSView, CGFloat)? = nil) {
         let p = detachedPanel(part)
         let handle: CGFloat = 20
+        // 맨 아래 여백 (가사 칸 아래가 양옆보다 좁아 보이지 않게)
+        let bottomPad: CGFloat = 6
         let belowH = below?.1 ?? 0
-        let size = NSSize(width: width, height: height + belowH + handle)
+        let size = NSSize(width: width, height: height + belowH + handle + bottomPad)
         let fx: NSVisualEffectView
         if let cur = p.contentView as? NSVisualEffectView { fx = cur } else {
             fx = NSVisualEffectView(frame: NSRect(origin: .zero, size: size))
@@ -1297,6 +1466,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let top = p.frame.maxY
         p.setFrame(NSRect(x: p.frame.minX, y: top - size.height, width: size.width, height: size.height), display: false)
         fx.frame = NSRect(origin: .zero, size: size)
+        p.appearance = Theme.appearance
+        Theme.attach(to: fx, corner: 16, sticker: false)
         let grip = fx.subviews.first(where: { $0 is DragHandle }) as? DragHandle ?? {
             let g = DragHandle(frame: .zero)
             g.isLocked = { [unowned self] in locked }
@@ -1305,16 +1476,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }()
         grip.frame = NSRect(x: 0, y: size.height - handle, width: size.width, height: handle)
         if view.superview !== fx { fx.addSubview(view) }
-        view.frame = NSRect(x: 0, y: belowH, width: width, height: height)
+        view.frame = NSRect(x: 0, y: belowH + bottomPad, width: width, height: height)
         view.needsLayout = true
         // 아래에 같이 붙일 것 (플레이어 밑의 가사 줄)
         if let (bv, bh) = below {
             if bv.superview !== fx { fx.addSubview(bv) }
-            bv.frame = NSRect(x: 0, y: 0, width: width, height: bh)
+            bv.frame = NSRect(x: 0, y: bottomPad, width: width, height: bh)
+        }
+        // 왼쪽 · 오른쪽 테두리로 폭 조절 (맨 위에 얹음)
+        for (r, x) in [(detachedLeft, 0), (detachedRight, size.width - 6)] as [(EdgeResizer, CGFloat)] {
+            r.removeFromSuperview()
+            r.frame = NSRect(x: x, y: 0, width: 6, height: size.height)
+            fx.addSubview(r)
         }
         p.level = widget ? widgetLevels[widgetLevel].1 : .floating
         p.collectionBehavior = widget ? [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone] : []
-        p.orderFrontRegardless()
+        // 화면 끝에 접어 둔 상태면 다시 띄우지 않음
+        if EdgeDock.dock(for: p)?.collapsed != true { p.orderFrontRegardless() }
     }
 
     lazy var lyrics: LyricsController = {
@@ -1362,6 +1540,75 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return r
     }()
+    /// 테두리로 줄일 수 있는 가장 좁은 폭 (좁은 배치가 찌그러지지 않고 다 들어가는 폭)
+    static let minWidth: CGFloat = 276
+    /// 사용자가 테두리로 정한 창 폭 (nil 이면 기본 폭)
+    var userWidth: CGFloat? = {
+        let v = UserDefaults.standard.double(forKey: "userWidth")
+        return v > 0 ? CGFloat(v) : nil
+    }()
+    private var widthStart: (w: CGFloat, left: CGFloat, right: CGFloat) = (0, 0, 0)
+    /// 떼어 낸 플레이어 창 폭 (테두리로 정함, nil 이면 도구함 창 폭)
+    var detachedWidth: CGFloat? = {
+        let v = UserDefaults.standard.double(forKey: "detachedWidth")
+        return v > 0 ? CGFloat(v) : nil
+    }()
+    private func detachedResizer(left: Bool) -> EdgeResizer {
+        let r = EdgeResizer(frame: .zero)
+        r.onBegin = { [unowned self] in
+            let f = playerPanel?.frame ?? .zero
+            widthStart = (f.width, f.minX, f.maxX)
+        }
+        r.onDrag = { [unowned self] dx in
+            let v = max(Self.minWidth, (widthStart.w + (left ? -dx : dx)).rounded())
+            guard abs(v - (detachedWidth ?? widthStart.w)) >= 3 else { return }
+            detachedWidth = v
+            d.set(Double(v), forKey: "detachedWidth")
+            refresh()
+            if left, let p = playerPanel { p.setFrameOrigin(NSPoint(x: widthStart.right - p.frame.width, y: p.frame.minY)) }
+        }
+        r.onReset = { [unowned self] in
+            detachedWidth = nil
+            d.removeObject(forKey: "detachedWidth")
+            refresh()
+        }
+        return r
+    }
+    lazy var detachedLeft = detachedResizer(left: true)
+    lazy var detachedRight = detachedResizer(left: false)
+    /// 도구함 창 테두리 · 모서리 (왼 · 오른 · 위 · 네 모서리, 아래는 손잡이 줄)
+    lazy var frameResizers: [FrameResizer] = [
+        [.left], [.right], [.top], [.top, .left], [.top, .right], [.bottom, .left], [.bottom, .right],
+    ].map { mainResizer($0) }
+    private var frameStart = NSRect.zero
+    private func mainResizer(_ e: FrameResizer.Edges) -> FrameResizer {
+        let r = FrameResizer(e)
+        r.onBegin = { [unowned self] in frameStart = window.frame; resizeStartH = lastViewH }
+        r.onDrag = { [unowned self] dx, dy in
+            var changed = false
+            if e.contains(.left) || e.contains(.right) {
+                let v = max(Self.minWidth, (frameStart.width + (e.contains(.left) ? -dx : dx)).rounded())
+                if abs(v - (userWidth ?? window.frame.width)) >= 3 { userWidth = v; d.set(Double(v), forKey: "userWidth"); changed = true }
+            }
+            if e.contains(.top) || e.contains(.bottom), lastDocH > 0, resizeHandle.superview != nil {
+                let v = max(40, min(lastDocH, resizeStartH + (e.contains(.top) ? dy : -dy))).rounded()
+                if abs(v - (userListH ?? lastViewH)) >= 2 { userListH = v; d.set(Double(v), forKey: "userListH"); changed = true }
+            }
+            guard changed else { return }
+            refresh()
+            // 잡은 반대쪽 변은 그대로
+            let f = window.frame
+            let x = e.contains(.left) ? frameStart.maxX - f.width : frameStart.minX
+            let y = e.contains(.top) ? frameStart.minY : f.minY
+            if abs(f.minX - x) > 0.5 || abs(f.minY - y) > 0.5 { window.setFrameOrigin(NSPoint(x: x, y: y)) }
+        }
+        r.onReset = { [unowned self] in
+            if e.contains(.left) || e.contains(.right) { userWidth = nil; d.removeObject(forKey: "userWidth") }
+            if e.contains(.top) || e.contains(.bottom) { userListH = nil; d.removeObject(forKey: "userListH") }
+            refresh()
+        }
+        return r
+    }
     lazy var dragHandle: DragHandle = {
         let h = DragHandle(frame: .zero)
         h.isLocked = { [unowned self] in locked }
@@ -1372,20 +1619,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return h
     }()
 
-    let pad: CGFloat = 14, gap: CGFloat = 4, barH: CGFloat = 44, headerH: CGFloat = 28, sectionGap: CGFloat = 10
+    let gap: CGFloat = 4, barH: CGFloat = 44
+    /// 컴팩트 창 (옵션, 처음엔 켬): 창 폭 · 여백 · 묶음 간격을 줄임
+    var compactUI: Bool { d.object(forKey: "compactUI") as? Bool ?? true }
+    /// 앱 영역에서 스크롤하면 강조가 앱을 하나씩 옮겨 감 (기본 끔 — 끄면 보통 스크롤)
+    var scrollFocusApps: Bool { d.object(forKey: "scrollFocusApps") as? Bool ?? false }
+    /// 좁은 창 (폭 약 270): 플레이어 두 줄 · 탭 이름 짧게 · 앱 2~3칸
+    var narrowUI: Bool { d.object(forKey: "narrowUI") as? Bool ?? false }
+    var pad: CGFloat { compactUI ? 10 : 14 }
+    var headerH: CGFloat { compactUI ? 24 : 28 }
+    var sectionGap: CGFloat { compactUI ? 6 : 10 }
 
     func applicationDidFinishLaunching(_ n: Notification) {
         YouTubeWindow.shared.onChange = { [unowned self] in buildStatusMenu() }
         VideoWindow.netflix.onChange = { [unowned self] in buildStatusMenu() }
         startMemoryWatch()
         OnScreen.start()
-        SushiBelt.shared.open = { [unowned self] id in launch(id) }
-        SushiBelt.shared.quit = { [unowned self] id in quit(id) }
-        SushiBelt.shared.nowPlaying = { [unowned self] in showPlayer ? music.state?.title : nil }
-        SushiBelt.shared.start()
+        MailWatch.shared.onChange = { [unowned self] in
+            // 켜지는 중엔 창이 아직 없을 수 있어서 한 박자 뒤에, 창이 생긴 뒤에만
+            DispatchQueue.main.async { [unowned self] in
+                guard root != nil else { return }
+                updateMailButton()
+            }
+        }
+        MailWatch.shared.onNew = { [unowned self] in mailButton.pulse(); MailWindow.shared.refreshIfOpen() }
+        // 새 메일 토스트: 누르면 메일 창에서 그 메일
+        MailWatch.shared.onNewItems = { items in if MailWatch.toast { MailToast.shared.show(items) } }
+        MailToast.shared.onOpen = { uid in
+            MailWindow.shared.show()
+            if uid >= 0 { MailWindow.shared.select(uid) }
+        }
+        DispatchQueue.main.async { MailWatch.shared.start() }
         FavBar.shared.open = { [unowned self] id in launch(id) }
         FavBar.shared.launcherApps = { [unowned self] in allIds }
-        FavBar.shared.onChange = { [unowned self] in buildStatusMenu() }
+        FavBar.shared.onChange = { [weak self] in DispatchQueue.main.async { self?.rebuildStatusMenuIfReady() } }
         FavBar.shared.start()
         if let data = d.data(forKey: "categories"), let c = try? JSONDecoder().decode([Category].self, from: data), !c.isEmpty {
             cats = c
@@ -1396,7 +1663,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         listMode = d.bool(forKey: "listMode")
         scrollCrossesCategory = d.object(forKey: "scrollCross") as? Bool ?? true
         if d.object(forKey: "cols") != nil {
-            cols = max(1, d.integer(forKey: "cols"))
+            cols = 4   // 열은 4칸으로 고정 (예전에 바꿔 둔 값은 쓰지 않음)
             rows = max(1, d.integer(forKey: "rows"))
             iconSize = CGFloat(d.double(forKey: "iconSize"))
         }
@@ -1505,6 +1772,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window = w
         topBar.removeFromSuperview()
         resizeHandle.removeFromSuperview()
+        frameResizers.forEach { $0.removeFromSuperview() }
         root = nil
 
         // 위젯은 Dock 에 안 보이게, 일반 창은 Dock 에 보이게
@@ -1519,7 +1787,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if widget { w.orderFrontRegardless() } else { showWindow() }
         EdgeDock.shared.present = { [unowned self] w in if widget { w.orderFrontRegardless() } else { showWindow() } }
         EdgeDock.shared.appSize = { [unowned self] in listMode ? Tile.listIcon(iconSize) : iconSize }
-        EdgeDock.shared.onChange = { [unowned self] in buildStatusMenu() }
+        EdgeDock.shared.onChange = { [weak self] in DispatchQueue.main.async { self?.rebuildStatusMenuIfReady() } }
         EdgeDock.shared.attach(w)
     }
 
@@ -1644,7 +1912,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let cat = NSMenuItem(title: "카테고리", action: nil, keyEquivalent: "")
         cat.submenu = categoriesMenu()
         m.addItem(cat)
-        m.addItem(Item("설정…") { [unowned self] in openSettings() })
+        m.addItem(Item("옵션…") { [unowned self] in openSettings() })
         let bulk = NSMenuItem(title: "창 정리", action: nil, keyEquivalent: "")
         bulk.submenu = BulkWindows.menu()
         m.addItem(bulk)
@@ -1953,7 +2221,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LiveMenu { [unowned self] m in
             guard let r = running(id) else { return }
             fillAppMenu(m, pid: r.processIdentifier)
-            m.addItem(Item("이 앱 창을 PIP로 띄우기…") { WindowPiP.shared.showPicker(from: nil, onlyPID: r.processIdentifier) })
             let addTo = NSMenuItem(title: "도구함에 넣기", action: nil, keyEquivalent: "")
             let sub = NSMenu()
             for (c, cat) in cats.enumerated() {
@@ -2178,8 +2445,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let r {
                 m.addItem(.separator())
-                m.addItem(Item("이 앱 창을 PIP로 띄우기…") { WindowPiP.shared.showPicker(from: nil, onlyPID: r.processIdentifier) })
-                m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
+                    m.addItem(Item(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
                 m.addItem(Item("다시 시작") { [unowned self] in restartApp(r) })
                 m.addItem(Item("종료") { r.terminate() })
             }
@@ -2210,12 +2476,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func refresh() {
+        Tile.hideRunDot = tab == 1 && query.trimmingCharacters(in: .whitespaces).isEmpty
         applyAutoScale()
-        let gridTile = Tile.size(icon: iconSize)
-        let gridW = pad * 2 + CGFloat(cols) * gridTile.width + CGFloat(cols - 1) * gap
-        // 목록 보기: 폭은 격자와 같게, 한 열로 한 줄씩
-        let tile = listMode ? NSSize(width: gridW - pad * 2, height: Tile.rowHeight(icon: iconSize)) : gridTile
-        let lc = listMode ? 1 : cols
         // 위젯에선 아래 버튼 줄을 숨기고(빼기 편집 중일 때만 보임) 우클릭 메뉴로 대신함
         let searching = !query.trimmingCharacters(in: .whitespaces).isEmpty
         // 전체 접기: 검색 중이 아니면 앱 목록과 아래 버튼 줄을 숨겨 검색 줄 + 플레이어만
@@ -2226,16 +2488,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let tabMode = catTabMode && query.trimmingCharacters(in: .whitespaces).isEmpty && !allFolded && (tab != 0 || cats.count > 1)
         // 왼쪽 목록 폭은 탭과 상관없이 같게 (탭을 바꿔도 창이 흔들리지 않게)
         let sideNames = cats.map(\.name) + ["도구함 앱", "다른 앱", "GitHub 앱", "데스크탑 10 (지금)"]
-        let sbW: CGFloat = tabMode ? min(150, max(84, sideNames.map { name -> CGFloat in
+        let sbW: CGFloat = tabMode ? min(narrowUI ? 96 : compactUI ? 124 : 150, max(narrowUI ? 76 : 84, sideNames.map { name -> CGFloat in
             let l = NSTextField(labelWithString: name)
             l.font = .systemFont(ofSize: 13 * min(Tile.fontScale, 1.2), weight: .semibold)
             l.sizeToFit()
             return ceil(l.frame.width) + 44
         }.max() ?? 84)) : 0
         let side: CGFloat = tabMode ? sbW + 12 : 0
+        // 좁은 창: 왼쪽 목록이 있으면 2칸, 없으면 3칸
+        // 테두리로 폭을 정했으면 그 폭에 들어가는 만큼 칸 수
+        let minW: CGFloat = narrowUI ? 276 : compactUI ? 380 : 440
+        let tileW0 = Tile.size(icon: iconSize).width
+        let cols: Int = {
+            if let u = userWidth { return max(1, Int((u - side - pad * 2 + gap) / (tileW0 + gap))) }
+            return narrowUI ? (tabMode ? 2 : 3) : self.cols
+        }()
+        let gridTile = Tile.size(icon: iconSize)
+        let gridW = pad * 2 + CGFloat(cols) * gridTile.width + CGFloat(cols - 1) * gap
+        // 목록 보기: 폭은 격자와 같게, 한 열로 한 줄씩
+        let tile = listMode ? NSSize(width: gridW - pad * 2, height: Tile.rowHeight(icon: iconSize)) : gridTile
+        let lc = listMode ? 1 : cols
         // 폭은 접든 펴든 같게 (접으면 높이만 줄어듦). 위쪽 줄 버튼들이 들어갈 최소 폭은 보장
         // 탭 줄(탭 + 아이콘 버튼들)이 늘 다 들어가는 폭은 보장 (좁으면 버튼이 사라져 되돌릴 수 없었음)
-        let w = max(gridW + side, 440)
+        let w = max(gridW + side, userWidth.map { max(Self.minWidth, $0) } ?? minW)
+        // 폭이 좁으면 좁은 배치 (플레이어 두 줄 · 탭 이름 짧게)
+        let narrowNow = w < 340 || (userWidth == nil && narrowUI)   // 테두리로 폭을 정했으면 폭만 보고
+        PlayerBar.narrow = narrowNow
         let left = (w - gridW - side) / 2 + pad
         let tilesLeft = left + side
         let rowRight = tilesLeft + gridW - pad * 2
@@ -2260,10 +2538,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 위쪽 탭 줄은 스크롤 밖 고정 영역에 (목록을 내려도 그대로)
         var headerViews: [NSView] = []
         var hdrH: CGFloat = 0
+        // 앱 목록 접기: 화면 끝 접기 손잡이와 같은 어두운 알약 모양을 목록 칸 위쪽 가운데에
+        if !searching {
+            let pill = FoldPill(folded: allFolded) { [unowned self] in
+                listCollapsed.toggle()
+                d.set(listCollapsed, forKey: "listCollapsed")
+                refresh()
+            }
+            pill.frame = NSRect(x: (w - 44) / 2, y: y, width: 44, height: 14)
+            headerViews.append(pill)
+            y += 14 + 6
+        }
         // 탭: [전체 | 실행 중 N]
         if !allFolded && !searching {
             let ups = devApps.updateCount
-            let seg = NSSegmentedControl(labels: ["전체", "실행 중 \(runningIDs().count)", ups > 0 ? "개발자 앱 ●\(ups)" : "개발자 앱", "데스크탑"], trackingMode: .selectOne,
+            let labels = narrowNow ? ["전체", "실행 \(runningIDs().count)", ups > 0 ? "개발 ●\(ups)" : "개발", "데스크"]
+                                  : ["전체", "실행 중 \(runningIDs().count)", ups > 0 ? "개발자 앱 ●\(ups)" : "개발자 앱", "데스크탑"]
+            let seg = NSSegmentedControl(labels: labels, trackingMode: .selectOne,
                                          target: self, action: #selector(tabChanged(_:)))
             seg.selectedSegment = tab
             seg.controlSize = .small
@@ -2294,7 +2585,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // 같은 사이드바 아이콘, 켜져 있으면 파란색 (모양이 바뀌면 다른 버튼으로 착각하기 쉬워서)
                 iconButton("sidebar.left",
                            catTabMode ? "왼쪽 목록 켜짐 — 누르면 끄고 모두 펼쳐 보기" : "왼쪽 목록으로 보기 (하나씩 골라 보기)",
-                           tint: catTabMode ? .controlAccentColor : nil) { [unowned self] in
+                           tint: catTabMode ? .launcherAccent : nil) { [unowned self] in
                     catTabMode.toggle()
                     d.set(catTabMode, forKey: "catTabMode")
                     refresh()
@@ -2504,6 +2795,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 tabScroll(e)
                 return true
             }
+            // 앱 하나씩 훑기는 옵션 (기본 끔): 끄면 목록이 그냥 부드럽게 스크롤됨
+            guard scrollFocusApps else { return false }
             focusScroll(e)
             return true
         }
@@ -2550,7 +2843,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         widgetBtn.toolTip = widget ? "일반 창으로 돌아가기" : "바탕화면 위젯으로 바꾸기 (⌘⇧W)"
         let total = allIds.count
         let info = NSTextField(labelWithString: editing ? "⊖ 를 눌러 빼기"
-                               : "\(total)개" + (showHeaders ? " · \(cats.count)카테고리" : "") + " · \(cols)열")
+                               : "\(total)개" + (showHeaders ? " · \(cats.count)카테고리" : ""))
         info.textColor = .secondaryLabelColor
         info.font = .systemFont(ofSize: 11)
         info.sizeToFit()
@@ -2601,6 +2894,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             root = content
         }
         content.frame = NSRect(x: 0, y: 0, width: w, height: h)
+        window.appearance = Theme.appearance
+        Theme.attach(to: content, corner: 20, sticker: true)
         content.addSubview(scroll)
         if hdrH > 0 {
             headerBar.setFrameOrigin(NSPoint(x: 0, y: bottom + grip + viewH))
@@ -2612,6 +2907,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if showBar { content.addSubview(bar) }
         // 맨 아래 손잡이 (목록을 접었을 땐 숨김)
+        // 왼쪽 · 오른쪽 테두리로 폭 조절 (위젯 카드일 때)
+        if widget {
+            // 변 두께 · 모서리 크기. 창 모서리가 둥글게(20) 깎여 투명한 곳은 클릭이 뒤로 빠지므로
+            // 모서리 칸을 둥근 선 안쪽까지 넉넉히 (24)
+            let e: CGFloat = 6, c: CGFloat = 24
+            let canH = grip > 0
+            for r in frameResizers {
+                let s = r.edges
+                if !canH && (s.contains(.top) || s.contains(.bottom)) && !(s.contains(.left) || s.contains(.right)) { r.removeFromSuperview(); continue }
+                // 목록을 접어 둔 때도 모서리는 남김 (그땐 폭만 바뀜)
+                switch s {
+                case [.left]: r.frame = NSRect(x: 0, y: c, width: e, height: h - 2 * c)
+                case [.right]: r.frame = NSRect(x: w - e, y: c, width: e, height: h - 2 * c)
+                case [.top]: r.frame = NSRect(x: c, y: h - 4, width: w - 2 * c, height: 4)
+                case [.top, .left]: r.frame = NSRect(x: 0, y: h - c, width: c, height: c)
+                case [.top, .right]: r.frame = NSRect(x: w - c, y: h - c, width: c, height: c)
+                case [.bottom, .left]: r.frame = NSRect(x: 0, y: 0, width: c, height: c)
+                default: r.frame = NSRect(x: w - c, y: 0, width: c, height: c)
+                }
+                content.addSubview(r)
+            }
+        }
         if grip > 0 {
             resizeHandle.frame = NSRect(x: 0, y: 0, width: w, height: grip)
             content.addSubview(resizeHandle)
@@ -2629,11 +2946,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 떼어 낸 창
         // 떼어 낸 음악 창: 위에 플레이어, 아래에 가사 줄
         if showPlayer && playerDetached {
-            showDetached(.player, view: playerBar, width: max(300, w), height: playerH,
+            // 테두리로 정한 폭이 있으면 그 폭, 좁으면 플레이어 두 줄
+            let dw = detachedWidth.map { max(Self.minWidth, $0) } ?? max(300, w)
+            PlayerBar.narrow = dw < 340
+            showDetached(.player, view: playerBar, width: dw, height: playerH,
                          below: (lyrics.stripView, lyrics.stripHeight))
         } else { playerPanel?.orderOut(nil) }
         lyricsPanel?.orderOut(nil)
 
+        // 테두리 폭 조절 띠는 맨 위에 (플레이어 · 목록에 가려지지 않게)
+        for r in frameResizers where r.superview != nil { r.removeFromSuperview(); content.addSubview(r) }
         // 위쪽 줄: [🔍 앱 찾기 ........] [Finder]
         topBar.frame = NSRect(x: 0, y: h - topH, width: w, height: topH)
         // 위젯: 맨 위 손잡이
@@ -2646,13 +2968,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let fb = finderButton.frame.size
         finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 8, y: (barRowH - fb.height) / 2))
-        collapseButton.image = NSImage(systemSymbolName: allFolded ? "chevron.down" : "chevron.up", accessibilityDescription: nil)
-        collapseButton.toolTip = allFolded ? "앱 목록 펼치기" : "앱 목록 접기"
         youtubeButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
         netflixButton.setFrameOrigin(NSPoint(x: youtubeButton.frame.minX - 26, y: (barRowH - 24) / 2))
-        windowPiPButton.setFrameOrigin(NSPoint(x: netflixButton.frame.minX - 26, y: (barRowH - 24) / 2))
-        collapseButton.setFrameOrigin(NSPoint(x: windowPiPButton.frame.minX - 26, y: (barRowH - 24) / 2))
-        bulkButton.setFrameOrigin(NSPoint(x: collapseButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        // 앱 목록 접기 버튼은 탭 줄 왼쪽으로 옮김
+        // ✉︎ 메일 (연결 전이면 누르면 설정으로)
+        mailButton.setFrameOrigin(NSPoint(x: netflixButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        bulkButton.setFrameOrigin(NSPoint(x: mailButton.frame.minX - 26, y: (barRowH - 24) / 2))
         updateLockButton()
         lockButton.setFrameOrigin(NSPoint(x: bulkButton.frame.minX - 26, y: (barRowH - 24) / 2))
         searchField.frame = NSRect(x: 10, y: (barRowH - 24) / 2, width: lockButton.frame.minX - 14, height: 24)
@@ -2662,6 +2983,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: 메뉴바 메뉴
+
+    /// 메뉴 막대 🧰 아이콘이 만들어진 뒤에만 메뉴를 다시 그림 (켜지는 도중에 불려도 안전하게)
+    func rebuildStatusMenuIfReady() {
+        guard statusItem != nil else { return }
+        buildStatusMenu()
+    }
 
     func buildStatusMenu() {
         let m = NSMenu()
@@ -2701,7 +3028,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(bulk)
         m.addItem(Item("런처 창 열기") { [unowned self] in showWindow() })
         m.addItem(Item("Dock 앱 가져오기") { [unowned self] in importDock() })
-        m.addItem(Item("설정…") { [unowned self] in openSettings() })
+        m.addItem(Item("옵션…") { [unowned self] in openSettings() })
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
         m.addItem(.separator())
@@ -2730,7 +3057,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(an)
         }
         let nf = VideoWindow.netflix
-        m.addItem(Item("창 PIP로 띄우기…") { WindowPiP.shared.showPicker(from: nil) })
         m.addItem(Item("Netflix 창 열기") { nf.show() })
         if nf.isOpen {
             m.addItem(Item(nf.inMini ? "    큰 창으로 돌아가기" : "    작은 창으로 보기 (PIP)") { nf.toggleMini() })
@@ -2742,16 +3068,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let ac = Item("도구함 창 자동 접기 (화면 끝에 붙였을 때)") { EdgeDock.shared.autoCollapse.toggle() }
         ac.state = EdgeDock.shared.autoCollapse ? .on : .off
         m.addItem(ac)
+        let hv = Item("접힌 손잡이에 마우스를 대면 펴기 (도구함 · 막대)") { EdgeDock.hoverExpand.toggle() }
+        hv.state = EdgeDock.hoverExpand ? .on : .off
+        m.addItem(hv)
         let fav = Item("자주 쓰는 앱 막대") { FavBar.shared.enabled.toggle() }
         fav.state = FavBar.shared.enabled ? .on : .off
         m.addItem(fav)
         m.addItem(Item("    자주 쓰는 앱 막대 추가") { FavBar.addBar() })
-        let sushi = Item("화면 아래 회전 초밥 (실행 중인 앱)") { [unowned self] in
-            SushiBelt.shared.enabled.toggle()
-            buildStatusMenu()
-        }
-        sushi.state = SushiBelt.shared.enabled ? .on : .off
-        m.addItem(sushi)
         let dockItem = Item("켜져 있는 동안 Dock 가리기") { [unowned self] in setHideDock(!hideDock) }
         dockItem.state = hideDock ? .on : .off
         m.addItem(dockItem)
@@ -2800,19 +3123,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
     }
 
+    /// 옵션 창을 그 탭으로 열기
+    func openSettingsTab(_ name: String) {
+        openSettings()
+        if let tabs = settingsTabs, let i = tabs.tabViewItems.firstIndex(where: { $0.label == name }) { tabs.selectTabViewItem(at: i) }
+    }
+
     @objc func openSettings() {
         if settings == nil { buildSettings() }
         syncSettings()
+        reloadOptionTabs()
         settings!.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
     }
 
     func buildSettings() {
-        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 360, height: 442),
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 460, height: 540),
                         styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        p.title = "도구함 설정 — \(AppVersion.text)"
+        p.title = "도구함 옵션 — \(AppVersion.text)"
         p.isReleasedWhenClosed = false
-        let v = p.contentView!
+        // 탭: 기본 (예전 설정 화면) · 막대 · 접기 · 영상 · PIP
+        let tabs = NSTabView(frame: p.contentView!.bounds.insetBy(dx: 6, dy: 6))
+        tabs.autoresizingMask = [.width, .height]
+        p.contentView!.addSubview(tabs)
+        settingsTabs = tabs
+        let basic = NSTabViewItem(identifier: "기본")
+        basic.label = "기본"
+        let holder = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 480))
+        basic.view = holder
+        tabs.addTabViewItem(basic)
+        let v = NSView(frame: NSRect(x: 0, y: holder.bounds.height - 442, width: 360, height: 442))
+        v.autoresizingMask = [.minYMargin, .maxXMargin]
+        holder.addSubview(v)
 
         func label(_ t: String, y: CGFloat) {
             let l = NSTextField(labelWithString: t)
@@ -2905,8 +3247,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         widgetCheck.frame = NSRect(x: 106, y: 191, width: 240, height: 22)
         v.addSubview(widgetCheck)
 
-        (colsField, colsStepper) = numberRow("열 (가로 칸)", y: 150, max: 12, note: "한 줄에 놓을 앱 수")
-        (rowsField, rowsStepper) = numberRow("행 (세로 칸)", y: 116, max: 12, note: "카테고리마다 최소 줄 수")
+        // 열 (가로 칸) 은 4 로 고정 — 옵션에서 뺌
+        (rowsField, rowsStepper) = numberRow("행 (세로 칸)", y: 140, max: 12, note: "카테고리마다 최소 줄 수")
 
         label("아이콘 크기", y: 80)
         sizeSlider = NSSlider(value: 64, minValue: 24, maxValue: 128, target: self, action: #selector(sliderChanged(_:)))
@@ -2940,8 +3282,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hint.frame = NSRect(x: 16, y: 12, width: 330, height: 16)
         v.addSubview(hint)
 
+        Options.reload = { [unowned self] in reloadOptionTabs() }
+        Options.relayout = { [unowned self] in playerBar.needsLayout = true; refresh() }
         p.center()
         settings = p
+    }
+
+    var settingsTabs: NSTabView?
+    /// 기본 탭 말고 나머지 탭을 지금 값으로 다시 (보던 탭은 그대로)
+    func reloadOptionTabs() {
+        guard let tabs = settingsTabs else { return }
+        let sel = tabs.selectedTabViewItem?.label
+        while tabs.numberOfTabViewItems > 1 { tabs.removeTabViewItem(tabs.tabViewItem(at: 1)) }
+        Options.tabs().forEach(tabs.addTabViewItem)
+        if let sel, let i = tabs.tabViewItems.firstIndex(where: { $0.label == sel }) { tabs.selectTabViewItem(at: i) }
     }
 
     func syncSettings() {
@@ -2953,7 +3307,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         confirmCheck.state = confirmQuit ? .on : .off
         memoryCheck.state = Tile.showMemory ? .on : .off
         uiScaleLabel.stringValue = (uiScaleAuto ? "자동 " : "") + "\(Int((uiScale * 100).rounded()))%"
-        colsField.integerValue = cols; colsStepper.integerValue = cols
+        colsField?.integerValue = cols; colsStepper?.integerValue = cols
         rowsField.integerValue = rows; rowsStepper.integerValue = rows
         sizeSlider.doubleValue = Double(iconSize)
         sizeLabel.stringValue = "\(Int(iconSize))px"
@@ -3048,7 +3402,7 @@ func buildMainMenu(_ delegate: AppDelegate) {
     let appItem = NSMenuItem()
     main.addItem(appItem)
     let appMenu = NSMenu()
-    let pref = NSMenuItem(title: "설정…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
+    let pref = NSMenuItem(title: "옵션…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
     pref.target = delegate
     appMenu.addItem(pref)
     let find = NSMenuItem(title: "앱 찾기", action: #selector(AppDelegate.focusSearch), keyEquivalent: "f")

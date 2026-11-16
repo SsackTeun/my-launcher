@@ -90,7 +90,14 @@ final class PlayerBar: NSView {
     static var fontScale: CGFloat = 1
     /// 글자가 커지면 곡 정보 줄이 높아지는 만큼 플레이어도 높아짐
     static var extra: CGFloat { max(0, (fontScale - 1) * 36) }
-    static var height: CGFloat { 118 + extra }
+    static var height: CGFloat { compact ? 52 + extra * 0.5 + (narrow ? 30 : 0) : 118 + extra }
+    /// 좁은 도구함 창: 한 줄 플레이어를 두 줄로 (위: 사진 · 제목 · 떼어 내기 / 아래: 재생 단추들)
+    static var narrow = false
+    /// 한 줄 플레이어 (옵션, 처음엔 켬): [사진 · 제목/아티스트 · ⏮ ▶ ⏭ · 가사 · 목록 · 떼어 내기] + 얇은 재생바
+    static var compact: Bool {
+        get { UserDefaults.standard.object(forKey: "playerCompact") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "playerCompact") }
+    }
     weak var music: YTMusic?
 
     private let artView = NSImageView()
@@ -215,7 +222,7 @@ final class PlayerBar: NSView {
     private func flash(_ msg: String) {
         flashUntil = Date().addingTimeInterval(2)
         bylineLabel.stringValue = msg
-        bylineLabel.textColor = .controlAccentColor
+        bylineLabel.textColor = .launcherAccent
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.05) { [weak self] in
             guard let self, Date() >= self.flashUntil else { return }
             self.bylineLabel.textColor = .secondaryLabelColor
@@ -266,9 +273,9 @@ final class PlayerBar: NSView {
             b.contentTintColor = tint
         }
         sym(play, st.playing == true ? "pause.fill" : "play.fill")
-        sym(like, st.liked ? "hand.thumbsup.fill" : "hand.thumbsup", st.liked ? .controlAccentColor : nil)
-        sym(dislike, st.disliked ? "hand.thumbsdown.fill" : "hand.thumbsdown", st.disliked ? .controlAccentColor : nil)
-        sym(rep, st.repeatOne ? "repeat.1" : "repeat", st.repeatOn ? .controlAccentColor : nil)
+        sym(like, st.liked ? "hand.thumbsup.fill" : "hand.thumbsup", st.liked ? .launcherAccent : nil)
+        sym(dislike, st.disliked ? "hand.thumbsdown.fill" : "hand.thumbsdown", st.disliked ? .launcherAccent : nil)
+        sym(rep, st.repeatOne ? "repeat.1" : "repeat", st.repeatOn ? .launcherAccent : nil)
         rep.toolTip = st.repeatLabel.isEmpty ? "반복" : st.repeatLabel
         sym(mute, st.muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
         if volume.currentEditor() == nil, NSEvent.pressedMouseButtons == 0 { volume.doubleValue = st.volume }
@@ -279,12 +286,86 @@ final class PlayerBar: NSView {
         if narrowHint && st.byline.isEmpty { bylineLabel.stringValue = "YouTube Music 창을 넓히면 더 많은 기능이 보여요" }
         needsLayout = true
     }
+    /// 한 줄 플레이어 배치
+    private func layoutCompact() {
+        let w = bounds.width
+        let pad: CGFloat = 10
+        let fs = PlayerBar.fontScale
+        let ex = PlayerBar.extra * 0.5
+        let rowH: CGFloat = 32 + ex
+        artView.frame = NSRect(x: pad, y: 6, width: rowH, height: rowH)
+        if PlayerBar.narrow { layoutNarrow(w: w, pad: pad, fs: fs, rowH: rowH); return }
+        // 오른쪽부터: [떼어 내기] [목록] [가사] [🔈 볼륨] [🔁 반복] · [⏭] [▶] [⏮]
+        let y0 = 6 + (rowH - 24) / 2
+        detachBtn.frame = NSRect(x: w - pad - 22, y: y0 + 1, width: 22, height: 22)
+        queueBtn.frame = NSRect(x: detachBtn.frame.minX - 24, y: y0, width: 24, height: 24)
+        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX - 24, y: y0, width: 24, height: 24)
+        // 스피커: 누르면 볼륨 팝업, 위에서 휠을 굴리면 바로 조절
+        mute.frame = NSRect(x: lyricsBtn.frame.minX - 24, y: y0, width: 24, height: 24)
+        rep.frame = NSRect(x: mute.frame.minX - 24, y: y0, width: 24, height: 24)
+        next.frame = NSRect(x: rep.frame.minX - 30, y: y0, width: 28, height: 24)
+        play.frame = NSRect(x: next.frame.minX - 32, y: y0 - 4, width: 32, height: 32)
+        prev.frame = NSRect(x: play.frame.minX - 28, y: y0, width: 28, height: 24)
+        let textX = artView.frame.maxX + 8
+        let textW = max(40, prev.frame.minX - textX - 6)
+        titleBtn.font = .boldSystemFont(ofSize: 12 * fs)
+        bylineLabel.font = .systemFont(ofSize: 10.5 * fs)
+        let th = ceil(17 * fs), bh = ceil(14 * fs)
+        let ty = 6 + (rowH - th - bh) / 2
+        titleBtn.frame = NSRect(x: textX - 2, y: ty, width: textW, height: th)
+        bylineLabel.frame = NSRect(x: textX, y: ty + th, width: textW, height: bh)
+        // 얇은 재생바 (아래 한 줄)
+        progress.frame = NSRect(x: pad, y: 6 + rowH + 2, width: w - pad * 2, height: 10)
+        // 한 줄에서는 숨김: 좋아요 · 싫어요 · 셔플 · 볼륨 막대 · 시간 · YouTube Music 창 열기 (볼륨은 스피커 버튼으로)
+        for v in [like, dislike, shuffle, openBtn] as [NSView?] { v?.isHidden = true }
+        rep.isHidden = limited || (!has.isEmpty && !has.contains("repeat"))
+        mute.isHidden = limited
+        volume.isHidden = true
+        timeLabel.isHidden = true
+        progress.isHidden = !has.isEmpty && !has.contains("progress")
+        prev.isHidden = !limited && !has.isEmpty && !has.contains("prev")
+        toolTip = nil
+    }
+
+    /// 좁은 창용 두 줄 배치
+    private func layoutNarrow(w: CGFloat, pad: CGFloat, fs: CGFloat, rowH: CGFloat) {
+        // 1줄: 사진 · 제목/아티스트 · 떼어 내기
+        detachBtn.frame = NSRect(x: w - pad - 22, y: 6 + (rowH - 22) / 2, width: 22, height: 22)
+        let textX = artView.frame.maxX + 8
+        let textW = max(40, detachBtn.frame.minX - textX - 6)
+        titleBtn.font = .boldSystemFont(ofSize: 12 * fs)
+        bylineLabel.font = .systemFont(ofSize: 10.5 * fs)
+        let th = ceil(17 * fs), bh = ceil(14 * fs)
+        let ty = 6 + (rowH - th - bh) / 2
+        titleBtn.frame = NSRect(x: textX - 2, y: ty, width: textW, height: th)
+        bylineLabel.frame = NSRect(x: textX, y: ty + th, width: textW, height: bh)
+        // 2줄: [⏮ ▶ ⏭] ……… [🔁 🔈 가사 목록]
+        let y2 = 6 + rowH + 2
+        prev.frame = NSRect(x: pad - 2, y: y2, width: 28, height: 24)
+        play.frame = NSRect(x: prev.frame.maxX, y: y2 - 4, width: 32, height: 32)
+        next.frame = NSRect(x: play.frame.maxX, y: y2, width: 28, height: 24)
+        queueBtn.frame = NSRect(x: w - pad - 24, y: y2, width: 24, height: 24)
+        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX - 24, y: y2, width: 24, height: 24)
+        mute.frame = NSRect(x: lyricsBtn.frame.minX - 24, y: y2, width: 24, height: 24)
+        rep.frame = NSRect(x: mute.frame.minX - 24, y: y2, width: 24, height: 24)
+        progress.frame = NSRect(x: pad, y: y2 + 26, width: w - pad * 2, height: 10)
+        for v in [like, dislike, shuffle, openBtn] as [NSView?] { v?.isHidden = true }
+        rep.isHidden = limited || (!has.isEmpty && !has.contains("repeat"))
+        mute.isHidden = limited
+        volume.isHidden = true
+        timeLabel.isHidden = true
+        progress.isHidden = !has.isEmpty && !has.contains("progress")
+        prev.isHidden = !limited && !has.isEmpty && !has.contains("prev")
+        toolTip = nil
+    }
+
     private var limited = false
     private var has: Set<String> = []
     private var narrowHint = false
 
     override func layout() {
         super.layout()
+        if PlayerBar.compact { layoutCompact(); return }
         let w = bounds.width
         let pad: CGFloat = 12
         // 1줄: 사진 · 제목/아티스트 · 좋아요/싫어요
@@ -326,6 +407,7 @@ final class PlayerBar: NSView {
         volume.frame = NSRect(x: mute.frame.minX - 2 - volW, y: rowY + 10, width: volW, height: 16)
         volume.isHidden = volume.frame.minX < rep.frame.maxX + 6
         mute.isHidden = false
+        openBtn.isHidden = false   // 한 줄 플레이어에서 돌아왔을 때 다시 보이게
         timeLabel.isHidden = limited || timeLabel.frame.maxX > shuffle.frame.minX - 2
         // YouTube Music 화면에 없는 조작은 숨김 (창이 좁거나 다른 탭 뒤에 있을 때)
         like.isHidden = !has.contains("like")

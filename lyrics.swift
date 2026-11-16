@@ -59,6 +59,9 @@ enum LRCLib {
     }
 
     static func find(title: String, artist: String, duration: Double) async -> Synced? {
+        // 제목 없이 가수 이름만으로 찾으면 그 가수의 아무 곡 가사가 붙어 버림
+        guard !title.trimmingCharacters(in: .whitespaces).isEmpty else { return nil }
+        func norm(_ s: String) -> String { s.lowercased().filter { $0.isLetter || $0.isNumber } }
         for t in titleVariants(title) {
             var c = URLComponents(string: "https://lrclib.net/api/search")!
             c.queryItems = [URLQueryItem(name: "track_name", value: t)] + (artist.isEmpty ? [] : [URLQueryItem(name: "artist_name", value: artist)])
@@ -68,8 +71,12 @@ enum LRCLib {
             guard let (data, _) = try? await URLSession.shared.data(for: req),
                   let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { continue }
             // 시간 붙은 가사가 있고, 곡 길이가 가장 비슷한 것 (4초 넘게 차이 나면 다른 버전으로 봄)
+            let want = norm(t)
             let cands = arr.compactMap { o -> (Double, String)? in
                 guard let lrc = o["syncedLyrics"] as? String, !lrc.isEmpty else { return nil }
+                // 결과 곡 이름이 찾는 제목과 비슷할 때만 (한쪽이 다른 쪽을 포함)
+                let got = norm(o["trackName"] as? String ?? "")
+                guard !want.isEmpty, !got.isEmpty, got.contains(want) || want.contains(got) else { return nil }
                 let d = (o["duration"] as? Double) ?? 0
                 return (duration > 0 ? abs(d - duration) : 0, lrc)
             }.sorted { $0.0 < $1.0 }
@@ -176,9 +183,14 @@ final class LyricsModel: ObservableObject {
 
     /// YouTube Music 에서 읽은 가사 + 곡 정보로 갱신
     func update(_ l: YTMusic.Lyrics, player st: PlayerState?) {
-        title = l.title
+        // 곡 제목은 플레이어에 실제로 보이는 제목을 먼저 (가사 읽는 쪽 제목이 비면 같은 가수 곡끼리 '같은 곡' 으로 보여 가사가 안 바뀌었음)
+        let playing = st?.title.trimmingCharacters(in: .whitespaces) ?? ""
+        let songTitle = playing.isEmpty ? l.title : playing
+        title = songTitle
         let artist = st?.byline.components(separatedBy: " • ").first?.trimmingCharacters(in: .whitespaces) ?? ""
-        let key = l.title + "|" + artist
+        let key = songTitle + "|" + artist
+        // YouTube Music 가사 탭이 아직 이전 곡 것이면 (가사 쪽 제목이 지금 곡과 다르면) 그 가사는 쓰지 않음
+        let ytmFresh = l.title.isEmpty || playing.isEmpty || l.title == playing
         if key != songKey {
             // 곡이 바뀜: 처음부터 다시
             songKey = key
@@ -190,7 +202,7 @@ final class LyricsModel: ObservableObject {
             source = ""
             let dur = st?.duration ?? 0
             Task { [weak self] in
-                let synced = await LRCLib.find(title: l.title, artist: artist, duration: dur)
+                let synced = await LRCLib.find(title: songTitle, artist: artist, duration: dur)
                 await MainActor.run {
                     guard let self, self.songKey == key else { return }
                     if let synced {
@@ -204,7 +216,7 @@ final class LyricsModel: ObservableObject {
             }
         }
         // 시간 맞춤 가사가 없으면 YouTube Music 가사로
-        if l.status == "ok", l.text != ytmText {
+        if l.status == "ok", ytmFresh, l.text != ytmText {
             ytmText = l.text
             if times == nil { apply(lines: l.text.components(separatedBy: "\n"), times: nil, source: l.source) }
         } else if l.status == "none", times == nil, lines.isEmpty, status != "loading" {
@@ -358,30 +370,38 @@ struct LyricsView: View {
         }
         .frame(minWidth: 320, minHeight: 300)
     }
+    /// 위쪽: 1줄 = 곡 제목 + (노래 따라가기 · 원문 언어), 2줄 = 발음 · 글자 크기 · 자동 스크롤 · 번역 언어
+    /// (한 줄에 다 넣으면 창이 좁을 때 제목이 잘리고 글자가 세로로 꺾였음)
     private var header: some View {
-        HStack(alignment: .center, spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.title.isEmpty ? "가사" : model.title).font(.headline).lineLimit(1)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(model.title.isEmpty ? "가사" : model.title)
+                    .font(.headline).lineLimit(1).truncationMode(.tail)
+                    .layoutPriority(1)
+                Spacer(minLength: 4)
                 HStack(spacing: 6) {
                     if model.times != nil { Label("노래 따라가기", systemImage: "waveform").labelStyle(.titleAndIcon) }
                     if !model.sourceLangName.isEmpty && model.status == "ok" { Text("원문: \(model.sourceLangName)") }
                 }
                 .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
             }
-            Spacer()
-            PronMenu(model: model)
-            FontSizeButtons(model: model)
-            if model.times != nil {
-                Toggle(isOn: $model.follow) { Image(systemName: "arrow.down.to.line") }
-                    .toggleStyle(.button)
-                    .help("지금 부르는 줄로 자동 스크롤")
+            HStack(spacing: 8) {
+                PronMenu(model: model).fixedSize()
+                FontSizeButtons(model: model).fixedSize()
+                if model.times != nil {
+                    Toggle(isOn: $model.follow) { Image(systemName: "arrow.down.to.line") }
+                        .toggleStyle(.button)
+                        .help("지금 부르는 줄로 자동 스크롤")
+                }
+                Spacer(minLength: 4)
+                Picker("번역", selection: $model.target) {
+                    ForEach(lyricsLanguages, id: \.0) { Text($0.1).tag($0.0) }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 130)
             }
-            Picker("번역", selection: $model.target) {
-                ForEach(lyricsLanguages, id: \.0) { Text($0.1).tag($0.0) }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(width: 130)
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
@@ -437,7 +457,7 @@ struct LyricsView: View {
                 }
                 if let t = model.translation(for: i), t != line {
                     Text(t).font(.system(size: (isCur ? 14 : 13) * model.fontScale))
-                        .foregroundStyle(isCur ? Color.accentColor : Color.secondary.opacity(synced ? 0.8 : 1))
+                        .foregroundStyle(isCur ? Color.lyricTranslation : Color.secondary.opacity(synced ? 0.8 : 1))
                 }
             }
             .padding(.vertical, isCur ? 4 : 0)
@@ -550,7 +570,7 @@ struct LyricsStrip: View {
                     Text("전체 가사").font(.system(size: 11))
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(Color.accentColor)
+                .foregroundStyle(Color.lyricTranslation)
                 .help("전체 가사 창 열기")
             }
             .padding(.horizontal, 14)
@@ -624,7 +644,7 @@ struct LyricsStrip: View {
                         Text(p).font(.system(size: 12 * model.fontScale)).foregroundStyle(.secondary).lineLimit(1).minimumScaleFactor(0.8)
                     }
                     if let c = cur, let t = model.translation(for: c), t != model.lines[c] {
-                        Text(t).font(.system(size: 12 * model.fontScale)).foregroundStyle(Color.accentColor).lineLimit(1)
+                        Text(t).font(.system(size: 12 * model.fontScale)).foregroundStyle(Color.lyricTranslation).lineLimit(1)
                     }
                 }
                 .id(cur ?? -1)
@@ -714,4 +734,19 @@ final class LyricsController: NSObject, NSWindowDelegate {
         guard let music, music.isActive else { return }
         music.fetchLyrics { [weak self] l in self?.model.update(l, player: music.state) }
     }
+}
+
+extension NSColor {
+    /// 도구함 강조색: 어두운 화면에선 밝은 하늘색, 밝은 화면에선 짙은 파랑 (시스템 파란 강조색은 어두운 배경에서 잘 안 보임)
+    static let launcherAccent = NSColor(name: nil) { a in
+        if Theme.isBear { return Theme.pink }
+        return a.bestMatch(from: [.darkAqua, .vibrantDark]) != nil
+            ? NSColor(srgbRed: 0.62, green: 0.86, blue: 1.0, alpha: 1)
+            : NSColor(srgbRed: 0.05, green: 0.36, blue: 0.75, alpha: 1)
+    }
+}
+
+extension Color {
+    /// 번역 가사 · 강조 글자색 (도구함 강조색과 같음)
+    static let lyricTranslation = Color(nsColor: .launcherAccent)
 }

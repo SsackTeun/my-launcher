@@ -71,13 +71,261 @@ final class FavBar {
         return b
     }
 
+    /// 데스크탑 막대 추가: 그 데스크탑에 열린 앱이 저절로 채워지는 막대
+    @discardableResult
+    static func addDesktopBar(_ n: Int) -> FavBar {
+        // 같은 데스크탑 막대는 하나만 (이미 있으면 그 막대를 펴서 돌려줌)
+        if let have = all.first(where: { $0.desktop == n }) { if have.collapsed { have.collapsed = false }; return have }
+        let b = addBar()
+        b.editing = false
+        b.desktop = n
+        b.name = "데스크탑 \(n)"
+        return b
+    }
+
+    // MARK: 데스크탑 막대 (그 데스크탑에 창이 열린 앱을 저절로 보여 줌)
+
+    /// 이 막대가 보여 줄 데스크탑 번호 (nil = 앱을 직접 넣는 일반 막대)
+    var desktop: Int? {
+        get { d.object(forKey: k("favDesktop")) as? Int }
+        set {
+            if let n = newValue { d.set(n, forKey: k("favDesktop")) } else { d.removeObject(forKey: k("favDesktop")) }
+            desktopID = newValue.flatMap { n in Spaces.numbered().desks.first { $0.n == n }?.id }
+            if let id = desktopID { Self.ignoredDesks.remove(id) }
+            editing = false
+            deskCache = newValue.map(Spaces.apps(onDesktop:)) ?? []
+            rebuild(animate: false)
+            onChange()
+            Self.watchDesktops()
+        }
+    }
+    var isDesktop: Bool { desktop != nil }
+    #if DEBUG
+    /// 시험용: 데스크탑 막대 내용을 직접 정함
+    func _testSetDeskCache(_ ids: [String]) { deskCache = ids; rebuild(animate: false) }
+    #endif
+    /// 이미 막대가 있는 데스크탑인지 (그 번호로는 더 못 만듦)
+    static func hasBar(forDesktop n: Int) -> Bool { all.contains { $0.desktop == n } }
+    /// 그 데스크탑의 고유 ID (데스크탑을 지우면 막대도 닫고, 번호가 당겨지면 막대 번호도 따라 바꿈)
+    var desktopID: Int? {
+        get { d.object(forKey: k("favDesktopID")) as? Int }
+        set { if let v = newValue { d.set(v, forKey: k("favDesktopID")) } else { d.removeObject(forKey: k("favDesktopID")) } }
+    }
+    fileprivate(set) var deskCache: [String] = []
+
+    /// 창을 열고 닫거나 옮기거나 데스크탑을 넘기면 데스크탑 막대 내용을 새로 (2초마다 + 바로 알 수 있는 때)
+    private static var deskTimer: Timer?
+    private static var deskObservers: [NSObjectProtocol] = []
+    /// 지금 모니터에 보이고 있는 데스크탑 번호들 · 지금 화면에 창이 보이는 앱
+    static var currentDesks: Set<Int> = []
+    /// 데스크탑 번호 → (모니터 짧은 이름, 모니터 순번). 모니터가 2대 이상일 때만 막대에 표시
+    static var deskMonitor: [Int: (name: String, index: Int)] = [:]
+    static var multiMonitor: Bool { Set(deskMonitor.values.map(\.index)).count > 1 }
+    /// 모니터마다 배지 색 (지금 보이는 데스크탑일 때)
+    static func monitorColor(_ i: Int) -> NSColor {
+        [NSColor.launcherAccent, .systemGreen, .systemOrange, .systemPurple, .systemPink][i % 5]
+    }
+    private static func updateMonitors(_ desks: [(n: Int, label: String, display: String, id: Int)]) -> Bool {
+        var order: [String] = []
+        var m: [Int: (String, Int)] = [:]
+        for dk in desks {
+            if !order.contains(dk.display) { order.append(dk.display) }
+            // "데스크탑 3 · L27i-30" → "L27i" (짧게)
+            let full = dk.label.components(separatedBy: " · ").dropFirst().joined(separator: " · ")
+            var short = full.split(whereSeparator: { $0 == " " || $0 == "-" || $0 == "(" }).first.map(String.init) ?? full
+            if short.count > 5 { short = String(short.prefix(5)) }
+            m[dk.n] = (short, order.firstIndex(of: dk.display)!)
+        }
+        let changed = m.count != deskMonitor.count || m.contains { deskMonitor[$0.key]?.name != $0.value.0 || deskMonitor[$0.key]?.index != $0.value.1 }
+        deskMonitor = m.mapValues { (name: $0.0, index: $0.1) }
+        return changed
+    }
+    static var onScreenApps: Set<String> = []
+    static func watchDesktops() {
+        if deskTimer == nil {
+            let t = Timer(timeInterval: 2, repeats: true) { _ in MainActor.assumeIsolated { FavBar.refreshDesktops() } }
+            RunLoop.main.add(t, forMode: .common)
+            deskTimer = t
+            let ws = NSWorkspace.shared.notificationCenter
+            for n in [NSWorkspace.activeSpaceDidChangeNotification, NSWorkspace.didLaunchApplicationNotification,
+                      NSWorkspace.didTerminateApplicationNotification, NSWorkspace.didActivateApplicationNotification] {
+                deskObservers.append(ws.addObserver(forName: n, object: nil, queue: .main) { _ in
+                    // 창이 자리 잡을 시간을 조금 주고
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { MainActor.assumeIsolated { FavBar.refreshDesktops() } }
+                })
+            }
+        }
+        // 도구함이 다 켜진 뒤에 (켜지는 도중에 막대를 만들면 아직 없는 메뉴를 건드릴 수 있어서)
+        DispatchQueue.main.async { MainActor.assumeIsolated { refreshDesktops() } }
+    }
+    /// 켜져 있고 그 데스크탑에 아직 없는 앱만 옮길 수 있음
+    static func movable(_ id: String, toDesktop n: Int) -> Bool {
+        guard !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty else { return false }
+        return !(all.first { $0.desktop == n }?.deskCache.contains(id) ?? false)
+    }
+
+    /// 앱 창을 데스크탑 n 으로 (제목 막대를 잡고 넘기는 방식이라 잠깐 화면이 넘어감)
+    static func moveApp(_ id: String, toDesktop n: Int) {
+        guard let r = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else { return }
+        let desks = Spaces.load()
+        let normal = desks.filter { !$0.fullscreen }
+        guard normal.indices.contains(n - 1) else { return }
+        Spaces.move(pid: r.processIdentifier, to: normal[n - 1], desks: desks) { msg in
+            if let msg {
+                let a = NSAlert(); a.messageText = msg
+                NSApp.activate(ignoringOtherApps: true)
+                a.runModal()
+            }
+            // 창 정보가 늦게 바뀌는 앱도 있어 몇 번 더
+            for t in [0.5, 1.2, 2.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { MainActor.assumeIsolated { FavBar.refreshDesktops() } }
+            }
+        }
+    }
+
+    /// 아이콘 메뉴: 데스크탑으로 옮기기 ▸ 데스크탑 n
+    static func moveMenu(for id: String, except: Int? = nil) -> NSMenuItem? {
+        guard !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty else { return nil }
+        let desks = Spaces.numbered()
+        guard desks.desks.count > 1 else { return nil }
+        let i = NSMenuItem(title: "데스크탑으로 옮기기", action: nil, keyEquivalent: "")
+        let m = NSMenu()
+        for dk in desks.desks where dk.n != except {
+            m.addItem(MenuAction(dk.label) { FavBar.moveApp(id, toDesktop: dk.n) })
+        }
+        i.submenu = m
+        return i
+    }
+
+    private static var missing: [ObjectIdentifier: Int] = [:]
+
+    /// 막대를 직접 지운 데스크탑 ID (다시 만들지 않음)
+    static var ignoredDesks: Set<Int> {
+        get { Set((d.array(forKey: "favIgnoredDesks") as? [Int]) ?? []) }
+        set { d.set(Array(newValue), forKey: "favIgnoredDesks") }
+    }
+    /// 데스크탑 막대를 쓰고 있으면: 막대가 없는 데스크탑마다 막대를 만듦 (직접 지운 데스크탑은 빼고)
+    private static func addBarsForNewDesks(_ desks: [(n: Int, label: String, display: String, id: Int)]) {
+        let ids = Set(desks.map(\.id))
+        ignoredDesks = ignoredDesks.intersection(ids)   // 없어진 데스크탑은 잊음
+        let ignored = ignoredDesks
+        let deskBars = all.filter { $0.isDesktop }
+        guard let ref = deskBars.last else { return }   // 데스크탑 막대를 안 쓰면 만들지 않음
+        for dk in desks where !ignored.contains(dk.id) && !deskBars.contains(where: { $0.desktopID == dk.id }) {
+            let b = addDesktopBar(dk.n)
+            // 다른 데스크탑 막대와 같은 모니터 · 가장자리에, 맨 끝 순서로
+            b.d.set(ref.d.integer(forKey: ref.k("favScreen")), forKey: b.k("favScreen"))
+            b.edge = ref.edge
+            b.pos = ref.pos
+            // 번호가 커지는 방향의 끝에 (예: 위→아래로 1, 2, 3 이면 맨 아래)
+            let withOrder = deskBars.compactMap { b -> (n: Int, o: Double)? in
+                guard let n = b.desktop, let o = b.order ?? b.panel.map({ p in
+                    Double(b.edge.vertical ? p.frame.midY : p.frame.midX) / 10000 }) else { return nil }
+                return (n, o)
+            }
+            let lo = withOrder.min { $0.n < $1.n }, hi = withOrder.max { $0.n < $1.n }
+            let rising = (lo?.o ?? 0) <= (hi?.o ?? 0)
+            let orders = withOrder.map(\.o)
+            // 번호 사이에 들어가는 데스크탑이면 앞뒤 번호 막대 사이에, 아니면 끝에
+            let before = withOrder.filter { $0.n < dk.n }.max { $0.n < $1.n }
+            let after = withOrder.filter { $0.n > dk.n }.min { $0.n < $1.n }
+            if let before, let after {
+                b.order = (before.o + after.o) / 2
+            } else if let before {
+                b.order = before.o + (rising ? 0.01 : -0.01)
+            } else if let after {
+                b.order = after.o + (rising ? -0.01 : 0.01)
+            } else {
+                b.order = rising ? (orders.max() ?? 0.5) + 0.01 : (orders.min() ?? 0.5) - 0.01
+            }
+            b.rebuild(animate: false)
+        }
+    }
+    static func refreshDesktops() {
+        // 메뉴가 열려 있는 동안 막대를 새로 그리면 메뉴가 엉뚱한 줄을 가리킬 수 있어서 미룸
+        if MenuWatch.open { return }
+        // 지금 보이는 데스크탑 · 화면에 창이 보이는 앱이 바뀌었으면 표시를 다시 그림
+        let cur = Spaces.numbered().current
+        let me = getpid()
+        let wins = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        var shown = Set<String>()
+        for w in wins where (w[kCGWindowLayer as String] as? Int) == 0 {
+            guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != me,
+                  let b = w[kCGWindowBounds as String] as? [String: CGFloat], (b["Width"] ?? 0) > 60, (b["Height"] ?? 0) > 40,
+                  let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier else { continue }
+            shown.insert(id)
+        }
+        if cur != currentDesks || shown != onScreenApps {
+            currentDesks = cur
+            onScreenApps = shown
+            for b in all { (b.panel?.contentView as? FavBarView)?.refreshState() }
+        }
+        // 데스크탑이 지워졌으면 그 막대도 닫고, 번호가 당겨졌으면 막대 번호도 따라감
+        let info = Spaces.numbered()
+        if !info.desks.isEmpty {
+            for b in all where b.isDesktop {
+                guard let old = b.desktop else { continue }
+                guard let id = b.desktopID else {
+                    // 예전에 만든 막대: 지금 번호의 ID 를 기억 (없는 번호면 닫음)
+                    if let dk = info.desks.first(where: { $0.n == old }) { b.desktopID = dk.id } else { b.delete(auto: true) }
+                    continue
+                }
+                if let dk = info.desks.first(where: { $0.id == id }) {
+                    missing[ObjectIdentifier(b)] = nil
+                    if dk.n != old {
+                        let renamed = b.name == "데스크탑 \(old)"
+                        b.d.set(dk.n, forKey: b.k("favDesktop"))
+                        if renamed { b.d.set("데스크탑 \(dk.n)", forKey: b.k("favName")) }
+                        b.rebuild(animate: false)
+                        onChangeFn()
+                    }
+                } else {
+                    // 잠깐 안 보이는 것일 수 있어서 두 번 연속 (약 2초) 없을 때만 닫음
+                    let c = (missing[ObjectIdentifier(b)] ?? 0) + 1
+                    missing[ObjectIdentifier(b)] = c
+                    if c >= 2 { missing[ObjectIdentifier(b)] = nil; b.delete(auto: true) }
+                }
+            }
+        }
+        // 같은 데스크탑 막대가 여러 개면 하나만: 다른 데스크탑 막대들과 같은 가장자리 · 모니터에 있는 쪽을 남김
+        let deskBars = all.filter { $0.isDesktop }
+        func spot(_ b: FavBar) -> String { "\(b.edge.rawValue)|\(b.d.integer(forKey: b.k("favScreen")))" }
+        var counts: [String: Int] = [:]
+        for b in deskBars { counts[spot(b), default: 0] += 1 }
+        let common = counts.max { $0.value < $1.value }?.key
+        for n in Set(deskBars.compactMap(\.desktop)) {
+            let same = deskBars.filter { $0.desktop == n }
+            guard same.count > 1 else { continue }
+            let keep = same.first { spot($0) == common } ?? same[0]
+            for b in same where b !== keep { b.delete(auto: true) }
+        }
+        // 새 데스크탑이 생겼으면 (데스크탑 막대를 쓰고 있을 때) 그 막대도 추가
+        if !info.desks.isEmpty { addBarsForNewDesks(info.desks) }
+        // 모니터 구성이 바뀌었으면 막대 다시 (모니터 이름 칸 길이가 달라짐)
+        if !info.desks.isEmpty, updateMonitors(info.desks) {
+            for b in all where b.isDesktop { b.rebuild(animate: false) }
+        }
+        for b in all {
+            guard let n = b.desktop else { continue }
+            let now = Spaces.apps(onDesktop: n)
+            guard now != b.deskCache else { continue }
+            // 마우스가 그 막대 위에 있거나 누르고 있으면 미룸 (누르는 도중에 막대를 갈아 끼우면 클릭이 사라진 옛 막대로 가서 안 먹는 일이 생김)
+            if NSEvent.pressedMouseButtons != 0 { continue }
+            if let p = b.panel, p.frame.insetBy(dx: -4, dy: -4).contains(NSEvent.mouseLocation) { continue }
+            b.deskCache = now
+            b.rebuild(animate: false)
+        }
+    }
+
     /// 이 막대 지우기 (마지막 하나는 못 지움 → 대신 막대 끄기)
-    func delete() {
+    /// auto = 데스크탑이 없어져서 저절로 지움. 직접 지운 데스크탑 막대는 기억해서 다시 만들지 않음
+    func delete(auto: Bool = false) {
+        if !auto, let id = desktopID { Self.ignoredDesks.insert(id) }
         guard Self.keys.count > 1 else { enabled = false; return }
         hide()
         Self.keys = Self.keys.filter { $0 != key }
         Self.bars[key] = nil
-        for k in ["favApps", "favEdge", "favPos", "favCollapsed", "favScreen", "favName"] { Self.d.removeObject(forKey: k + "." + key) }
+        for k in ["favApps", "favEdge", "favPos", "favCollapsed", "favScreen", "favName", "favDesktop", "favOrder", "favDesktopID"] { Self.d.removeObject(forKey: k + "." + key) }
         onChange()
     }
 
@@ -86,19 +334,20 @@ final class FavBar {
     let key: String
     private init(key: String) { self.key = key }
     /// 설정 이름: 첫 막대는 예전 이름 그대로, 그 밖은 "이름.번호"
-    private func k(_ s: String) -> String { key.isEmpty ? s : s + "." + key }
-    private var d: UserDefaults { Self.d }
+    fileprivate func k(_ s: String) -> String { key.isEmpty ? s : s + "." + key }
+    fileprivate var d: UserDefaults { Self.d }
     private var enabledAll: Bool { enabled }
-    private var panel: NSPanel?
+    private(set) var panel: NSPanel?
     private var observers: [NSObjectProtocol] = []
 
     var name: String {
-        get { d.string(forKey: k("favName")) ?? (key.isEmpty ? "자주 쓰는 앱" : "막대 \(key)") }
+        get { d.string(forKey: k("favName")) ?? (desktop.map { "데스크탑 \($0)" } ?? (key.isEmpty ? "자주 쓰는 앱" : "막대 \(key)")) }
         set { d.set(newValue, forKey: k("favName")); rebuild(animate: false); onChange() }
     }
+    /// 막대에 보이는 앱: 일반 막대는 넣어 둔 앱, 데스크탑 막대는 그 데스크탑에 열린 앱
     var favs: [String] {
-        get { d.stringArray(forKey: k("favApps")) ?? [] }
-        set { d.set(newValue, forKey: k("favApps")); rebuild(); onChange() }
+        get { isDesktop ? deskCache : (d.stringArray(forKey: k("favApps")) ?? []) }
+        set { guard !isDesktop else { return }; d.set(newValue, forKey: k("favApps")); rebuild(); onChange() }
     }
     var edge: Edge {
         get { Edge(rawValue: d.string(forKey: k("favEdge")) ?? "") ?? .left }
@@ -109,9 +358,68 @@ final class FavBar {
         get { CGFloat(d.object(forKey: k("favPos")) as? Double ?? 0.5) }
         set { d.set(Double(newValue), forKey: k("favPos")) }
     }
+    /// 같은 가장자리에 있는 막대들 사이 순서 (가장자리를 따라 0 = 아래/왼쪽 … 1 = 위/오른쪽). 없으면 자리(pos) 대로
+    var order: Double? {
+        get { d.object(forKey: k("favOrder")) as? Double }
+        set { if let v = newValue { d.set(v, forKey: k("favOrder")) } else { d.removeObject(forKey: k("favOrder")) } }
+    }
+
+    /// 같은 모니터 · 같은 가장자리의 막대들, 지금 화면 순서대로 (아래/왼쪽부터)
+    func neighbors() -> [FavBar] {
+        guard let me = panel else { return [self] }
+        let vert = edge.vertical
+        return Self.all.filter { b in
+            guard let p = b.panel, b.edge == edge else { return false }
+            return p.screen == me.screen
+        }.sorted { a, b in
+            let fa = a.panel!.frame, fb = b.panel!.frame
+            return vert ? fa.midY < fb.midY : fa.midX < fb.midX
+        }
+    }
+    /// 한 칸 앞 / 뒤로 (by: -1 = 아래/왼쪽, +1 = 위/오른쪽)
+    func moveOrder(by step: Int) {
+        var list = neighbors()
+        guard let i = list.firstIndex(where: { $0 === self }) else { return }
+        let j = i + step
+        guard list.indices.contains(j) else { return }
+        list.swapAt(i, j)
+        // 지금 순서대로 고르게 번호를 다시 매기고, 같은 자리에 모이게 해서 순서만 바뀌도록
+        for (n, b) in list.enumerated() { b.order = (Double(n) + 0.5) / Double(list.count) }
+        let p = list[i].pos
+        list[i].pos = list[j].pos
+        list[j].pos = p
+        Self.layoutAll(animate: true)
+    }
+
     var collapsed: Bool {
         get { d.bool(forKey: k("favCollapsed")) }
-        set { d.set(newValue, forKey: k("favCollapsed")); rebuild() }
+        set { d.set(newValue, forKey: k("favCollapsed")); if newValue { peek = false }; rebuild() }
+    }
+
+    // MARK: 손잡이에 마우스를 대면 잠깐 펴기 (옵션) — 벗어나면 다시 접음
+    private var peek = false
+    private var peekTimer: Timer?
+    private var outSince: Date?
+    func peekOpen() {
+        guard collapsed else { return }
+        collapsed = false
+        peek = true
+        outSince = nil
+        peekTimer?.invalidate()
+        let t = Timer(timeInterval: 0.2, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.peekTick() } }
+        RunLoop.main.add(t, forMode: .common)
+        peekTimer = t
+    }
+    private func peekTick() {
+        guard peek, !collapsed, let p = panel else { peekTimer?.invalidate(); peekTimer = nil; peek = false; return }
+        let inside = p.frame.insetBy(dx: -8, dy: -8).contains(NSEvent.mouseLocation)
+        let busy = editing || NSEvent.pressedMouseButtons != 0 || MenuWatch.open
+        if inside || busy { outSince = nil; return }
+        if outSince == nil { outSince = Date() }
+        if Date().timeIntervalSince(outSince!) > Motion.closeDelay {
+            peekTimer?.invalidate(); peekTimer = nil
+            collapsed = true
+        }
     }
 
     // MARK: 넣기 · 빼기 · 순서
@@ -119,14 +427,14 @@ final class FavBar {
     func contains(_ id: String) -> Bool { favs.contains(id) }
     /// 편집 모드: [+] 와 빼기(✕) 가 보임. 막대가 비어 있으면 [+] 는 늘 보임
     var editing = false { didSet { if editing != oldValue { rebuild(animate: false) } } }
-    var showsPlus: Bool { editing || favs.isEmpty }
+    var showsPlus: Bool { !isDesktop && (editing || favs.isEmpty) }
     /// 막대가 넘쳐 스크롤될 때 보던 자리 · 방금 넣어서 보여 줄 앱
     var scrollOffset: CGFloat = 0
     var revealID: String?
 
     /// 넣기 (이미 있으면 그 자리로 옮기기). at 이 없으면 맨 뒤
     func insert(_ id: String, at index: Int? = nil) {
-        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) != nil else { return }
+        guard !isDesktop, NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) != nil else { return }
         var f = favs
         var i = index ?? f.count
         if let old = f.firstIndex(of: id) {
@@ -144,7 +452,13 @@ final class FavBar {
 
     // MARK: 창
 
-    func start() { if enabled { for b in Self.all { b.show() } } }
+    func start() {
+        if enabled { for b in Self.all { b.show() } }
+        Self.watchDesktops()
+        BarReserve.start()
+        GreenZoom.start()
+        WindowDeskDrop.start()
+    }
 
     func show() {
         guard panel == nil else { return }
@@ -195,10 +509,140 @@ final class FavBar {
             ?? NSScreen.screens.first ?? NSScreen.main!
     }
 
-    func place(animate: Bool) {
-        guard let p = panel, let v = p.contentView as? FavBase else { return }
-        p.setFrame(frame(edge: edge, pos: pos, size: v.wantSize, vf: screen.visibleFrame), display: true, animate: animate)
+    func place(animate: Bool) { Self.layoutAll(animate: animate) }
+
+    private static var reserveJob: DispatchWorkItem?
+    /// 모든 막대 자리 정하기: 같은 모니터 · 같은 가장자리의 막대들은 겹치지 않게 가장자리를 따라 나란히
+    /// (원래 가려던 자리 순서는 지키고, 겹치면 옆으로 밀고, 화면 끝을 넘으면 반대로 당김)
+    static func layoutAll(animate: Bool) {
+        defer {
+            // 막대 자리가 바뀌었으면 다른 앱 창도 다시 비켜 줌 (옵션)
+            if BarReserve.enabled {
+                reserveJob?.cancel()
+                let j = DispatchWorkItem { MainActor.assumeIsolated { BarReserve.fixAll() } }
+                reserveJob = j
+                DispatchQueue.main.asyncAfter(deadline: .now() + Motion.duration + 0.3, execute: j)
+            }
+        }
+        for it in computeFrames() {
+            if animate, Motion.duration > 0, let p = it.bar.panel, p.isVisible {
+                NSAnimationContext.runAnimationGroup { c in
+                    c.duration = Motion.duration
+                    p.animator().setFrame(it.f, display: true)
+                }
+            } else {
+                it.bar.panel?.setFrame(it.f, display: true)
+            }
+        }
     }
+
+    /// 막대가 놓일 자리 계산값 (끌고 있는 막대가 있으면 그 막대를 '지금 놓으면' 자리로 넣어서)
+    struct Plan { var edge: Edge; var pos: CGFloat; var order: Double?; var size: NSSize; var screen: NSScreen }
+    static func computeFrames(override: (bar: FavBar, plan: Plan)? = nil, orders: [ObjectIdentifier: Double] = [:]) -> [(bar: FavBar, f: NSRect)] {
+        var out: [(bar: FavBar, f: NSRect)] = []
+        // 막대마다: 가장자리 · 자리 · 순서 · 크기 · 모니터 (끌고 있는 막대는 지금 놓으면 될 값으로)
+        typealias It = (bar: FavBar, f: NSRect, edge: Edge, order: Double?, vf: NSRect)
+        var groups: [String: [It]] = [:]
+        for b in all {
+            guard let p = b.panel, let v = p.contentView as? FavBase else { continue }
+            var pl = override?.bar === b ? override!.plan : Plan(edge: b.edge, pos: b.pos, order: b.order, size: v.wantSize, screen: b.screen)
+            if let o = orders[ObjectIdentifier(b)] { pl.order = o }
+            let vf = pl.screen.visibleFrame
+            let f = b.frame(edge: pl.edge, pos: pl.pos, size: pl.size, vf: vf)
+            groups["\(pl.edge.rawValue)|\(NSStringFromRect(vf))", default: []].append((b, f, pl.edge, pl.order, vf))
+        }
+        let gap: CGFloat = 8
+        // 왼쪽 · 오른쪽 막대를 먼저 놓고, 위 · 아래 막대는 그 막대들을 피해서 (모서리에서 겹치지 않게)
+        var placed: [(edge: Edge, f: NSRect)] = []
+        let ordered = groups.values.sorted { ($0[0].edge.vertical ? 0 : 1) < ($1[0].edge.vertical ? 0 : 1) }
+        for g in ordered {
+            let edge = g[0].edge
+            let vert = edge.vertical
+            let vf = g[0].vf
+            func lo(_ f: NSRect) -> CGFloat { vert ? f.minY : f.minX }
+            func mid(_ f: NSRect) -> CGFloat { vert ? f.midY : f.midX }
+            func len(_ f: NSRect) -> CGFloat { vert ? f.height : f.width }
+            func shift(_ f: inout NSRect, to v: CGFloat) { if vert { f.origin.y = v } else { f.origin.x = v } }
+            // 쓸 수 있는 구간: 위 · 아래 막대는 같은 높이에 걸치는 왼쪽 · 오른쪽 막대 안쪽으로
+            var minB = vert ? vf.minY : vf.minX
+            var maxB = vert ? vf.maxY : vf.maxX
+            if !vert, let band = g.first?.f {
+                for o in placed where o.f.minY < band.maxY && o.f.maxY > band.minY && vf.intersects(o.f) {
+                    if o.edge == .left { minB = max(minB, o.f.maxX + gap) }
+                    if o.edge == .right { maxB = min(maxB, o.f.minX - gap) }
+                }
+            }
+            // 순서: 막대마다 정해 둔 순서(끌어 놓은 자리) → 없으면 가려던 자리
+            let span = vert ? vf.height : vf.width, start = vert ? vf.minY : vf.minX
+            func key(_ it: It) -> Double { it.order ?? Double((mid(it.f) - start) / span) }
+            var items = g.enumerated().sorted { a, b in
+                let ka = key(a.element), kb = key(b.element)
+                return ka != kb ? ka < kb : a.offset < b.offset
+            }.map(\.element)
+            // 같은 가장자리에 막대가 여럿이면: 순서대로 붙여 한 줄로 세우고, 그 줄을 가장자리 가운데에
+            // (막대마다의 시작 · 가운데 · 끝 자리는 무시 — 순서를 바꾸다가 한 막대만 모서리로 튕겨 나가지 않게)
+            if items.count > 1 {
+                let total = items.map { len($0.f) }.reduce(0, +) + gap * CGFloat(items.count - 1)
+                var at = min(max((minB + maxB) / 2 - total / 2, minB), max(minB, maxB - total))
+                for it in items {
+                    var f = it.f
+                    shift(&f, to: at)
+                    at += len(f) + gap
+                    out.append((it.bar, f))
+                    placed.append((edge, f))
+                }
+                continue
+            }
+            // 먼저 쓸 수 있는 구간 안으로
+            for k in items.indices {
+                var f = items[k].f
+                shift(&f, to: min(max(lo(f), minB), maxB - len(f)))
+                items[k].f = f
+            }
+            let want = items.map(\.f)
+            // 앞에서부터: 앞 막대와 겹치면 뒤로 밈
+            func push() {
+                var end = minB - gap
+                for k in items.indices {
+                    var f = items[k].f
+                    shift(&f, to: max(lo(f), end + gap))
+                    end = lo(f) + len(f)
+                    items[k].f = f
+                }
+            }
+            // 뒤에서부터: 구간 끝을 넘으면 앞으로 당김
+            func pull() {
+                var limit = maxB
+                for k in items.indices.reversed() {
+                    var f = items[k].f
+                    if lo(f) + len(f) > limit { shift(&f, to: limit - len(f)) }
+                    limit = lo(f) - gap
+                    items[k].f = f
+                }
+            }
+            push()
+            // 밀려서 이어진 묶음은 원래 가려던 자리를 가운데로 두도록 통째로 당김 (한쪽으로 쏠리지 않게)
+            var i = 0
+            while i < items.count {
+                var j = i
+                while j + 1 < items.count && abs(lo(items[j + 1].f) - (lo(items[j].f) + len(items[j].f) + gap)) < 0.5 && lo(items[j + 1].f) > lo(want[j + 1]) + 0.5 { j += 1 }
+                if j > i {
+                    let delta = (i...j).map { mid(want[$0]) - mid(items[$0].f) }.reduce(0, +) / CGFloat(j - i + 1)
+                    for k in i...j { var f = items[k].f; shift(&f, to: lo(f) + delta); items[k].f = f }
+                }
+                i = j + 1
+            }
+            push()
+            pull()
+            push()   // 당기다가 시작 쪽을 넘었으면 다시 안으로
+            for it in items {
+                out.append((it.bar, it.f))
+                placed.append((edge, it.f))
+            }
+        }
+        return out
+    }
+
 
     /// 가장자리 · 자리 · 크기로 막대가 놓일 곳
     private func frame(edge: Edge, pos: CGFloat, size: NSSize, vf: NSRect) -> NSRect {
@@ -238,30 +682,74 @@ final class FavBar {
     // MARK: 막대 옮기기 (손잡이를 잡고 끌어 놓으면 가장 가까운 가장자리에 붙음)
 
     private var grab: (mouse: NSPoint, origin: NSPoint)?
+    /// 끌기 시작할 때 다른 막대들이 있던 자리 (끼어들 순서를 이 위치 가운데 기준으로 정함 — 위 · 아래 같은 기준)
+    private static var restFrames: [(bar: FavBar, f: NSRect)] = []
+    /// 끄는 동안 정한 순서 (놓을 때 저장)
+    private static var liveOrders: [ObjectIdentifier: Double] = [:]
     func beginMove() {
         guard let p = panel else { return }
         grab = (NSEvent.mouseLocation, p.frame.origin)
+        Self.restFrames = Self.all.compactMap { b in b === self ? nil : b.panel.map { (b, $0.frame) } }
+        Self.liveOrders = [:]
     }
+    /// 끄는 동안 다른 막대들이 가 있을 자리 (같은 자리로 애니메이션을 다시 걸지 않게)
+    private static var liveTargets: [ObjectIdentifier: NSRect] = [:]
     func moving() {
         guard let p = panel, let g = grab else { return }
         let m = NSEvent.mouseLocation
         p.setFrameOrigin(NSPoint(x: g.origin.x + m.x - g.mouse.x, y: g.origin.y + m.y - g.mouse.y))
-        // 놓으면 붙을 가장자리 · 자리 미리 보여 주기 (막대 방향이 바뀌면 가로세로를 바꿔서)
         guard let v = p.contentView as? FavBase else { return }
-        let (e, ps, s, sz) = target(NSPoint(x: p.frame.midX, y: p.frame.midY), size: v.wantSize)
-        let ghost = frame(edge: e, pos: ps, size: sz, vf: s.visibleFrame)
-        let slots = [0, 0.5, 1].map { frame(edge: e, pos: $0, size: sz, vf: s.visibleFrame) }
+        // 지금 놓으면: 가장자리 · 자리 · 순서 (막대 방향이 바뀌면 가로세로를 바꿔서)
+        let c = NSPoint(x: p.frame.midX, y: p.frame.midY)
+        let (e, ps, s, sz) = target(c, size: v.wantSize)
+        let vf = s.visibleFrame
+        // 같은 가장자리 · 모니터의 다른 막대들을 끌기 전 자리 순서대로 세우고, 끄는 막대 가운데가 몇 개를 넘었는지로 끼어들 자리
+        let mine = Self.restFrames.filter { $0.bar.edge == e && vf.intersects($0.f) }
+            .sorted { e.vertical ? $0.f.midY < $1.f.midY : $0.f.midX < $1.f.midX }
+        let at = mine.filter { e.vertical ? $0.f.midY < c.y : $0.f.midX < c.x }.count
+        var orders: [ObjectIdentifier: Double] = [:]
+        let n = Double(mine.count + 1)
+        for (i, it) in mine.enumerated() { orders[ObjectIdentifier(it.bar)] = (Double(i < at ? i : i + 1) + 0.5) / n }
+        let ord = mine.isEmpty ? Double(e.vertical ? (c.y - vf.minY) / vf.height : (c.x - vf.minX) / vf.width) : (Double(at) + 0.5) / n
+        orders[ObjectIdentifier(self)] = ord
+        Self.liveOrders = orders
+        let frames = Self.computeFrames(override: (self, Plan(edge: e, pos: ps, order: ord, size: sz, screen: s)), orders: orders)
+        // 다른 막대들은 그 자리로 미끄러져 비켜 줌 (사이에 끼어들 빈자리가 생김)
+        for it in frames where it.bar !== self {
+            guard let bp = it.bar.panel, bp.isVisible else { continue }
+            let id = ObjectIdentifier(it.bar)
+            if let t = Self.liveTargets[id], t.equalTo(it.f) { continue }
+            Self.liveTargets[id] = it.f
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = max(0.12, Motion.duration * 0.8)
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                bp.animator().setFrame(it.f, display: true)
+            }
+        }
+        // 놓일 빈자리를 파란 테두리로
+        let ghost = frames.first { $0.bar === self }?.f ?? frame(edge: e, pos: ps, size: sz, vf: vf)
         let ie: EdgeIndicator.Edge = e == .left ? .left : e == .right ? .right : e == .top ? .top : .bottom
-        EdgeIndicator.shared.show(screen: s, edge: ie, zone: 0, active: true, ghost: ghost, slots: slots)
+        EdgeIndicator.shared.show(screen: s, edge: ie, zone: 0, active: true, ghost: ghost)
     }
     func endMove() {
         guard grab != nil else { return }
         grab = nil
+        Self.liveTargets = [:]
         EdgeIndicator.shared.hide()
         guard let p = panel, let v = p.contentView as? FavBase else { return }
-        let (e, ps, s, _) = target(NSPoint(x: p.frame.midX, y: p.frame.midY), size: v.wantSize)
+        let c = NSPoint(x: p.frame.midX, y: p.frame.midY)
+        let (e, ps, s, _) = target(c, size: v.wantSize)
         edge = e
         pos = ps
+        // 끄는 동안 보여 준 순서 그대로 저장 (그 사이에 끼어 들어감)
+        if Self.liveOrders.isEmpty {
+            let vf = s.visibleFrame
+            order = Double(e.vertical ? (c.y - vf.minY) / vf.height : (c.x - vf.minX) / vf.width)
+        } else {
+            for b in Self.all { if let o = Self.liveOrders[ObjectIdentifier(b)] { b.order = o } }
+        }
+        Self.liveOrders = [:]
+        Self.restFrames = []
         d.set((s.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0, forKey: k("favScreen"))
         rebuild()
     }
@@ -272,7 +760,8 @@ final class FavBar {
 
     /// 도구함 아이콘 메뉴용: 막대가 하나면 넣기/빼기, 여러 개면 막대를 고르는 하위 메뉴
     static func menuItem(for id: String) -> NSMenuItem {
-        let bs = all
+        var bs = all.filter { !$0.isDesktop }
+        if bs.isEmpty { bs = [all.first ?? bar("")] }
         if bs.count == 1 {
             let b = bs[0]
             return MenuAction(b.contains(id) ? "자주 쓰는 앱 막대에서 빼기" : "자주 쓰는 앱 막대에 넣기") { b.toggle(id) }
@@ -289,6 +778,39 @@ final class FavBar {
         i.submenu = m
         return i
     }
+
+    /// 데스크탑 닫기: macOS 가 프로그램으로 지우는 걸 막아서, Mission Control 을 열고 어디를 누를지 안내
+    /// (사용자가 ✕ 를 누르면 데스크탑이 없어지고, 그 막대도 저절로 닫힘)
+    static func closeDesktopHelp(_ n: Int) {
+        let label = Spaces.numbered().desks.first { $0.n == n }?.label ?? "데스크탑 \(n)"
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
+        // 안내 말풍선 (Mission Control 위, 화면 위쪽 가운데) — 몇 초 뒤 사라짐
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            let p = NSPanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.isOpaque = false; p.backgroundColor = .clear; p.ignoresMouseEvents = true
+            p.level = NSWindow.Level(rawValue: Int(CGShieldingWindowLevel()))
+            p.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+            let t = NSTextField(labelWithString: "‘\(label.replacingOccurrences(of: " · ", with: " ("))\(label.contains(" · ") ? ")" : "")’ 에 마우스를 올리고 왼쪽 위 ✕ 를 누르세요 · 막대도 같이 닫혀요")
+            t.font = .systemFont(ofSize: 14, weight: .semibold)
+            t.textColor = .white
+            t.sizeToFit()
+            let w = t.frame.width + 32, h: CGFloat = 40
+            let v = NSView(frame: NSRect(x: 0, y: 0, width: w, height: h))
+            v.wantsLayer = true
+            v.layer?.backgroundColor = NSColor.launcherAccent.withAlphaComponent(0.92).cgColor
+            v.layer?.cornerRadius = 12
+            t.setFrameOrigin(NSPoint(x: 16, y: (h - t.frame.height) / 2))
+            v.addSubview(t)
+            p.contentView = v
+            let disp = Spaces.numbered().desks.first { $0.n == n }?.display
+            let scr = NSScreen.screens.first { Spaces.uuid(of: $0) == disp } ?? NSScreen.main ?? NSScreen.screens[0]
+            p.setFrame(NSRect(x: scr.frame.midX - w / 2, y: scr.frame.maxY - 150, width: w, height: h), display: true)
+            p.orderFrontRegardless()
+            closeHint = p
+            DispatchQueue.main.asyncAfter(deadline: .now() + 6) { MainActor.assumeIsolated { closeHint?.orderOut(nil); closeHint = nil } }
+        }
+    }
+    private static var closeHint: NSPanel?
 
     /// 이름 바꾸기 창
     func askRename() {
@@ -388,31 +910,55 @@ class FavBase: NSView {
         let m = NSMenu()
         m.addItem(NSMenuItem(title: bar.name, action: nil, keyEquivalent: ""))
         m.addItem(.separator())
-        let side = NSMenuItem(title: "붙일 곳", action: nil, keyEquivalent: "")
-        let sm = NSMenu()
-        for (t, eg) in [("왼쪽", FavBar.Edge.left), ("오른쪽", .right), ("위", .top), ("아래", .bottom)] {
-            let i = MenuAction(t) { bar.edge = eg; bar.rebuild() }
-            i.state = bar.edge == eg ? .on : .off
-            sm.addItem(i)
+        // 붙일 곳 · 정렬 · 순서는 막대를 끌어서 바꿈
+        let cl = MenuAction("접어 두기") { bar.collapsed.toggle() }
+        cl.state = bar.collapsed ? .on : .off
+        m.addItem(cl)
+        let hv = MenuAction("접힌 손잡이에 마우스를 대면 펴기") { EdgeDock.hoverExpand.toggle() }
+        hv.state = EdgeDock.hoverExpand ? .on : .off
+        m.addItem(hv)
+        let rs = MenuAction("막대 자리 비워 두기 (다른 앱 창이 침범하지 않게)") { BarReserve.enabled.toggle() }
+        rs.state = BarReserve.enabled ? .on : .off
+        m.addItem(rs)
+        if !bar.isDesktop {
+            m.addItem(MenuAction(bar.editing ? "편집 끝내기" : "편집 (넣기 · 빼기)") { bar.editing.toggle() })
         }
-        side.submenu = sm
-        m.addItem(side)
-        let al = NSMenuItem(title: "정렬", action: nil, keyEquivalent: "")
-        let am = NSMenu()
-        let names = bar.edge.vertical ? ["아래", "가운데", "위"] : ["왼쪽", "가운데", "오른쪽"]
-        for (t, v) in zip(names, [0.0, 0.5, 1.0]) {
-            let i = MenuAction(t) { bar.pos = CGFloat(v); bar.rebuild() }
-            i.state = abs(bar.pos - CGFloat(v)) < 0.01 ? .on : .off
-            am.addItem(i)
+        // 막대 종류: 직접 넣는 막대 / 데스크탑 n 에 열린 앱
+        let desks = Spaces.numbered().desks
+        let kind = NSMenuItem(title: "막대 종류", action: nil, keyEquivalent: "")
+        let km = NSMenu()
+        km.autoenablesItems = false
+        let manual = MenuAction("자주 쓰는 앱 (직접 넣기)") { bar.desktop = nil }
+        manual.state = bar.isDesktop ? .off : .on
+        km.addItem(manual)
+        km.addItem(.separator())
+        for dk in desks {
+            let taken = bar.desktop != dk.n && FavBar.hasBar(forDesktop: dk.n)
+            let it = MenuAction("\(dk.label)에 열린 앱" + (taken ? " (막대 있음)" : "")) { bar.desktop = dk.n; if bar.name.hasPrefix("막대 ") { bar.name = "데스크탑 \(dk.n)" } }
+            it.state = bar.desktop == dk.n ? .on : .off
+            it.isEnabled = !taken
+            km.addItem(it)
         }
-        al.submenu = am
-        m.addItem(al)
-        m.addItem(MenuAction(bar.collapsed ? "펴기" : "접기") { bar.collapsed.toggle() })
-        m.addItem(MenuAction(bar.editing ? "편집 끝내기" : "편집 (넣기 · 빼기)") { bar.editing.toggle() })
+        kind.submenu = km
+        m.addItem(kind)
         m.addItem(.separator())
-        m.addItem(MenuAction("막대 추가") { FavBar.addBar() })
+        let add = NSMenuItem(title: "막대 추가", action: nil, keyEquivalent: "")
+        let addm = NSMenu()
+        addm.addItem(MenuAction("자주 쓰는 앱 막대") { FavBar.addBar() })
+        addm.autoenablesItems = false
+        for dk in desks {
+            let taken = FavBar.hasBar(forDesktop: dk.n)
+            let it = MenuAction("\(dk.label) 막대 (열린 앱 자동)" + (taken ? " — 이미 있음" : "")) { FavBar.addDesktopBar(dk.n) }
+            it.isEnabled = !taken
+            addm.addItem(it)
+        }
+        add.submenu = addm
+        m.addItem(add)
         m.addItem(MenuAction("이 막대 이름 바꾸기…") { [bar] in bar.askRename() })
         if FavBar.all.count > 1 { m.addItem(MenuAction("이 막대 지우기…") { [bar] in bar.confirmDelete() }) }
+        if let n = bar.desktop {
+            m.addItem(MenuAction("데스크탑 \(n) 닫기… (Mission Control 열기)") { FavBar.closeDesktopHelp(n) })
+        }
         m.addItem(MenuAction("자주 쓰는 앱 막대 모두 끄기") { [bar] in bar.enabled = false })
         NSMenu.popUpContextMenu(m, with: e, for: self)
     }
@@ -463,6 +1009,28 @@ final class FavHandleView: FavBase {
     }
 
     override func clicked() { bar.collapsed = false }
+
+    // 옵션: 마우스를 대면 펴기
+    private var hoverJob: DispatchWorkItem?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with e: NSEvent) {
+        guard EdgeDock.hoverExpand else { return }
+        hoverJob?.cancel()
+        let bar = self.bar
+        let job = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, let w = self.window, w.frame.contains(NSEvent.mouseLocation) else { return }
+                bar.peekOpen()
+            }
+        }
+        hoverJob = job
+        DispatchQueue.main.asyncAfter(deadline: .now() + Motion.openDelay, execute: job)
+    }
+    override func mouseExited(with e: NSEvent) { hoverJob?.cancel() }
 }
 
 // MARK: - 펴진 막대
@@ -473,7 +1041,9 @@ final class FavBarView: FavBase {
     /// 손잡이 · [+] · 접기 버튼이 차지하는 길이 (앱 칸 말고)
     private let showPlus: Bool
     private let editing: Bool
-    private var fixedLen: CGFloat { Self.pad * 2 + Self.grip + (showPlus ? Self.cell : 0) + Self.chev }
+    /// 손잡이 칸 길이 (데스크탑 막대는 번호 배지가 들어가서 조금 길게)
+    private var gripLen: CGFloat { bar.isDesktop ? (FavBar.multiMonitor ? (edge.vertical ? 38 : 36) : 24) : Self.grip }
+    private var fixedLen: CGFloat { Self.pad * 2 + gripLen + (showPlus ? Self.cell : 0) + Self.chev }
     let ids: [String]
     private let maxMain: CGFloat
     private var cells: [FavAppCell] = []
@@ -501,7 +1071,8 @@ final class FavBarView: FavBase {
         editing = bar.editing
         super.init(edge: edge, bar: bar)
         plus.bar = bar
-        layer?.backgroundColor = NSColor(white: 0.13, alpha: 0.92).cgColor
+        layer?.backgroundColor = (bar.isDesktop ? NSColor(red: 0.10, green: 0.14, blue: 0.24, alpha: 0.93)
+                                                : NSColor(white: 0.13, alpha: 0.92)).cgColor
         layer?.cornerRadius = 13
         layer?.borderColor = NSColor(white: 1, alpha: 0.14).cgColor
         layer?.borderWidth = 1
@@ -527,7 +1098,7 @@ final class FavBarView: FavBase {
             doc.addSubview(c)
         }
         marker.wantsLayer = true
-        marker.layer?.backgroundColor = NSColor.controlAccentColor.cgColor
+        marker.layer?.backgroundColor = NSColor.launcherAccent.cgColor
         marker.layer?.cornerRadius = 1.5
         marker.isHidden = true
         doc.addSubview(marker)
@@ -551,23 +1122,34 @@ final class FavBarView: FavBase {
             // 편집 중에는 접기 대신 완료(✓)
             chevron.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: "편집 끝내기")?
                 .withSymbolConfiguration(.init(pointSize: 14, weight: .semibold))
-            chevron.contentTintColor = .controlAccentColor
+            chevron.contentTintColor = .launcherAccent
             chevron.toolTip = "편집 끝내기"
             chevron.action = #selector(endEdit)
         }
         addSubview(chevron)
-        toolTip = ids.isEmpty ? "[+] 를 누르거나 도구함의 아이콘을 끌어다 놓으세요 · 빈 곳을 끌면 다른 가장자리로 옮겨요" : nil
+        DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.refreshState() } }
+        if let n = bar.desktop {
+            toolTip = (ids.isEmpty ? "데스크탑 \(n)에 열린 앱이 없어요" : "데스크탑 \(n)에 열린 앱 (저절로 바뀌어요)") + " · 번호를 누르면 데스크탑 \(n)으로"
+        } else {
+            toolTip = ids.isEmpty ? "[+] 를 누르거나 도구함의 아이콘을 끌어다 놓으세요 · 빈 곳을 끌면 다른 가장자리로 옮겨요" : nil
+        }
     }
     required init?(coder: NSCoder) { fatalError() }
     deinit { NotificationCenter.default.removeObserver(self) }
 
     @objc private func collapse() { bar.collapsed = true }
+
+    /// 데스크탑 막대: 번호 배지 (막대 빈 곳) 를 누르면 그 데스크탑으로
+    override func clicked() {
+        guard let n = bar.desktop else { return }
+        Spaces.switchTo(n, apps: bar.favs)
+    }
     @objc private func endEdit() { bar.editing = false }
 
     private var restored = false
     override func layout() {
         super.layout()
-        let a0 = Self.pad + Self.grip
+        let a0 = Self.pad + gripLen
         let L = listLen
         let off = (Self.thick - Self.cell) / 2
         scroll.frame = edge.vertical ? NSRect(x: 0, y: a0, width: Self.thick, height: L) : NSRect(x: a0, y: 0, width: L, height: Self.thick)
@@ -629,16 +1211,50 @@ final class FavBarView: FavBase {
     }
 
     override func draw(_ r: NSRect) {
+        // 데스크탑 막대: 손잡이 자리에 데스크탑 번호 배지
+        if let n = bar.desktop {
+            let mon = FavBar.multiMonitor ? FavBar.deskMonitor[n] : nil
+            // 모니터 이름을 아래에 붙일 땐 배지를 조금 위로
+            var c = edge.vertical ? NSPoint(x: bounds.midX, y: Self.pad + gripLen / 2) : NSPoint(x: Self.pad + gripLen / 2, y: bounds.midY)
+            if mon != nil { c.y -= 6 }
+            let box = NSRect(x: c.x - 10, y: c.y - 9, width: 20, height: 18)
+            // 지금 모니터에 보이고 있는 데스크탑이면 모니터 색 배지 (모니터가 하나면 파랑), 아니면 회색
+            let col = FavBar.monitorColor(mon?.index ?? 0)
+            (FavBar.currentDesks.contains(n) ? col : NSColor(white: 0.42, alpha: 1)).withAlphaComponent(0.95).setFill()
+            NSBezierPath(roundedRect: box, xRadius: 5, yRadius: 5).fill()
+            let t = NSAttributedString(string: "\(n)", attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .bold), .foregroundColor: NSColor.white])
+            let sz = t.size()
+            t.draw(at: NSPoint(x: c.x - sz.width / 2, y: c.y - sz.height / 2))
+            // 배지 아래 모니터 이름 (모니터 색으로 살짝)
+            if let mon {
+                let mt = NSAttributedString(string: mon.name, attributes: [.font: NSFont.systemFont(ofSize: 8.5, weight: .semibold),
+                                                                           .foregroundColor: col.blended(withFraction: 0.45, of: .white) ?? col])
+                let ms = mt.size()
+                mt.draw(at: NSPoint(x: c.x - ms.width / 2, y: c.y + 10))
+            }
+            return
+        }
         // 손잡이: 점 세 개 (여기를 잡고 끌면 막대가 옮겨짐)
         NSColor(white: 1, alpha: 0.35).setFill()
         for k in -1...1 {
-            let c = edge.vertical ? NSPoint(x: bounds.midX + CGFloat(k) * 6, y: Self.pad + Self.grip / 2)
-                                  : NSPoint(x: Self.pad + Self.grip / 2, y: bounds.midY + CGFloat(k) * 6)
+            let c = edge.vertical ? NSPoint(x: bounds.midX + CGFloat(k) * 6, y: Self.pad + gripLen / 2)
+                                  : NSPoint(x: Self.pad + gripLen / 2, y: bounds.midY + CGFloat(k) * 6)
             NSBezierPath(ovalIn: NSRect(x: c.x - 1.5, y: c.y - 1.5, width: 3, height: 3)).fill()
         }
     }
 
     func refreshRunning() { cells.forEach { $0.needsDisplay = true } }
+
+    /// 지금 보이는 데스크탑인지에 따라 막대 모양 · 아이콘 점 다시
+    func refreshState() {
+        cells.forEach { $0.needsDisplay = true }
+        needsDisplay = true
+        guard let n = bar.desktop else { return }
+        let now = FavBar.currentDesks.contains(n)
+        alphaValue = now ? 1 : 0.72
+        layer?.borderColor = now ? NSColor.launcherAccent.withAlphaComponent(0.7).cgColor : NSColor(white: 1, alpha: 0.14).cgColor
+        layer?.borderWidth = now ? 1.5 : 1
+    }
 
     // 끌어 놓기: 놓을 자리 계산 + 표시 (스크롤된 만큼 반영)
     private func dropIndex(_ s: NSDraggingInfo) -> Int {
@@ -655,6 +1271,12 @@ final class FavBarView: FavBase {
     }
     override func draggingEntered(_ s: NSDraggingInfo) -> NSDragOperation { draggingUpdated(s) }
     override func draggingUpdated(_ s: NSDraggingInfo) -> NSDragOperation {
+        // 데스크탑 막대: 켜져 있는 앱을 놓으면 그 데스크탑으로 창을 옮김 (막대 테두리를 밝혀서 알려 줌)
+        if let n = bar.desktop {
+            let ids = FavBar.ids(from: s.draggingPasteboard).filter { FavBar.movable($0, toDesktop: n) }
+            setDropGlow(!ids.isEmpty)
+            return ids.isEmpty ? [] : .move
+        }
         guard !FavBar.ids(from: s.draggingPasteboard).isEmpty else { return [] }
         autoScroll(s)
         showMarker(dropIndex(s))
@@ -676,9 +1298,20 @@ final class FavBarView: FavBase {
         scroll.contentView.scroll(to: o)
         scroll.reflectScrolledClipView(scroll.contentView)
     }
-    override func draggingExited(_ s: NSDraggingInfo?) { showMarker(nil) }
+    override func draggingExited(_ s: NSDraggingInfo?) { showMarker(nil); setDropGlow(false) }
+    func setDropGlow(_ on: Bool) {
+        layer?.borderColor = on ? NSColor.launcherAccent.cgColor : NSColor(white: 1, alpha: 0.14).cgColor
+        layer?.borderWidth = on ? 2 : 1
+    }
     override func performDragOperation(_ s: NSDraggingInfo) -> Bool {
         showMarker(nil)
+        setDropGlow(false)
+        if let n = bar.desktop {
+            let ids = FavBar.ids(from: s.draggingPasteboard).filter { FavBar.movable($0, toDesktop: n) }
+            guard let id = ids.first else { return false }
+            DispatchQueue.main.async { MainActor.assumeIsolated { FavBar.moveApp(id, toDesktop: n) } }
+            return true
+        }
         let new = FavBar.ids(from: s.draggingPasteboard)
         guard !new.isEmpty else { return false }
         var at = dropIndex(s)
@@ -802,7 +1435,14 @@ final class FavAppCell: NSView, NSDraggingSource {
             case .top: c = NSPoint(x: bounds.midX, y: 2.5)
             case .bottom: c = NSPoint(x: bounds.midX, y: bounds.maxY - 2.5)
             }
-            NSBezierPath(ovalIn: NSRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4)).fill()
+            let dot = NSBezierPath(ovalIn: NSRect(x: c.x - 2, y: c.y - 2, width: 4, height: 4))
+            if FavBar.onScreenApps.contains(id) {
+                dot.fill()                                  // ● 지금 화면에 창이 보임
+            } else {
+                NSColor(white: 1, alpha: 0.55).setStroke()  // ○ 켜져 있지만 지금 화면엔 안 보임
+                dot.lineWidth = 1
+                dot.stroke()
+            }
         }
         if editing {
             // 빼기 단추 (왼쪽 위 ✕)
@@ -867,7 +1507,7 @@ final class FavAppCell: NSView, NSDraggingSource {
     }
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         dragging = false
-        if operation.isEmpty {
+        if operation.isEmpty, !bar.isDesktop {
             NSAnimationEffect.poof.show(centeredAt: screenPoint, size: NSSize(width: 40, height: 40))
             bar.remove(id)
         }
@@ -884,6 +1524,12 @@ final class FavAppCell: NSView, NSDraggingSource {
             m.addItem(MenuAction("종료") { r.terminate() })
         }
         m.addItem(.separator())
+        if let mv = FavBar.moveMenu(for: id, except: bar.desktop) { m.addItem(mv); m.addItem(.separator()) }
+        if bar.isDesktop {
+            m.addItem(FavBar.menuItem(for: id))
+            NSMenu.popUpContextMenu(m, with: e, for: self)
+            return
+        }
         let f = bar.favs
         if let i = f.firstIndex(of: id) {
             let back = bar.edge.vertical ? "위로" : "왼쪽으로"
@@ -942,7 +1588,7 @@ final class FavPlusCell: NSView {
 @MainActor
 final class FavPicker: NSObject, NSWindowDelegate, NSSearchFieldDelegate {
     static let shared = FavPicker()
-    private var panel: NSPanel?
+    private(set) var panel: NSPanel?
     private let search = NSSearchField()
     private let stack = NSStackView()
     private let addButton = NSButton(title: "넣기", target: nil, action: nil)
@@ -1152,5 +1798,108 @@ private final class PickRow: NSView {
     override func mouseUp(with e: NSEvent) {
         box.state = box.state == .on ? .off : .on
         onChange()
+    }
+}
+
+// MARK: - 다른 앱 창을 데스크탑 막대 위로 끌어 오면 그 데스크탑으로
+// 창을 잡고 끄는 중에 데스크탑 막대 위에 0.3초 머무르면, ⌃← / ⌃→ 를 대신 눌러 잡고 있는 창째로 그 데스크탑으로 넘어감
+// (macOS 에서 창을 잡은 채 데스크탑을 넘기면 창이 따라가는 것과 같은 원리). 다른 모니터 데스크탑이면 놓을 때 옮김
+
+@MainActor
+enum WindowDeskDrop {
+    private static var monitors: [Any] = []
+    /// 누른 자리에 있던 다른 앱 창 (번호 · 자리 · 앱)
+    private static var held: (wid: Int, origin: CGPoint, pid: pid_t)?
+    private static var over: FavBar?
+    private static var dwell: DispatchWorkItem?
+    private static var doneFor: Int?
+
+    static func start() {
+        guard monitors.isEmpty else { return }
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown, handler: { _ in
+            MainActor.assumeIsolated { WindowDeskDrop.down() }
+        }) { monitors.append(m) }
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDragged, handler: { _ in
+            MainActor.assumeIsolated { WindowDeskDrop.dragged() }
+        }) { monitors.append(m) }
+        if let m = NSEvent.addGlobalMonitorForEvents(matching: .leftMouseUp, handler: { _ in
+            MainActor.assumeIsolated { WindowDeskDrop.up() }
+        }) { monitors.append(m) }
+    }
+
+    /// 화면 좌표(왼쪽 위 기준) 마우스 자리
+    private static var cgMouse: CGPoint {
+        let m = NSEvent.mouseLocation
+        return CGPoint(x: m.x, y: (NSScreen.screens.first?.frame.maxY ?? 0) - m.y)
+    }
+
+    private static func windowAt(_ p: CGPoint) -> (wid: Int, origin: CGPoint, pid: pid_t)? {
+        let wins = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        for w in wins {
+            guard (w[kCGWindowLayer as String] as? Int) == 0, let b = w[kCGWindowBounds as String] as? [String: CGFloat],
+                  let r = CGRect(dictionaryRepresentation: b as CFDictionary), r.contains(p) else { continue }
+            guard let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != getpid(),
+                  let wid = w[kCGWindowNumber as String] as? Int else { return nil }
+            return (wid, r.origin, pid)
+        }
+        return nil
+    }
+    private static func origin(of wid: Int) -> CGPoint? {
+        guard let info = (CGWindowListCopyWindowInfo([.optionIncludingWindow], CGWindowID(wid)) as? [[String: Any]])?.first,
+              let b = info[kCGWindowBounds as String] as? [String: CGFloat],
+              let r = CGRect(dictionaryRepresentation: b as CFDictionary) else { return nil }
+        return r.origin
+    }
+
+    private static func down() {
+        held = windowAt(cgMouse)
+        doneFor = nil
+    }
+
+    private static func dragged() {
+        guard let h = held, doneFor != h.wid else { return }
+        let m = NSEvent.mouseLocation
+        // 마우스 아래 데스크탑 막대 (펼쳐져 있는 것)
+        let bar = FavBar.all.first { b in
+            guard b.isDesktop, !b.collapsed, let p = b.panel, p.isVisible else { return false }
+            return p.frame.insetBy(dx: -6, dy: -6).contains(m)
+        }
+        if bar !== over {
+            (over?.panel?.contentView as? FavBarView)?.setDropGlow(false)
+            dwell?.cancel()
+            over = bar
+            guard let bar, let n = bar.desktop else { return }
+            // 창을 끄는 중일 때만 (글자 고르기 같은 끌기는 무시)
+            guard let o = origin(of: h.wid), abs(o.x - h.origin.x) + abs(o.y - h.origin.y) > 2 else { over = nil; return }
+            (bar.panel?.contentView as? FavBarView)?.setDropGlow(true)
+            let job = DispatchWorkItem {
+                MainActor.assumeIsolated {
+                    guard WindowDeskDrop.over === bar, NSEvent.pressedMouseButtons & 1 == 1,
+                          let st = Spaces.steps(to: n), st.steps != 0 else { return }
+                    let here = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }.map(Spaces.uuid(of:)) ?? ""
+                    guard here == st.display else { return }   // 다른 모니터 데스크탑은 놓을 때
+                    WindowDeskDrop.doneFor = h.wid
+                    Spaces.pressArrows(st.steps)
+                }
+            }
+            dwell = job
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: job)
+        }
+    }
+
+    private static func up() {
+        defer {
+            (over?.panel?.contentView as? FavBarView)?.setDropGlow(false)
+            dwell?.cancel()
+            over = nil; held = nil
+        }
+        // 다른 모니터 데스크탑 막대 위에서 놓았으면 그때 옮김
+        guard let bar = over, let n = bar.desktop, let h = held, doneFor != h.wid,
+              let st = Spaces.steps(to: n), st.steps != 0 || !st.target.current else { return }
+        Spaces.move(pid: h.pid, to: st.target, desks: st.desks) { _ in
+            for t in [0.5, 1.2, 2.5] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + t) { MainActor.assumeIsolated { FavBar.refreshDesktops() } }
+            }
+        }
     }
 }
