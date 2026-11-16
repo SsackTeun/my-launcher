@@ -320,7 +320,12 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     const toggleBtn = () => [...document.querySelectorAll('ytmusic-player-bar button, ytmusic-player-bar tp-yt-paper-icon-button')]
       .find(b => { const a = (b.getAttribute('aria-label') || '').trim().toLowerCase(); return a.includes('플레이어 페이지') || a.includes('player page'); })
       || document.querySelector('ytmusic-player-bar .toggle-player-page-button');
-    const closeAgain = () => { if (opened && layout && layout.hasAttribute('player-page-open')) { const b = toggleBtn(); if (b) b.click(); } };
+    // 가사 탭으로 바꿨으면 보던 탭(다음 트랙 · 댓글 · 관련 항목)으로 되돌림
+    let prevTab = null;
+    const closeAgain = () => {
+      if (prevTab && prevTab.isConnected && prevTab.getAttribute('aria-selected') !== 'true') prevTab.click();
+      if (opened && layout && layout.hasAttribute('player-page-open')) { const b = toggleBtn(); if (b) b.click(); }
+    };
     if (layout && !layout.hasAttribute('player-page-open')) {
       if (!mayOpen) return {title, status: 'skip'};
       const b = toggleBtn();
@@ -330,7 +335,12 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     const tab = [...document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab')]
       .find(t => ['가사', 'Lyrics', 'LYRICS'].includes(t.textContent.trim()));
     if (!tab || tab.hasAttribute('disabled') || tab.getAttribute('aria-disabled') === 'true') return {title, status: 'none'};
-    if (tab.getAttribute('aria-selected') !== 'true') { tab.click(); await sleep(1200); }
+    if (tab.getAttribute('aria-selected') !== 'true') {
+      // YouTube Music 창을 보는 중이면 탭을 건드리지 않음 (댓글 등을 누르면 가사로 끌려가지 않게)
+      if (!mayOpen) return {title, status: 'skip'};
+      prevTab = [...document.querySelectorAll('ytmusic-player-page tp-yt-paper-tab')].find(t => t.getAttribute('aria-selected') === 'true') || null;
+      tab.click(); await sleep(1200);
+    }
     const tr = document.querySelector('ytmusic-player-page ytmusic-tab-renderer[page-type="MUSIC_PAGE_TYPE_TRACK_LYRICS"]');
     const sh = tr && tr.querySelector('ytmusic-description-shelf-renderer');
     const text = sh ? ((sh.querySelector('.description') || {}).innerText || '') : '';

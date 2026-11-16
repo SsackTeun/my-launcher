@@ -209,9 +209,17 @@ final class Tile: NSView {
         if isRow {
             l.frame = NSRect(x: memRight - 56, y: (frame.height - 15) / 2, width: 56, height: 15)
         } else {
-            // 격자 보기: 이름 밑 가운데에 "2.3 GB" (숫자가 있으면 켜져 있다는 뜻이라 초록 점은 숨김)
+            // 격자 보기: 이름 밑 가운데에 "● 2.3 GB" (초록 점은 숫자 왼쪽에 붙여서 같이 보임)
             l.frame = NSRect(x: 2, y: 3, width: frame.width - 4, height: Tile.memLine)
-            runDot?.isHidden = true
+            if let dot = runDot {
+                let tw = ceil(l.attributedStringValue.size().width)
+                let d: CGFloat = 5
+                dot.frame = NSRect(x: (frame.width - tw) / 2 - d - 4 + 2, y: l.frame.midY - d / 2, width: d, height: d)
+                dot.layer?.cornerRadius = d / 2
+                // 숫자와 점을 합친 덩어리가 가운데 오게 숫자를 조금 오른쪽으로
+                l.frame.origin.x += (d + 4) / 2
+                dot.frame.origin.x += (d + 4) / 2
+            }
         }
     }
 
@@ -594,16 +602,32 @@ let widgetLevels: [(String, NSWindow.Level)] = [
     ("항상 위에", .floating),
 ]
 
+/// 창 끌어 옮기기: 마우스를 직접 따라가며 창 자리를 옮김
+/// (시스템 끌기 performDrag 는 다른 앱을 쓰다가 잡으면 안 움직일 때가 있고, 끄는 동안 창 자리도 늦게 알려 줌)
+@MainActor
+enum WindowDrag {
+    static func run(_ w: NSWindow) {
+        let start = NSEvent.mouseLocation, origin = w.frame.origin
+        w.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { ev, stop in
+            guard let ev, ev.type != .leftMouseUp else { stop.pointee = true; return }
+            let m = NSEvent.mouseLocation
+            w.setFrameOrigin(NSPoint(x: (origin.x + m.x - start.x).rounded(), y: (origin.y + m.y - start.y).rounded()))
+        }
+    }
+}
+
 /// 빈 곳을 잡고 끌면 창이 움직이는 판 (검색 줄 · 탭 줄 바탕). 위치 고정이면 안 움직임
 final class DragArea: NSView {
     var isLocked: () -> Bool = { false }
     var flippedLayout = false
     override var isFlipped: Bool { flippedLayout }
     override var mouseDownCanMoveWindow: Bool { false }
+    // 다른 앱을 쓰다가 잡아도 첫 클릭부터 끌림 (없으면 첫 클릭은 창을 앞으로 가져오기만 해서 '될 때 · 안 될 때' 가 생김)
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         guard !isLocked(), let w = window else { return }
         EdgeDock.dock(for: w)?.beginWatch()   // 끄는 동안 붙을 자리 보여 주기 (도구함 창 · 떼어 낸 플레이어)
-        w.performDrag(with: event)
+        WindowDrag.run(w)
         OnScreen.fix(w)        // 모니터 밖으로 끌었으면 다시 안으로
     }
 }
@@ -678,12 +702,13 @@ final class DragHandle: NSView {
         (isLocked() ? NSCursor.arrow : NSCursor.openHand).set()
     }
     override var mouseDownCanMoveWindow: Bool { false }
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         // 끌어서 옮기기만 (여러 번 눌러도 다른 동작 없음)
         guard !isLocked(), let w = window else { return }
         NSCursor.closedHand.set()
         EdgeDock.dock(for: w)?.beginWatch()   // 끄는 동안 붙을 자리 보여 주기 (도구함 창 · 떼어 낸 플레이어)
-        w.performDrag(with: event)
+        WindowDrag.run(w)
         NSCursor.openHand.set()
         OnScreen.fix(w)
     }
@@ -1711,7 +1736,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.addObserver(forName: NSWindow.didChangeScreenNotification, object: nil, queue: .main) { [weak self] n in
             MainActor.assumeIsolated {
                 guard let self, (n.object as? NSWindow) === self.window else { return }
-                self.refresh()
+                self.refreshAfterDrag()
             }
         }
 
@@ -3286,6 +3311,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Options.relayout = { [unowned self] in playerBar.needsLayout = true; refresh() }
         p.center()
         settings = p
+    }
+
+    /// 끄는 중에 모니터가 바뀌면, 손을 뗀 다음에 다시 그림
+    /// (끄는 동안 창을 다시 맞추면 앱이 아는 옛 자리로 창을 되돌려 놓아서, 넘나들 때마다 커서와 창이 점점 벌어졌음)
+    private var screenRefreshPending = false
+    func refreshAfterDrag() {
+        guard NSEvent.pressedMouseButtons != 0 else { refresh(); return }
+        guard !screenRefreshPending else { return }
+        screenRefreshPending = true
+        func wait() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if NSEvent.pressedMouseButtons != 0 { wait(); return }
+                    self.screenRefreshPending = false
+                    self.refresh()
+                }
+            }
+        }
+        wait()
     }
 
     var settingsTabs: NSTabView?
