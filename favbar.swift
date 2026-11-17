@@ -762,7 +762,22 @@ final class FavBar {
         // 같은 가장자리 · 모니터 · 같은 줄의 다른 막대들을 끌기 전 자리 순서대로 세우고, 끄는 막대 가운데가 몇 개를 넘었는지로 끼어들 자리
         let mine = Self.restFrames.filter { $0.bar.edge == e && $0.bar.lane == ln && vf.intersects($0.f) }
             .sorted { e.vertical ? $0.f.midY < $1.f.midY : $0.f.midX < $1.f.midX }
-        let at = mine.filter { e.vertical ? $0.f.midY < c.y : $0.f.midX < c.x }.count
+        // 이웃 막대에 '닿으면' 바로 자리를 바꿈 (예전엔 가운데를 넘어야 해서 한참 끌어야 했음)
+        // 끄는 방향 쪽 끝이 이웃 막대 안으로 touch 만큼 들어가면 전환
+        let me = p.frame, touch: CGFloat = 10
+        let startMid = e.vertical ? g.origin.y + me.height / 2 : g.origin.x + me.width / 2
+        let forward = e.vertical ? me.midY > startMid : me.midX > startMid   // 위(가로면 오른쪽)로 끄는 중
+        func before(_ o: NSRect) -> Bool {   // o 가 끄는 막대보다 앞(아래/왼쪽)에 놓이는지
+            if e.vertical { return forward ? me.maxY > o.minY + touch : me.minY > o.maxY - touch }
+            return forward ? me.maxX > o.minX + touch : me.minX > o.maxX - touch
+        }
+        let at = mine.filter { before($0.f) }.count
+        // 자리를 바꿀 막대들 (끌기 전과 앞뒤가 달라진 막대): 밝게 표시하고 안내
+        let swapped = e == edge && ln == lane ? mine.filter { it in
+            let wasBefore = e.vertical ? it.f.midY < startMid : it.f.midX < startMid
+            return wasBefore != before(it.f)
+        }.map(\.bar) : []
+        for b in Self.all where b !== self { (b.panel?.contentView as? FavBarView)?.setDropGlow(swapped.contains { $0 === b }) }
         var orders: [ObjectIdentifier: Double] = [:]
         let n = Double(mine.count + 1)
         for (i, it) in mine.enumerated() { orders[ObjectIdentifier(it.bar)] = (Double(i < at ? i : i + 1) + 0.5) / n }
@@ -785,13 +800,16 @@ final class FavBar {
         // 놓일 빈자리를 파란 테두리로
         let ghost = frames.first { $0.bar === self }?.f ?? frame(edge: e, pos: ps, size: sz, vf: vf)
         let ie: EdgeIndicator.Edge = e == .left ? .left : e == .right ? .right : e == .top ? .top : .bottom
-        EdgeIndicator.shared.show(screen: s, edge: ie, zone: 0, active: true, ghost: ghost)
+        let names = swapped.map { $0.desktop.map { "\($0)번" } ?? $0.name }.joined(separator: " · ")
+        EdgeIndicator.shared.show(screen: s, edge: ie, zone: 0, active: true, ghost: ghost,
+                                  text: swapped.isEmpty ? nil : "놓으면 \(names) 막대와 자리를 바꿔요")
     }
     func endMove() {
         guard grab != nil else { return }
         grab = nil
         Self.liveTargets = [:]
         EdgeIndicator.shared.hide()
+        for b in Self.all { (b.panel?.contentView as? FavBarView)?.setDropGlow(false) }
         guard let p = panel, let v = p.contentView as? FavBase else { return }
         let c = NSPoint(x: p.frame.midX, y: p.frame.midY)
         let (e, ps, s, sz) = target(c, size: v.wantSize)

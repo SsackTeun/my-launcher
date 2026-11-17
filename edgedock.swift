@@ -716,13 +716,21 @@ final class EdgeIndicatorView: NSView {
             p.lineWidth = 2
             accent.withAlphaComponent(0.9).setStroke()
             p.stroke()
-            if let text, g.width > 120 {
+            if let text {
                 let a: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 13, weight: .semibold),
                                                          .foregroundColor: NSColor.white]
                 let s = NSAttributedString(string: text, attributes: a)
                 let sz = s.size()
-                let box = NSRect(x: g.midX - sz.width / 2 - 10, y: g.midY - sz.height / 2 - 5, width: sz.width + 20, height: sz.height + 10)
-                guard box.width < g.width - 8 else { return }
+                var box = NSRect(x: g.midX - sz.width / 2 - 10, y: g.midY - sz.height / 2 - 5, width: sz.width + 20, height: sz.height + 10)
+                if box.width >= g.width - 8 {
+                    // 좁은 자리(막대)면 옆 (화면 안쪽) 에 말풍선으로
+                    if g.height > g.width {
+                        box.origin.x = g.midX < bounds.midX ? g.maxX + 8 : g.minX - 8 - box.width
+                    } else {
+                        box.origin.x = min(max(g.midX - box.width / 2, 8), bounds.maxX - box.width - 8)
+                        box.origin.y = g.midY < bounds.midY ? g.maxY + 8 : g.minY - 8 - box.height
+                    }
+                }
                 accent.withAlphaComponent(0.9).setFill()
                 NSBezierPath(roundedRect: box, xRadius: 8, yRadius: 8).fill()
                 s.draw(at: NSPoint(x: box.minX + 10, y: box.minY + 5))
