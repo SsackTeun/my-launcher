@@ -53,6 +53,8 @@ enum Options {
         if let lv = Options.level {
             f.popup("놓이는 곳", [("바탕화면 위", 0), ("일반 창처럼", 1), ("항상 위", 2)], Double(lv.get())) { lv.set(Int($0)) }
             f.note("바탕화면 위: 위젯처럼 다른 창 뒤에 깔려 있다가, 창을 치우면 보여요 · 일반 창처럼: 누르면 앞으로 · 항상 위: 다른 창 위에 늘 떠 있음")
+            f.popup("마우스 올리면 앞으로", [("바로", 0), ("잠시 멈추면", 1), ("안 함", 2)], Double(HoverRaise.mode)) { HoverRaise.mode = Int($0) }
+            f.note("잠시 멈추면: 마우스를 카드 위에 0.6초쯤 가만히 두면 앞으로 나와요 (지나가다 스친 건 무시) · 안 함: 눌러야만 앞으로")
         }
                 f.check("화면 끝에 붙였을 때 자동 접기 (벗어나면 접힘)", EdgeDock.shared.autoCollapse) { EdgeDock.shared.autoCollapse = $0 }
         f.check("접힌 손잡이에 마우스를 대면 펴기 (막대도 같이)", EdgeDock.hoverExpand) { EdgeDock.hoverExpand = $0 }

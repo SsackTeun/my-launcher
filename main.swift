@@ -659,12 +659,42 @@ final class HoverRaise: NSView {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
+    /// 마우스 올렸을 때: 0 바로 앞으로 · 1 잠시 멈춰 있으면 앞으로(기본) · 2 안 올라옴
+    static var mode: Int {
+        get { UserDefaults.standard.object(forKey: "hoverRaiseMode") as? Int ?? 1 }
+        set { UserDefaults.standard.set(newValue, forKey: "hoverRaiseMode") }
+    }
+    /// 멈춰 있어야 하는 시간
+    static let dwell: TimeInterval = 0.6
+    private var waitID = 0
     override func mouseEntered(with event: NSEvent) {
-        guard let w = window, base().rawValue < NSWindow.Level.floating.rawValue else { return }
+        guard window != nil, base().rawValue < NSWindow.Level.floating.rawValue else { return }
+        switch HoverRaise.mode {
+        case 0: raise()
+        case 1: waitID += 1; waitStill(waitID, last: NSEvent.mouseLocation, still: 0)
+        default: break
+        }
+    }
+    /// 지나가다 스친 건 무시: 마우스가 창 안에서 거의 안 움직이고 dwell 만큼 머물러야 올림
+    private func waitStill(_ id: Int, last: NSPoint, still: TimeInterval) {
+        let step = 0.1
+        DispatchQueue.main.asyncAfter(deadline: .now() + step) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, id == self.waitID, let w = self.window, w.level != .floating else { return }
+                let m = NSEvent.mouseLocation
+                guard NSMouseInRect(m, w.frame, false) else { return }
+                let calm = hypot(m.x - last.x, m.y - last.y) < 6
+                let t = calm ? still + step : 0
+                if t >= HoverRaise.dwell { self.raise() } else { self.waitStill(id, last: m, still: t) }
+            }
+        }
+    }
+    private func raise() {
+        guard let w = window else { return }
         w.level = .floating
         w.orderFrontRegardless()
     }
-    override func mouseExited(with event: NSEvent) { lower() }
+    override func mouseExited(with event: NSEvent) { waitID += 1; lower() }
     /// 화면 끝에서 펼쳤을 때: 다른 창 뒤에 깔리는 높이면 잠깐 맨 앞으로, 마우스가 창을 벗어나면 원래 높이로
     static func raiseWhileHovered(_ w: NSWindow) {
         let base = w.level
@@ -2143,7 +2173,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var allIds: [String] { cats.flatMap(\.ids) }
     func url(_ id: String) -> URL? { NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) }
     func running(_ id: String) -> NSRunningApplication? {
-        NSRunningApplication.runningApplications(withBundleIdentifier: id).first
+        mainApp(id)
     }
     func name(_ id: String) -> String {
         guard let u = url(id) else { return devApps.app(id)?.name ?? id }
@@ -2171,6 +2201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 지금 화면에 그 앱 창이 하나도 안 보이고 Dock 으로 내려 둔 창이 있으면 그 창을 다시 올림
         // (macOS 는 다른 데스크탑에 보통 창이 하나라도 있으면 앱만 앞으로 하고 내려 둔 창은 그대로 둬서, 눌러도 안 올라왔음)
         if let r, restoreMinimized(r) { return }
+        // 창 없는 앱 대신 고른 자식 앱(예: 롤 LeagueClient → LeagueClientUx)이면 부모를 다시 여는 대신 그 앱을 앞으로
+        if let r, r.bundleIdentifier != id { Spaces.bringToFront(r); return }
         guard let u = url(id) ?? r?.bundleURL else {
             alert("\(id) 앱을 찾을 수 없어요. 앱을 다시 설치하거나 런처에서 빼 주세요.")
             return
@@ -3615,4 +3647,49 @@ MainActor.assumeIsolated {
     app.setActivationPolicy(.regular)
     buildMainMenu(delegate)
     app.run()
+}
+
+/// 같은 번들 ID 로 프로세스가 여럿일 때(예: Riot Client = 창 없는 관리 프로세스 + 창 있는 앱) 창을 가진 쪽을 고름
+/// 순서: 맨 앞 앱 → 일반 앱(Dock 에 보이는 것) → 첫 번째
+/// 그 앱 프로세스가 모두 창 없는 도우미(Dock 에 안 보임)면, 그 앱이 띄운 자식 · 손자 프로세스 중 일반 앱을 대신 씀
+///   예: 리그 오브 레전드 LeagueClient(창 없음) → LeagueClientUx(실제 창, 번들 ID 가 다름)
+@MainActor
+func mainApp(_ id: String) -> NSRunningApplication? {
+    let all = NSRunningApplication.runningApplications(withBundleIdentifier: id)
+    guard !all.isEmpty else { return nil }
+    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    if let r = all.first(where: { $0.processIdentifier == front }) ?? all.first(where: { $0.activationPolicy == .regular }) { return r }
+    if let child = childApp(of: Set(all.map(\.processIdentifier))) { return child }
+    return all.first
+}
+
+/// roots 가 띄운(부모를 따라 올라가면 roots 가 나오는) 일반 앱. 맨 앞 앱이 있으면 그것부터
+@MainActor
+func childApp(of roots: Set<pid_t>) -> NSRunningApplication? {
+    let me = ProcessInfo.processInfo.processIdentifier
+    let regular = NSWorkspace.shared.runningApplications.filter {
+        $0.activationPolicy == .regular && $0.processIdentifier != me && !roots.contains($0.processIdentifier)
+    }
+    // (앱, 몇 대 아래인지) — 너무 멀리(launchd) 까지는 안 올라감
+    let kids: [(NSRunningApplication, Int)] = regular.compactMap { a in
+        var p = a.processIdentifier
+        for depth in 1...6 {
+            p = parentPid(p)
+            if p <= 1 { return nil }
+            if roots.contains(p) { return (a, depth) }
+        }
+        return nil
+    }
+    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    // 맨 앞 앱(예: 게임 중이면 게임) → 가장 가까운 자식(예: 롤 클라이언트 창)
+    return kids.first { $0.0.processIdentifier == front }?.0 ?? kids.min { $0.1 < $1.1 }?.0
+}
+
+/// 부모 프로세스 번호 (모르면 0)
+func parentPid(_ pid: pid_t) -> pid_t {
+    var info = kinfo_proc()
+    var size = MemoryLayout<kinfo_proc>.stride
+    var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+    guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return 0 }
+    return info.kp_eproc.e_ppid
 }

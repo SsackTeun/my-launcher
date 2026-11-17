@@ -138,7 +138,7 @@ final class FavBar {
 
     /// 데스크탑 막대의 앱 누르기: 내려 둔 창이면 그 데스크탑으로 가서 올리고, 지금 앞에 떠 있는 앱이면 내림, 아니면 평소처럼
     func toggleDeskApp(_ id: String) {
-        guard let n = desktop, let r = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else { open(id); return }
+        guard let n = desktop, let r = mainApp(id) else { open(id); return }
         let pid = r.processIdentifier
         if deskMin.contains(id) {
             let wins = Set(deskMinWins)
@@ -243,12 +243,15 @@ final class FavBar {
 
     /// 앱 창을 데스크탑 n 으로 (제목 막대를 잡고 넘기는 방식이라 잠깐 화면이 넘어감)
     static func moveApp(_ id: String, toDesktop n: Int) {
-        guard let r = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else { return }
+        guard let r = mainApp(id) else { return }
         let desks = Spaces.load()
         let normal = desks.filter { !$0.fullscreen }
         guard normal.indices.contains(n - 1) else { return }
         Spaces.move(pid: r.processIdentifier, to: normal[n - 1], desks: desks) { msg in
-            if let msg {
+            if let msg, msg.contains("Mission Control") {
+                // 잡지 못한 창(롤 · 게임처럼 직접 그린 머리)은 Mission Control 에서 한 번만 손으로
+                Spaces.guideMissionControl(app: r.localizedName ?? "앱", desk: n)
+            } else if let msg {
                 let a = NSAlert(); a.messageText = msg
                 NSApp.activate(ignoringOtherApps: true)
                 a.runModal()
@@ -1573,7 +1576,7 @@ final class FavAppCell: NSView, NSDraggingSource {
     private var measureTimer: Timer?
     private var measuring = false
     private func measure() {
-        guard hovering, !measuring, let r = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else { return }
+        guard hovering, !measuring, let r = mainApp(id) else { return }
         measuring = true
         let pid = r.processIdentifier, nm = name
         DispatchQueue.global(qos: .userInitiated).async {
@@ -1704,7 +1707,7 @@ final class FavAppCell: NSView, NSDraggingSource {
         m.addItem(NSMenuItem(title: name, action: nil, keyEquivalent: ""))
         m.addItem(.separator())
         m.addItem(MenuAction("열기") { [id] in bar.open(id) })
-        if let r = NSRunningApplication.runningApplications(withBundleIdentifier: id).first {
+        if let r = mainApp(id) {
             m.addItem(MenuAction(r.isHidden ? "가리기 해제" : "가리기") { if r.isHidden { r.unhide() } else { r.hide() } })
             m.addItem(MenuAction("종료") { r.terminate() })
         }

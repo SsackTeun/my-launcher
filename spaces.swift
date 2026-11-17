@@ -360,7 +360,15 @@ extension Spaces {
         var log: [String] = []
         defer { try? log.joined(separator: "\n").write(toFile: NSHomeDirectory() + "/MyLauncher/space-grab.txt", atomically: true, encoding: .utf8) }
         // 제목 막대 높이 안에서만 (게임처럼 화면 안쪽을 누르면 안 되는 앱이 있어서)
-        for y in [r.minY + 4, r.minY + 10, r.minY + 16] {
+        // 단, 맥 기본 제목 막대(닫기 버튼)가 없는 창(롤 · Riot 처럼 앱이 직접 그린 머리)은 머리가 두꺼워서 조금 더 아래까지
+        var ys: [CGFloat] = [r.minY + 4, r.minY + 10, r.minY + 16]
+        if let w = mainWindow(pid: pid) {
+            var b: CFTypeRef?
+            if AXUIElementCopyAttributeValue(w, kAXCloseButtonAttribute as CFString, &b) != .success || b == nil {
+                ys += [r.minY + 26, r.minY + 36, r.minY + 48]
+            }
+        }
+        for y in ys {
             for x in xs {
                 var el: AXUIElement?
                 guard AXUIElementCopyElementAtPosition(app, Float(x), Float(y), &el) == .success, let el else { continue }
@@ -370,7 +378,7 @@ extension Spaces {
                 if !bad.contains(rs) {
                     out.append(CGPoint(x: x, y: y))
                     log.append("후보 \(Int(x)),\(Int(y)) \(rs)")
-                    if out.count >= 8 { return out }
+                    if out.count >= 14 { return out }
                 }
             }
         }
@@ -522,6 +530,56 @@ extension Spaces {
     }
 }
 
+
+// MARK: - 못 옮겼을 때: Mission Control 을 열고 '끌어다 놓기' 안내
+
+extension Spaces {
+    private static var guide: NSPanel?
+    /// Mission Control 을 열고 화면 아래쪽에 안내 풍선. Mission Control 이 닫히면(앞 앱이 바뀌면) 풍선도 닫힘
+    @MainActor
+    static func guideMissionControl(app: String, desk: Int) {
+        guide?.close()
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Mission Control.app"))
+        let text = "‘\(app)’ 창을 위쪽 줄의 데스크탑 \(desk) 으로 끌어다 놓아 주세요"
+        let label = NSTextField(labelWithString: text)
+        label.font = .systemFont(ofSize: 17, weight: .semibold)
+        label.textColor = .white
+        label.sizeToFit()
+        let size = NSSize(width: label.frame.width + 48, height: label.frame.height + 28)
+        guard let scr = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }) ?? NSScreen.main else { return }
+        let p = NSPanel(contentRect: NSRect(x: scr.frame.midX - size.width / 2, y: scr.frame.minY + 60, width: size.width, height: size.height),
+                        styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.level = .screenSaver
+        p.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary, .ignoresCycle]
+        p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
+        p.ignoresMouseEvents = true
+        let bg = NSView(frame: NSRect(origin: .zero, size: size))
+        bg.wantsLayer = true
+        bg.layer?.backgroundColor = NSColor(white: 0.1, alpha: 0.88).cgColor
+        bg.layer?.cornerRadius = size.height / 2
+        label.frame.origin = NSPoint(x: 24, y: 14)
+        bg.addSubview(label)
+        p.contentView = bg
+        p.orderFrontRegardless()
+        guide = p
+        // 끌어다 놓거나 Esc 로 닫으면 풍선도 정리 (넉넉히 20초 뒤엔 무조건)
+        let start = Date()
+        func watch() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                MainActor.assumeIsolated {
+                    guard let g = guide, g === p else { return }
+                    let mcOpen = (CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as? [[String: Any]] ?? []).contains {
+                        ($0[kCGWindowOwnerName as String] as? String) == "Dock" && ($0[kCGWindowLayer as String] as? Int ?? 0) > 20
+                            && (($0[kCGWindowBounds as String] as? [String: CGFloat])?["Height"] ?? 0) > 300
+                    }
+                    if (!mcOpen && Date().timeIntervalSince(start) > 1.5) || Date().timeIntervalSince(start) > 20 { g.close(); guide = nil; return }
+                    watch()
+                }
+            }
+        }
+        watch()
+    }
+}
 
 // MARK: - 진단: Mission Control 이 열렸을 때 Dock 의 손쉬운 사용 구조를 파일로
 
