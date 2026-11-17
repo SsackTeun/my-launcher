@@ -3,6 +3,10 @@
 import Cocoa
 import ApplicationServices
 
+/// AX 창 → 창 번호 (공개 API 가 없어 창 정리 앱들이 쓰는 비공개 함수)
+@_silgen_name("_AXUIElementGetWindow")
+func _AXUIElementGetWindow(_ element: AXUIElement, _ id: UnsafeMutablePointer<CGWindowID>) -> AXError
+
 enum Spaces {
     /// 창을 다른 데스크탑으로 옮기는 중 (그동안 창을 건드리는 다른 기능은 쉼)
     nonisolated(unsafe) static var moving = false
@@ -14,6 +18,9 @@ enum Spaces {
         var display = ""          // 모니터 UUID
         var order = 0             // 그 모니터 안에서 몇 번째 데스크탑 (0부터, 전체 화면 포함)
         var fullscreen = false
+        /// Dock 으로 내려 둔 창만 있는 앱 · 그 창 번호 (이 데스크탑 소속)
+        var minPids: [pid_t] = []
+        var minWins: [Int] = []
     }
 
     private typealias MainConn = @convention(c) () -> Int32
@@ -77,6 +84,23 @@ enum Spaces {
     }
 
     /// 데스크탑 번호(1, 2, 3…, 전체 화면 공간은 빼고 센 번호) 에 창이 열려 있는 앱 (번들 ID, 겹치지 않게)
+    /// 데스크탑 n 의 앱: 떠 있는 앱 + 내려 둔 창만 있는 앱 (뒤쪽), 내려 둔 창만 있는 앱 목록 · 그 창 번호들
+    static func deskContent(_ n: Int) -> (ids: [String], minimized: Set<String>, minWins: [Int]) {
+        let ds = load().filter { !$0.fullscreen }
+        guard ds.indices.contains(n - 1) else { return ([], [], []) }
+        let d = ds[n - 1]
+        var seen = Set<String>(), ids: [String] = [], mins = Set<String>()
+        for pid in d.pids {
+            guard let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, seen.insert(id).inserted else { continue }
+            ids.append(id)
+        }
+        for pid in d.minPids {
+            guard let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, seen.insert(id).inserted else { continue }
+            ids.append(id); mins.insert(id)
+        }
+        return (ids, mins, d.minWins)
+    }
+
     static func apps(onDesktop n: Int) -> [String] {
         let ds = load().filter { !$0.fullscreen }
         guard ds.indices.contains(n - 1) else { return [] }
@@ -181,6 +205,31 @@ enum Spaces {
         app.activate(from: NSRunningApplication.current, options: [])
     }
 
+    /// 최소화된 창 번호들 (손쉬운 사용 권한이 있을 때만, 1초 동안 기억 — 막대마다 여러 번 불러서)
+    private static var minCache: (t: Date, ids: Set<Int>)?
+    /// 창을 올리거나 내린 직후: 다음 확인 때 새로 읽게
+    static func forgetMinimized() { minCache = nil }
+    static func minimizedWindowIDs(pids: Set<pid_t>) -> Set<Int> {
+        if let c = minCache, Date().timeIntervalSince(c.t) < 1 { return c.ids }
+        var out = Set<Int>()
+        if AXIsProcessTrusted() {
+            for pid in pids {
+                let ax = AXUIElementCreateApplication(pid)
+                AXUIElementSetMessagingTimeout(ax, 0.2)   // 응답 없는 앱 때문에 멈추지 않게
+                var v: CFTypeRef?
+                guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let ws = v as? [AXUIElement] else { continue }
+                for w in ws {
+                    var m: CFTypeRef?
+                    guard AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &m) == .success, (m as? Bool) == true else { continue }
+                    var id: CGWindowID = 0
+                    if _AXUIElementGetWindow(w, &id) == .success, id != 0 { out.insert(Int(id)) }
+                }
+            }
+        }
+        minCache = (Date(), out)
+        return out
+    }
+
     static func load() -> [Desk] {
         guard let mainConn, let copyDisplays, let copyForWindows else { return [] }
         let cid = mainConn()
@@ -220,12 +269,22 @@ enum Spaces {
         let me = ProcessInfo.processInfo.processIdentifier
         let regular = Set(NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.map(\.processIdentifier))
         let wins = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let minimized = minimizedWindowIDs(pids: regular)
         var fsOwner: [Int: String] = [:]
         for w in wins {
             guard (w[kCGWindowLayer as String] as? Int) == 0,
                   let pid = w[kCGWindowOwnerPID as String] as? pid_t, pid != me, regular.contains(pid),
                   let wid = w[kCGWindowNumber as String] as? Int else { continue }
             if let a = w[kCGWindowAlpha as String] as? Double, a <= 0 { continue }
+            // Dock 으로 내린(최소화한) 창은 그 데스크탑에 '떠 있는' 게 아니라서 따로 모음 (막대에 점선으로)
+            if minimized.contains(wid) {
+                for sp in copyForWindows(cid, 7, [wid] as CFArray)?.takeRetainedValue() as? [Int] ?? [] {
+                    guard let k = index[sp] else { continue }
+                    if !desks[k].minPids.contains(pid) { desks[k].minPids.append(pid) }
+                    desks[k].minWins.append(wid)
+                }
+                continue
+            }
             // 진짜 창만 (주소창 추천 목록 · 알림 풍선 같은 숨은 작은 창은 빼기)
             if let b = w[kCGWindowBounds as String] as? [String: Any],
                (b["Width"] as? Double ?? 0) < 200 || (b["Height"] as? Double ?? 0) < 150 { continue }
@@ -240,7 +299,7 @@ enum Spaces {
         for k in fullscreen {
             let d = desks[k]
             desks[k] = Desk(id: d.id, label: "전체 화면 · \(fsOwner[k] ?? "앱")" + (d.current ? " (지금)" : ""), current: d.current, pids: d.pids,
-                            display: d.display, order: d.order, fullscreen: true)
+                            display: d.display, order: d.order, fullscreen: true, minPids: d.minPids, minWins: d.minWins)
         }
         return desks
     }
@@ -502,4 +561,58 @@ extension Spaces {
             CGEvent(keyboardEventSource: nil, virtualKey: 53, keyDown: false)?.post(tap: .cghidEventTap)
         }
     }
+}
+
+// MARK: - 창 내림 · 올림 바로 알아채기
+// 2초마다 살피는 것만으로는 막대 점선이 실제와 잠깐씩 어긋나서, 앱마다 손쉬운 사용 알림(창이 내려감 · 올라옴)을 받아 바로 다시 읽음
+@MainActor
+enum MinimizeWatch {
+    private static var observers: [pid_t: AXObserver] = [:]
+    private static var job: DispatchWorkItem?
+    static var onChange: () -> Void = {}
+
+    static func start() {
+        guard AXIsProcessTrusted() else { return }
+        NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.forEach { watch($0.processIdentifier) }
+        let nc = NSWorkspace.shared.notificationCenter
+        nc.addObserver(forName: NSWorkspace.didLaunchApplicationNotification, object: nil, queue: .main) { n in
+            guard let a = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let pid = a.processIdentifier
+            // 막 켜진 앱은 손쉬운 사용 준비가 늦을 수 있어서 조금 뒤에
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { MainActor.assumeIsolated { watch(pid) } }
+        }
+        nc.addObserver(forName: NSWorkspace.didTerminateApplicationNotification, object: nil, queue: .main) { n in
+            guard let a = n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication else { return }
+            let pid = a.processIdentifier
+            MainActor.assumeIsolated { unwatch(pid) }
+        }
+    }
+
+    private static func watch(_ pid: pid_t) {
+        guard observers[pid] == nil, pid != getpid() else { return }
+        var ob: AXObserver?
+        guard AXObserverCreate(pid, minimizeCallback, &ob) == .success, let ob else { return }
+        let app = AXUIElementCreateApplication(pid)
+        for n in [kAXWindowMiniaturizedNotification, kAXWindowDeminiaturizedNotification, kAXWindowCreatedNotification] {
+            AXObserverAddNotification(ob, app, n as CFString, nil)
+        }
+        CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(ob), .defaultMode)
+        observers[pid] = ob
+    }
+    private static func unwatch(_ pid: pid_t) {
+        guard let ob = observers.removeValue(forKey: pid) else { return }
+        CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(ob), .defaultMode)
+    }
+
+    /// 알림이 몰려 와도 한 번만 (애니메이션이 끝난 뒤 상태로)
+    fileprivate static func changed() {
+        job?.cancel()
+        let j = DispatchWorkItem { MainActor.assumeIsolated { Spaces.forgetMinimized(); onChange() } }
+        job = j
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: j)
+    }
+}
+
+private func minimizeCallback(_ ob: AXObserver, _ el: AXUIElement, _ name: CFString, _ ctx: UnsafeMutableRawPointer?) {
+    DispatchQueue.main.async { MainActor.assumeIsolated { MinimizeWatch.changed() } }
 }

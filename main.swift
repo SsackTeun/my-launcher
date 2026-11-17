@@ -2168,6 +2168,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func launch(_ id: String) {
         let r = running(id)
         r?.unhide()
+        // 지금 화면에 그 앱 창이 하나도 안 보이고 Dock 으로 내려 둔 창이 있으면 그 창을 다시 올림
+        // (macOS 는 다른 데스크탑에 보통 창이 하나라도 있으면 앱만 앞으로 하고 내려 둔 창은 그대로 둬서, 눌러도 안 올라왔음)
+        if let r, restoreMinimized(r) { return }
         guard let u = url(id) ?? r?.bundleURL else {
             alert("\(id) 앱을 찾을 수 없어요. 앱을 다시 설치하거나 런처에서 빼 주세요.")
             return
@@ -2177,6 +2180,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.openApplication(at: u, configuration: cfg) { [weak self] _, err in
             if let err { DispatchQueue.main.async { self?.alert("실행하지 못했어요: \(err.localizedDescription)") } }
         }
+    }
+
+    /// 내려 둔 창 올리기: 지금 화면에 보이는 그 앱 창이 없을 때만. 올렸으면 true
+    func restoreMinimized(_ r: NSRunningApplication) -> Bool {
+        guard AXIsProcessTrusted() else { return false }
+        let pid = r.processIdentifier
+        let wins = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
+        let visible = wins.contains { w in
+            (w[kCGWindowOwnerPID as String] as? pid_t) == pid && (w[kCGWindowLayer as String] as? Int) == 0
+                && ((w[kCGWindowBounds as String] as? [String: CGFloat])?["Height"] ?? 0) > 150
+        }
+        guard !visible else { return false }
+        let ax = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(ax, 0.3)
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success,
+              let w = (v as? [AXUIElement])?.first(where: { w in
+                  var m: CFTypeRef?
+                  return AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &m) == .success && (m as? Bool) == true
+              }) else { return false }
+        AX.focus(window: w, pid: pid)   // 내림 풀기 · 맨 앞으로
+        Spaces.bringToFront(r)
+        return true
     }
 
     func quit(_ id: String) { running(id)?.terminate() }

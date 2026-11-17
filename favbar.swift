@@ -93,7 +93,10 @@ final class FavBar {
             desktopID = newValue.flatMap { n in Spaces.numbered().desks.first { $0.n == n }?.id }
             if let id = desktopID { Self.ignoredDesks.remove(id) }
             editing = false
-            deskCache = newValue.map(Spaces.apps(onDesktop:)) ?? []
+            let c = newValue.map(Spaces.deskContent)
+            deskCache = stableOrder(c?.ids ?? [])
+            deskMin = c?.minimized ?? []
+            deskMinWins = c?.minWins ?? []
             rebuild(animate: false)
             onChange()
             Self.watchDesktops()
@@ -112,6 +115,77 @@ final class FavBar {
         set { if let v = newValue { d.set(v, forKey: k("favDesktopID")) } else { d.removeObject(forKey: k("favDesktopID")) } }
     }
     fileprivate(set) var deskCache: [String] = []
+    /// 이 데스크탑에서 Dock 으로 내려 둔 창만 있는 앱 (막대에 점선 테두리) · 그 창 번호
+    fileprivate(set) var deskMin: Set<String> = []
+    fileprivate(set) var deskMinWins: [Int] = []
+
+    /// 데스크탑 안 앱 순서를 고정: 처음 본 순서대로, 새 앱은 끝에 (누르거나 창을 올리고 내려도 자리가 그대로)
+    /// (예전엔 창이 겹친 순서대로라 누를 때마다 앞으로 나온 앱이 맨 앞으로 옮겨 갔음)
+    func stableOrder(_ now: [String]) -> [String] {
+        let key = "favDeskOrder.\(desktopID ?? desktop ?? 0)"
+        var known = Self.d.stringArray(forKey: key) ?? []
+        for id in now where !known.contains(id) { known.append(id) }
+        if known.count > 60 { known = known.filter(now.contains) + known.filter { !now.contains($0) }.suffix(30) }
+        if known != Self.d.stringArray(forKey: key) { Self.d.set(known, forKey: key) }
+        return known.filter(now.contains)
+    }
+    /// 누른 직후: 점선 표시를 바로 바꿔 둠 (실제 상태는 조금 뒤 다시 확인)
+    private func markMinimized(_ id: String, _ on: Bool) {
+        if on { deskMin.insert(id) } else { deskMin.remove(id) }
+        (panel?.contentView as? FavBarView)?.refreshState()
+        Spaces.forgetMinimized()
+    }
+
+    /// 데스크탑 막대의 앱 누르기: 내려 둔 창이면 그 데스크탑으로 가서 올리고, 지금 앞에 떠 있는 앱이면 내림, 아니면 평소처럼
+    func toggleDeskApp(_ id: String) {
+        guard let n = desktop, let r = NSRunningApplication.runningApplications(withBundleIdentifier: id).first else { open(id); return }
+        let pid = r.processIdentifier
+        if deskMin.contains(id) {
+            let wins = Set(deskMinWins)
+            let restore = { [weak self] in
+                FavBar.setMinimized(pid: pid, false, only: wins)
+                _ = self
+                Spaces.bringToFront(r)
+                for t in [0.4, 1.0] { DispatchQueue.main.asyncAfter(deadline: .now() + t) { MainActor.assumeIsolated { FavBar.refreshDesktops() } } }
+            }
+            if FavBar.currentDesks.contains(n) { restore() }
+            else {
+                Spaces.switchTo(n, apps: favs)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { MainActor.assumeIsolated { restore() } }
+            }
+            return
+        }
+        if FavBar.currentDesks.contains(n), NSWorkspace.shared.frontmostApplication?.processIdentifier == pid {
+            FavBar.setMinimized(pid: pid, true, only: nil)
+            for t in [0.4, 1.0] { DispatchQueue.main.asyncAfter(deadline: .now() + t) { MainActor.assumeIsolated { FavBar.refreshDesktops() } } }
+            return
+        }
+        open(id)
+    }
+    /// 창 내리기(앞 창 하나) · 올리기(only 에 든 창들, 못 찾으면 내려 둔 첫 창)
+    static func setMinimized(pid: pid_t, _ on: Bool, only: Set<Int>?) {
+        guard AXIsProcessTrusted() else { return }
+        let ax = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(ax, 0.3)
+        if on {
+            var f: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(ax, kAXFocusedWindowAttribute as CFString, &f) == .success, let fw = f else { return }
+            AXUIElementSetAttributeValue(fw as! AXUIElement, kAXMinimizedAttribute as CFString, kCFBooleanTrue)
+            return
+        }
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let ws = v as? [AXUIElement] else { return }
+        let mins = ws.filter { w in
+            var m: CFTypeRef?
+            return AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &m) == .success && (m as? Bool) == true
+        }
+        var picked = mins.filter { w in
+            var id: CGWindowID = 0
+            return _AXUIElementGetWindow(w, &id) == .success && (only?.contains(Int(id)) ?? false)
+        }
+        if picked.isEmpty, let f = mins.first { picked = [f] }
+        for w in picked { AX.focus(window: w, pid: pid) }
+    }
 
     /// 창을 열고 닫거나 옮기거나 데스크탑을 넘기면 데스크탑 막대 내용을 새로 (2초마다 + 바로 알 수 있는 때)
     private static var deskTimer: Timer?
@@ -143,6 +217,9 @@ final class FavBar {
     static var onScreenApps: Set<String> = []
     static func watchDesktops() {
         if deskTimer == nil {
+            // 창을 내리고 올리는 순간 바로 막대에 반영 (점선 표시가 실제와 어긋나지 않게)
+            MinimizeWatch.onChange = { FavBar.refreshDesktops() }
+            MinimizeWatch.start()
             let t = Timer(timeInterval: 2, repeats: true) { _ in MainActor.assumeIsolated { FavBar.refreshDesktops() } }
             RunLoop.main.add(t, forMode: .common)
             deskTimer = t
@@ -307,12 +384,19 @@ final class FavBar {
         }
         for b in all {
             guard let n = b.desktop else { continue }
-            let now = Spaces.apps(onDesktop: n)
-            guard now != b.deskCache else { continue }
+            let c = Spaces.deskContent(n)
+            let now = b.stableOrder(c.ids)
+            b.deskMinWins = c.minWins
+            // 앱은 그대로이고 내려 둠 여부만 바뀌었으면: 막대를 갈아 끼우지 않고 그 자리에서 다시 그림 (마우스가 위에 있어도)
+            if now == b.deskCache {
+                if c.minimized != b.deskMin { b.deskMin = c.minimized; (b.panel?.contentView as? FavBarView)?.refreshState() }
+                continue
+            }
             // 마우스가 그 막대 위에 있거나 누르고 있으면 미룸 (누르는 도중에 막대를 갈아 끼우면 클릭이 사라진 옛 막대로 가서 안 먹는 일이 생김)
             if NSEvent.pressedMouseButtons != 0 { continue }
             if let p = b.panel, p.frame.insetBy(dx: -4, dy: -4).contains(NSEvent.mouseLocation) { continue }
             b.deskCache = now
+            b.deskMin = c.minimized
             b.rebuild(animate: false)
         }
     }
@@ -1475,6 +1559,7 @@ final class FavAppCell: NSView, NSDraggingSource {
         hovering = true
         let running = !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty
         if editing { HoverTip.shared.schedule("\(name) — 누르면 빠져요", for: self); return }
+        if bar.isDesktop && bar.deskMin.contains(id) { HoverTip.shared.schedule("\(name)\nDock 에 내려 둔 창 · 누르면 올라와요", for: self); return }
         HoverTip.shared.schedule(running ? "\(name)\n메모리 · CPU 재는 중…" : "\(name)\n꺼져 있음", for: self)
         if running { measure() }
     }
@@ -1515,8 +1600,17 @@ final class FavAppCell: NSView, NSDraggingSource {
             NSColor(white: 1, alpha: 0.12).setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 2), xRadius: 9, yRadius: 9).fill()
         }
-        icon.draw(in: bounds.insetBy(dx: 6, dy: 6), from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: nil)
-        if running {
+        // Dock 으로 내려 둔 창만 있는 앱: 흐린 아이콘 + 점선 테두리 (누르면 올라옴)
+        let min = bar.isDesktop && bar.deskMin.contains(id)
+        icon.draw(in: bounds.insetBy(dx: 6, dy: 6), from: .zero, operation: .sourceOver, fraction: min ? 0.5 : 1, respectFlipped: true, hints: nil)
+        if min {
+            let p = NSBezierPath(roundedRect: bounds.insetBy(dx: 3, dy: 3), xRadius: 10, yRadius: 10)
+            p.lineWidth = 1.5
+            p.setLineDash([4, 3], count: 2, phase: 0)
+            NSColor(white: 1, alpha: 0.7).setStroke()
+            p.stroke()
+        }
+        if running && !min {
             // 실행 중 점: 화면 가장자리 쪽에
             NSColor(white: 1, alpha: 0.85).setFill()
             let c: NSPoint
@@ -1588,7 +1682,7 @@ final class FavAppCell: NSView, NSDraggingSource {
             let a = CAKeyframeAnimation(keyPath: "transform.scale")
             a.values = [1, 0.85, 1]; a.duration = 0.2
             layer?.add(a, forKey: "press")
-            bar.open(id)
+            if bar.isDesktop { bar.toggleDeskApp(id) } else { bar.open(id) }
         }
     }
 
