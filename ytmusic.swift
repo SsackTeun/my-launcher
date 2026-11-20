@@ -48,6 +48,24 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     // 일반 Safari 처럼 보이게 해서 Google 로그인이 막히지 않도록
     static let userAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
     static let home = URL(string: "https://music.youtube.com/")!
+    /// 휴대폰 크기 창: YouTube Music 은 따로 모바일 웹이 없고(아이폰 이름표 · 터치 흉내를 해도 같은 화면), 좁은 창에 맞춰 화면이 접힘
+    ///   → 이름표는 그대로 두고 창만 휴대폰 크기로 (로그인 · 가사 · 조작 모두 그대로)
+    nonisolated static var mobile: Bool {
+        get { UserDefaults.standard.bool(forKey: "ytmMobile") }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmMobile") }
+    }
+    nonisolated(unsafe) static weak var shared: YTMusic?
+    /// 휴대폰 크기 창 켜고 끄기: 창을 휴대폰 / 넓은 크기로 (위쪽 모서리는 그대로)
+    func setMobile(_ on: Bool) {
+        Self.mobile = on
+        if let w = window {
+            let size = on ? NSSize(width: 420, height: 820) : NSSize(width: 1100, height: 760)
+            var f = w.frame
+            f.origin.y += f.height - size.height
+            f.size = size
+            w.setFrame(f, display: true, animate: w.isVisible)
+        }
+    }
 
     // MARK: 켜기 · 끄기
 
@@ -73,7 +91,10 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         w.isReleasedWhenClosed = false
         w.delegate = self
         w.setFrameAutosaveName("YouTubeMusicWindow")
-        if UserDefaults.standard.string(forKey: "NSWindow Frame YouTubeMusicWindow") == nil { w.center() }
+        if UserDefaults.standard.string(forKey: "NSWindow Frame YouTubeMusicWindow") == nil {
+            if Self.mobile { w.setContentSize(NSSize(width: 420, height: 820)) }
+            w.center()
+        }
         window = w
 
         isActive = true
@@ -126,7 +147,22 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
       const bar = document.querySelector('ytmusic-player-bar');
       const v = document.querySelector('video');
       const mp = document.getElementById('movie_player');
-      if (!bar) return JSON.stringify({ready:false});
+      if (!bar) {
+        // 모바일 화면: 플레이어 줄 모양이 달라서 브라우저 공통 '재생 정보'(mediaSession)와 video 로 읽음
+        const md = navigator.mediaSession && navigator.mediaSession.metadata;
+        if (!v || !md) return JSON.stringify({ready:false});
+        const aw = (md.artwork || []).slice(-1)[0];
+        const fmt = s => { s = Math.floor(s || 0); return Math.floor(s/60) + ':' + String(s%60).padStart(2,'0'); };
+        return JSON.stringify({
+          ready: true, mobile: true,
+          title: md.title || '', byline: [md.artist, md.album].filter(x => x).join(' • '),
+          art: aw ? aw.src : '',
+          time: fmt(v.currentTime) + ' / ' + fmt(v.duration),
+          pos: v.currentTime, dur: isFinite(v.duration) ? v.duration : 0,
+          playing: !v.paused, hasVideo: !!(v.currentSrc || v.src),
+          like: '', repeat: '', vol: v.volume*100, muted: v.muted, page: false
+        });
+      }
       const q = s => bar.querySelector(s);
       const txt = el => el ? el.textContent.replace(/\\s+/g,' ').trim() : '';
       const img = q('.middle-controls img') || q('img.image') || q('img');
@@ -200,6 +236,8 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                     st.muted = o["muted"] as? Bool ?? false
                     st.pageOpen = o["page"] as? Bool ?? false
                     st.artURL = o["art"] as? String ?? ""
+                    // 모바일 화면에선 좋아요 · 반복 · 셔플 버튼을 못 찾을 수 있어서 기본 조작만
+                    if o["mobile"] as? Bool == true { st.has = ["prev", "playPause", "next", "mute", "progress", "volume"] }
                 } else {
                     // 아직 곡을 틀지 않았거나 로그인 전
                     st.byline = "제목을 눌러 YouTube Music 열기"
@@ -266,7 +304,8 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         let arr = labels.map { "'\($0)'" }.joined(separator: ",")
         return """
         (() => { const L = [\(arr)];
-          const bs = [...document.querySelectorAll('\(scope) button, \(scope) tp-yt-paper-icon-button')];
+          let bs = [...document.querySelectorAll('\(scope) button, \(scope) tp-yt-paper-icon-button')];
+          if (!bs.length) bs = [...document.querySelectorAll('button, tp-yt-paper-icon-button')];   // 모바일 화면: 플레이어 줄이 없음
           const ok = b => { const a = (b.getAttribute('aria-label') || b.getAttribute('title') || '').trim();
                             return \(prefix ? "L.some(x => a.includes(x))" : "L.includes(a)"); };
           const b = bs.find(b => ok(b) && b.offsetParent !== null) || bs.find(ok);

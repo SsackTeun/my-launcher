@@ -1520,6 +1520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     var lastSong = ""
     lazy var music: YTMusic = {
         let m = YTMusic()
+        YTMusic.shared = m
         m.onFoundChange = { [unowned self] in refresh() }
         m.onUpdate = { [unowned self] st, art in
             playerBar.update(st, art: art)

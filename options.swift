@@ -112,6 +112,11 @@ enum Options {
     private static func videoTab() -> NSView {
         let f = Form()
         let yt = YouTubeWindow.shared, nf = VideoWindow.netflix
+        f.header("YouTube Music")
+        f.check("휴대폰 크기 창으로 보기 (작은 세로 창)", YTMusic.mobile) { on in
+            if let m = YTMusic.shared { m.setMobile(on) } else { YTMusic.mobile = on }
+        }
+        f.note("YouTube Music 창을 휴대폰처럼 좁고 길게 바꿔요. 좁은 창에선 메뉴가 접히고 한 줄씩 보여요. 끄면 넓은 창으로 돌아가요.")
         f.header("YouTube")
         f.check("영상을 누르면 바로 작은 창(PIP)으로", yt.autoPiP) { yt.autoPiP = $0 }
         f.check("항상 가장 높은 화질로", yt.bestQuality) { yt.bestQuality = $0 }
