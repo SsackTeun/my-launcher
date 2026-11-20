@@ -357,18 +357,22 @@ final class LyricsModel: ObservableObject {
 
 struct LyricsView: View {
     @ObservedObject var model: LyricsModel
+    /// 크게 보기 가사 탭: 머리줄 없이 가사만 (좁은 칸에 맞게)
+    var compact = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
+            if !compact {
+                header
+                Divider()
+            }
             switch model.status {
             case "ok": content
             case "none": placeholder("이 곡은 가사가 없어요", "music.note")
             default: placeholder("가사 불러오는 중…", "ellipsis")
             }
         }
-        .frame(minWidth: 320, minHeight: 300)
+        .frame(minWidth: compact ? 0 : 320, minHeight: compact ? 0 : 300)
     }
     /// 위쪽: 1줄 = 곡 제목 + (노래 따라가기 · 원문 언어), 2줄 = 발음 · 글자 크기 · 자동 스크롤 · 번역 언어
     /// (한 줄에 다 넣으면 창이 좁을 때 제목이 잘리고 글자가 세로로 꺾였음)
@@ -412,9 +416,9 @@ struct LyricsView: View {
         TimelineView(.periodic(from: .now, by: 0.2)) { _ in
             let cur = model.currentIndex(at: model.now)
             ScrollViewReader { proxy in
-                ScrollView {
+                ScrollView(showsIndicators: !compact) {
                     VStack(alignment: .leading, spacing: 10) {
-                        Spacer().frame(height: 40)
+                        Spacer().frame(height: compact ? 8 : 40)
                         ForEach(Array(model.lines.enumerated()), id: \.offset) { i, line in
                             row(i, line, current: cur)
                                 .id(i)
@@ -431,8 +435,13 @@ struct LyricsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .onChange(of: cur) { _, new in
-                    guard model.follow, let new else { return }
+                    // 크게 보기 가사 탭은 따라가기 스위치가 없어서 늘 따라감
+                    guard model.follow || compact, let new else { return }
                     withAnimation(.easeInOut(duration: 0.35)) { proxy.scrollTo(new, anchor: UnitPoint(x: 0, y: 0.35)) }
+                }
+                .onAppear {
+                    // 탭을 열면 바로 지금 줄로
+                    if compact, let c = cur { proxy.scrollTo(c, anchor: UnitPoint(x: 0, y: 0.35)) }
                 }
             }
         }
@@ -679,6 +688,12 @@ final class LyricsController: NSObject, NSWindowDelegate {
 
     /// 플레이어 아래에 붙이는 가사 줄
     lazy var stripView: NSView = NSHostingView(rootView: LyricsStrip(model: model))
+    /// 크게 보기 가사 탭: 노래를 따라 흐르는 전체 가사 (머리줄 없이)
+    lazy var tabView: NSView = {
+        let v = NSHostingView(rootView: LyricsView(model: model, compact: true))
+        v.sizingOptions = []   // 칸 크기에 맞춤 (가사 길이에 따라 창이 커지지 않게)
+        return v
+    }()
     var stripHeight: CGFloat { model.stripExpanded ? LyricsStrip.expandedHeight(model.fontScale, pron: model.showsPron) : LyricsStrip.collapsedHeight }
 
     init(music: YTMusic) {

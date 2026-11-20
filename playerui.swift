@@ -109,6 +109,9 @@ final class PlayerBar: NSView {
     private var shuffle: ActionButton!, prev: ActionButton!, play: ActionButton!, next: ActionButton!, rep: ActionButton!
     private var mute: ActionButton!, queueBtn: ActionButton!, openBtn: ActionButton!, lyricsBtn: ActionButton!
     var onLyrics: (() -> Void)?
+    /// 떼어 낸 상태에서 ☰ : 크게 보기(앨범 · 다음 트랙) 켜고 끄기
+    var onBig: (() -> Void)?
+    var big = false { didSet { updateDetachIcon() } }
     /// ⧉ 떼어 내기 / 합치기
     var onDetach: (() -> Void)?
     var detached = false { didSet { updateDetachIcon() } }
@@ -116,6 +119,8 @@ final class PlayerBar: NSView {
     private func updateDetachIcon() {
         detachBtn?.image = NSImage(systemSymbolName: detached ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle", accessibilityDescription: nil)
         detachBtn?.toolTip = detached ? "도구함 창으로 합치기" : "플레이어만 따로 떼어 내기"
+        queueBtn?.toolTip = detached ? (big ? "크게 보기 끄기" : "크게 보기 (큰 앨범 · 다음 트랙 · 가사)") : "재생 목록"
+        queueBtn?.contentTintColor = detached && big ? .launcherAccent : nil
     }
     private let volume = NSSlider(value: 100, minValue: 0, maxValue: 100, target: nil, action: nil)
     private var popover: NSPopover?
@@ -234,7 +239,7 @@ final class PlayerBar: NSView {
     private var volumePopover: NSPopover?
     private var volumeVC: VolumeViewController?
 
-    private func showVolume(from b: NSView) {
+    func showVolume(from b: NSView) {
         if volumePopover?.isShown == true { volumePopover?.close(); return }
         let vc = VolumeViewController()
         vc.music = music
@@ -247,7 +252,7 @@ final class PlayerBar: NSView {
     }
 
     /// 휠 한 칸에 볼륨 조금씩
-    private func nudgeVolume(_ delta: CGFloat) {
+    func nudgeVolume(_ delta: CGFloat) {
         guard let st = music?.state else { return }
         let step = delta > 0 ? 4.0 : -4.0
         let v = max(0, min(100, (st.muted ? 0 : st.volume) + step))
@@ -365,6 +370,30 @@ final class PlayerBar: NSView {
 
     override func layout() {
         super.layout()
+        layoutMain()
+        // 크게 보기: 재생 버튼은 아래(앨범 밑)로 옮겨 가서 여기선 숨기고, 제목을 그만큼 길게
+        let moved: [NSView] = [prev, play, next, rep, mute]
+        if detached && big {
+            moved.forEach { $0.isHidden = true }
+            let right = lyricsBtn.frame.minX - 8
+            for v in [titleBtn, bylineLabel] as [NSView] where v.frame.maxX < right {
+                v.frame.size.width = right - v.frame.minX
+            }
+            // 글자 크기를 아래 다음 트랙 목록과 같게 (제목 13 · 아티스트 11.5)
+            titleBtn.font = .boldSystemFont(ofSize: QueueRow.titleSize)
+            bylineLabel.font = .systemFont(ofSize: QueueRow.subSize)
+            let th: CGFloat = 18, bh: CGFloat = 16
+            let mid = artView.frame.midY
+            titleBtn.frame = NSRect(x: titleBtn.frame.minX, y: mid - (th + bh) / 2, width: titleBtn.frame.width, height: th)
+            bylineLabel.frame = NSRect(x: bylineLabel.frame.minX, y: titleBtn.frame.maxY, width: bylineLabel.frame.width, height: bh)
+        } else if bigHid {
+            moved.forEach { $0.isHidden = false }
+            needsLayout = true   // 원래 숨김 규칙대로 한 번 더
+        }
+        bigHid = detached && big
+    }
+    private var bigHid = false
+    private func layoutMain() {
         if PlayerBar.compact { layoutCompact(); return }
         let w = bounds.width
         let pad: CGFloat = 12
@@ -431,6 +460,7 @@ final class PlayerBar: NSView {
 
     private func showQueue(from b: NSView) {
         guard let music else { return }
+        if detached, let onBig { onBig(); return }
         if limited {
             let a = NSAlert()
             a.messageText = "재생 목록은 YouTube Music 이 보이고 있을 때만 볼 수 있어요"
@@ -502,7 +532,7 @@ final class QueueViewController: NSViewController, NSPopoverDelegate {
         status.stringValue = "재생 목록을 찾지 못했어요"
         let rowH: CGFloat = 44
         for item in items {
-            let r = QueueRow(item: item) { [weak self] in
+            let r = QueueRow(item: item, fixed: true) { [weak self] in
                 self?.music?.play(item)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { self?.load() }
             }
@@ -527,41 +557,53 @@ final class QueueViewController: NSViewController, NSPopoverDelegate {
 final class FlippedView: NSView { override var isFlipped: Bool { true } }
 
 final class QueueRow: NSView {
+    static let rowH: CGFloat = 44
+    /// 글자 크기 (크게 보기 위 플레이어 줄도 같은 크기로 맞춤)
+    static let titleSize: CGFloat = 13, subSize: CGFloat = 11.5
     private let onClick: () -> Void
     private var hovering = false { didSet { needsDisplay = true } }
     private let current: Bool
+    private let icon = NSImageView()
+    private let t: NSTextField, a: NSTextField, d: NSTextField
 
-    init(item: QueueItem, onClick: @escaping () -> Void) {
+    /// width: 팝업에선 고정 폭(320, 줄 세우기용 제약), 크게 보기에선 relayout() 으로 폭에 맞춤
+    init(item: QueueItem, width: CGFloat = 320, fixed: Bool = false, onClick: @escaping () -> Void) {
         self.onClick = onClick
         self.current = item.current
-        super.init(frame: NSRect(x: 0, y: 0, width: 320, height: 44))
-        translatesAutoresizingMaskIntoConstraints = false
-        widthAnchor.constraint(equalToConstant: 320).isActive = true
-        heightAnchor.constraint(equalToConstant: 44).isActive = true
-
-        let icon = NSImageView(frame: NSRect(x: 12, y: 14, width: 16, height: 16))
+        t = NSTextField(labelWithString: item.title)
+        a = NSTextField(labelWithString: item.artist)
+        d = NSTextField(labelWithString: item.duration)
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: Self.rowH))
+        if fixed {
+            translatesAutoresizingMaskIntoConstraints = false
+            widthAnchor.constraint(equalToConstant: width).isActive = true
+            heightAnchor.constraint(equalToConstant: Self.rowH).isActive = true
+        }
         icon.image = NSImage(systemSymbolName: item.current ? "speaker.wave.2.fill" : "music.note", accessibilityDescription: nil)
         icon.contentTintColor = item.current ? .systemRed : .tertiaryLabelColor
         addSubview(icon)
-
-        let t = NSTextField(labelWithString: item.title)
-        t.font = item.current ? .boldSystemFont(ofSize: 12) : .systemFont(ofSize: 12)
+        t.font = item.current ? .boldSystemFont(ofSize: Self.titleSize) : .systemFont(ofSize: Self.titleSize)
         t.lineBreakMode = .byTruncatingTail
-        t.frame = NSRect(x: 36, y: 22, width: 230, height: 16)
         addSubview(t)
-        let a = NSTextField(labelWithString: item.artist)
-        a.font = .systemFont(ofSize: 11)
+        a.font = .systemFont(ofSize: Self.subSize)
         a.textColor = .secondaryLabelColor
         a.lineBreakMode = .byTruncatingTail
-        a.frame = NSRect(x: 36, y: 6, width: 230, height: 15)
         addSubview(a)
-        let d = NSTextField(labelWithString: item.duration)
-        d.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        d.font = .monospacedDigitSystemFont(ofSize: Self.subSize, weight: .regular)
         d.textColor = .secondaryLabelColor
         d.alignment = .right
-        d.frame = NSRect(x: 266, y: 14, width: 42, height: 15)
         addSubview(d)
         toolTip = item.current ? "지금 재생 중" : "이 곡 재생"
+        relayout()
+    }
+    /// 폭에 맞춰 글자 칸 배치 (아래가 0 인 좌표)
+    func relayout() {
+        let w = bounds.width
+        icon.frame = NSRect(x: 12, y: 14, width: 16, height: 16)
+        d.frame = NSRect(x: w - 54, y: 14, width: 42, height: 15)
+        let tw = max(40, d.frame.minX - 36 - 6)
+        t.frame = NSRect(x: 36, y: 22, width: tw, height: 18)
+        a.frame = NSRect(x: 36, y: 5, width: tw, height: 16)
     }
     required init?(coder: NSCoder) { fatalError() }
 

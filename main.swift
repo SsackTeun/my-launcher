@@ -1644,8 +1644,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let b = PlayerBar(music: music)
         b.onLyrics = { [unowned self] in lyrics.toggle() }
         b.onDetach = { [unowned self] in toggleDetach(.player) }
+        b.onBig = { [unowned self] in
+            BigPlayerView.enabled.toggle()
+            playerBar.big = BigPlayerView.enabled
+            refresh()
+        }
+        b.big = BigPlayerView.enabled
         b.detached = playerDetached
         return b
+    }()
+    lazy var bigPlayer: BigPlayerView = {
+        let v = BigPlayerView(music: music, lyricsView: lyrics.tabView)
+        v.onVolume = { [unowned self] b in playerBar.showVolume(from: b) }
+        v.onNudge = { [unowned self] d in playerBar.nudgeVolume(d) }
+        return v
     }()
     var showPlayer: Bool { playerEnabled && music.isActive }
     /// 위쪽 줄 높이 (위젯이면 맨 위 손잡이 자리만큼 더)
@@ -3130,11 +3142,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // 떼어 낸 음악 창: 위에 플레이어, 아래에 가사 줄
         if showPlayer && playerDetached {
             // 테두리로 정한 폭이 있으면 그 폭, 좁으면 플레이어 두 줄
-            let dw = detachedWidth.map { max(Self.minWidth, $0) } ?? max(300, w)
+            var dw = detachedWidth.map { max(Self.minWidth, $0) } ?? max(300, w)
+            let big = BigPlayerView.enabled
+            if big { dw = max(dw, BigPlayerView.minWidth) }   // 크게 보기: 앨범 · 목록이 나란히 들어갈 폭
             PlayerBar.narrow = dw < 340
+            if !big { bigPlayer.removeFromSuperview() }
+            // 크게 보기면 가사 줄은 안 씀 (가사 탭이 따로 있음) — 전에 붙어 있던 걸 떼어 냄 (겹쳐 보였음)
+            else if let sv = lyrics.stripView.superview, sv === playerPanel?.contentView { lyrics.stripView.removeFromSuperview() }
             showDetached(.player, view: playerBar, width: dw, height: playerH,
-                         below: (lyrics.stripView, lyrics.stripHeight))
-        } else { playerPanel?.orderOut(nil) }
+                         below: big ? (bigPlayer, BigPlayerView.height) : (lyrics.stripView, lyrics.stripHeight))
+            bigPlayer.needsLayout = true
+        } else { playerPanel?.orderOut(nil); bigPlayer.removeFromSuperview() }
         lyricsPanel?.orderOut(nil)
 
         // 테두리 폭 조절 띠는 맨 위에 (플레이어 · 목록에 가려지지 않게)
