@@ -1148,6 +1148,87 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     var window: NSWindow!
     var statusItem: NSStatusItem!
+    /// 🧰 오른쪽 클릭 메뉴 (앱 목록 · 설정 등)
+    var statusMenu: NSMenu?
+    var quickPopover: NSPopover?
+
+    @objc func statusClicked() {
+        let e = NSApp.currentEvent
+        if e?.type == .rightMouseUp || e?.modifierFlags.contains(.control) == true {
+            guard let m = statusMenu else { return }
+            statusItem.menu = m
+            statusItem.button?.performClick(nil)
+            statusItem.menu = nil
+            return
+        }
+        if quickPopover?.isShown == true { quickPopover?.close(); return }
+        let p = NSPopover()
+        p.behavior = .transient
+        p.contentViewController = QuickBarVC(app: self)
+        if let b = statusItem.button { p.show(relativeTo: b.bounds, of: b, preferredEdge: .minY) }
+        quickPopover = p
+    }
+    func closeQuickBar() { quickPopover?.close() }
+    /// 플레이어 창을 ♪ 로 닫아 둔 상태 (음악은 계속)
+    var playerHidden: Bool {
+        get { d.bool(forKey: "playerHidden") }
+        set { d.set(newValue, forKey: "playerHidden") }
+    }
+
+    /// YouTube Music 모양 아이콘 (빨간 동그라미 · 흰 고리 · 재생 세모). 닫혀 있으면 흐리게
+    static func ytMusicIcon(_ side: CGFloat, dim: Bool = false) -> NSImage {
+        NSImage(size: NSSize(width: side, height: side), flipped: false) { r in
+            let a: CGFloat = dim ? 0.5 : 1
+            NSColor(red: 1, green: 0, blue: 0, alpha: a).setFill()
+            NSBezierPath(ovalIn: r).fill()
+            let ring = NSBezierPath(ovalIn: r.insetBy(dx: r.width * 0.22, dy: r.height * 0.22))
+            ring.lineWidth = r.width * 0.06
+            NSColor(white: 1, alpha: a).setStroke(); ring.stroke()
+            let tri = NSBezierPath()
+            let c = NSPoint(x: r.midX + r.width * 0.03, y: r.midY), h = r.height * 0.24
+            tri.move(to: NSPoint(x: c.x - h * 0.45, y: c.y + h / 2))
+            tri.line(to: NSPoint(x: c.x + h * 0.55, y: c.y))
+            tri.line(to: NSPoint(x: c.x - h * 0.45, y: c.y - h / 2))
+            tri.close()
+            NSColor(white: 1, alpha: a).setFill(); tri.fill()
+            return true
+        }
+    }
+
+    /// 도구함 위쪽 아이콘 줄의 YouTube Music 버튼: 플레이어 창 열기 · 닫기 (창은 있던 자리 그대로, 닫아도 음악은 계속)
+    lazy var musicButton: ActionButton = {
+        let b = ActionButton(title: "", symbol: nil) { [unowned self] _ in togglePlayerWindow() }
+        b.isBordered = false
+        b.image = Self.ytMusicIcon(14)
+        b.imagePosition = .imageOnly
+        b.toolTip = "플레이어 창 열기 · 닫기 (닫아도 음악은 계속 나와요)"
+        b.frame.size = NSSize(width: 24, height: 24)
+        return b
+    }()
+    func syncMusicItem() {
+        let open = showPlayer && playerDetached && !playerHidden
+        // 열려 있으면 또렷하게, 닫혀 있으면 흐리게
+        musicButton.image = Self.ytMusicIcon(14, dim: !open)
+    }
+
+    func togglePlayerWindow() {
+        let open = showPlayer && playerDetached && !playerHidden
+        if open {
+            playerHidden = true
+            refresh()
+            return
+        }
+        playerHidden = false
+        if !music.isActive { music.start() }
+        if !playerDetached { toggleDetach(.player) }
+        refresh()
+        // 화면 끝에 접혀 있었으면 펴서 보이게
+        if let p = playerPanel {
+            if let dock = EdgeDock.dock(for: p), dock.collapsed { dock.expand() }
+            p.orderFrontRegardless()
+            HoverRaise.raiseWhileHovered(p)
+        }
+    }
     var settings: NSPanel?
     var colsField: NSTextField!, rowsField: NSTextField!
     var colsStepper: NSStepper!, rowsStepper: NSStepper!
@@ -1499,6 +1580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         v.isLocked = { [unowned self] in locked }
         v.addSubview(searchField)
         v.addSubview(finderButton)
+        v.addSubview(musicButton)
         v.addSubview(youtubeButton)
         v.addSubview(netflixButton)
         v.addSubview(mailButton)
@@ -1829,6 +1911,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.title = "🧰"
+        // 🧰 누르면 아이콘 줄 팝업, 오른쪽 클릭이면 예전 메뉴
+        statusItem.button?.target = self
+        statusItem.button?.action = #selector(statusClicked)
+        statusItem.button?.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         // 앱이 켜지거나 꺼지면 초록 점을 바로 갱신
         let nc = NSWorkspace.shared.notificationCenter
@@ -1837,6 +1923,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             MainActor.assumeIsolated {
                 guard let self else { return }
                 if self.d.bool(forKey: "mcDump") { self.d.removeObject(forKey: "mcDump"); Spaces.dumpMissionControl() }
+                // 진단: 메뉴 막대 ♪ 누른 것처럼
+                if self.d.bool(forKey: "togglePlayerTest") { self.d.removeObject(forKey: "togglePlayerTest"); self.togglePlayerWindow() }
+                if self.d.bool(forKey: "quickBarTest") {
+                    self.d.removeObject(forKey: "quickBarTest")
+                    let p = NSPopover(); p.behavior = .transient; p.contentViewController = QuickBarVC(app: self)
+                    if let b = self.statusItem.button { p.show(relativeTo: b.bounds, of: b, preferredEdge: .minY) }
+                    self.quickPopover = p
+                }
                 guard let v = self.d.string(forKey: "spaceMoveTest") else { return }
                 self.d.removeObject(forKey: "spaceMoveTest")
                 let parts = v.split(separator: ",").compactMap { Int($0) }
@@ -3140,7 +3234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // 떼어 낸 창
         // 떼어 낸 음악 창: 위에 플레이어, 아래에 가사 줄
-        if showPlayer && playerDetached {
+        if showPlayer && playerDetached && !playerHidden {
             // 테두리로 정한 폭이 있으면 그 폭, 좁으면 플레이어 두 줄
             var dw = detachedWidth.map { max(Self.minWidth, $0) } ?? max(300, w)
             let big = BigPlayerView.enabled
@@ -3153,6 +3247,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                          below: big ? (bigPlayer, BigPlayerView.height) : (lyrics.stripView, lyrics.stripHeight))
             bigPlayer.needsLayout = true
         } else { playerPanel?.orderOut(nil); bigPlayer.removeFromSuperview() }
+        syncMusicItem()
+
         lyricsPanel?.orderOut(nil)
 
         // 테두리 폭 조절 띠는 맨 위에 (플레이어 · 목록에 가려지지 않게)
@@ -3173,7 +3269,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         let fb = finderButton.frame.size
         finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 8, y: (barRowH - fb.height) / 2))
-        youtubeButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        // ♪ 플레이어 창 열기 · 닫기 (Finder 바로 왼쪽)
+        musicButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        youtubeButton.setFrameOrigin(NSPoint(x: musicButton.frame.minX - 26, y: (barRowH - 24) / 2))
         netflixButton.setFrameOrigin(NSPoint(x: youtubeButton.frame.minX - 26, y: (barRowH - 24) / 2))
         // 앱 목록 접기 버튼은 탭 줄 왼쪽으로 옮김
         // ✉︎ 메일 (연결 전이면 누르면 설정으로)
@@ -3289,7 +3387,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         m.addItem(Item("도구함 다시 시작") { [unowned self] in restartSelf() })
         m.addItem(Item("도구함 종료") { NSApp.terminate(nil) })
-        statusItem.menu = m
+        statusMenu = m
     }
 
     // MARK: 설정 창 (열 · 행 · 아이콘 크기)
@@ -3711,4 +3809,131 @@ func parentPid(_ pid: pid_t) -> pid_t {
     var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
     guard sysctl(&mib, 4, &info, &size, nil, 0) == 0, size > 0 else { return 0 }
     return info.kp_eproc.e_ppid
+}
+
+
+// MARK: - 🧰 누르면 나오는 아이콘 줄 (도구함 위쪽 아이콘들을 한 줄로: 누르면 바로 열림)
+
+@MainActor
+final class QuickBarVC: NSViewController {
+    private unowned let app: AppDelegate
+    init(app: AppDelegate) { self.app = app; super.init(nibName: nil, bundle: nil) }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private struct Cell { let icon: NSImage?; let text: String?; let tint: NSColor?; let tip: String; let badge: String; let on: Bool; let act: (NSView) -> Void }
+
+    private func cells() -> [Cell] {
+        func sym(_ n: String) -> NSImage? { NSImage(systemSymbolName: n, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 17, weight: .semibold)) }
+        let finder = NSWorkspace.shared.icon(forFile: "/System/Library/CoreServices/Finder.app"); finder.size = NSSize(width: 24, height: 24)
+        let mail = app.mailButton
+        let red = NSColor(red: 0.9, green: 0.04, blue: 0.08, alpha: 1)
+        let playerOpen = app.showPlayer && app.playerDetached && !app.playerHidden
+        return [
+            Cell(icon: sym("square.grid.2x2.fill"), text: nil, tint: nil, tip: "도구함 열기", badge: "", on: false) { [unowned self] _ in app.closeQuickBar(); app.showWindow() },
+            Cell(icon: sym(mail.count > 0 ? "envelope.fill" : "envelope"), text: nil, tint: mail.count > 0 ? .systemBlue : nil, tip: "메일",
+                 badge: mail.count > 0 ? (mail.count > 99 ? "99+" : "\(mail.count)") : "", on: false) { [unowned self] _ in
+                app.closeQuickBar(); MailWatch.shared.configured ? MailWindow.shared.show() : app.openSettingsTab("메일") },
+            Cell(icon: nil, text: "N", tint: red, tip: "Netflix", badge: "", on: false) { [unowned self] _ in app.closeQuickBar(); VideoWindow.netflix.show() },
+            Cell(icon: sym("play.rectangle.fill"), text: nil, tint: .systemRed, tip: "YouTube", badge: "", on: false) { [unowned self] _ in
+                app.closeQuickBar(); YouTubeWindow.shared.show(YouTubeWindow.shared.isOpen ? nil : YouTubeWindow.clipboardLink()) },
+            // 다른 아이콘처럼 바탕색은 없이, 위쪽 아이콘 줄과 같게 '열림 = 선명 · 닫힘 = 흐림'만
+            Cell(icon: AppDelegate.ytMusicIcon(19, dim: !playerOpen), text: nil, tint: nil, tip: playerOpen ? "YouTube Music 플레이어 닫기" : "YouTube Music 플레이어 열기", badge: "", on: false) { [unowned self] _ in
+                app.togglePlayerWindow(); reload() },
+            Cell(icon: finder, text: nil, tint: nil, tip: "Finder", badge: "", on: false) { [unowned self] _ in app.closeQuickBar(); app.launch("com.apple.finder") },
+            Cell(icon: sym("rectangle.stack.badge.minus"), text: nil, tint: nil, tip: "열린 창 모두 닫기 · 최소화 · 앱 모두 종료", badge: "", on: false) { [unowned self] v in
+                popUp(BulkWindows.menu(), under: v) },
+            Cell(icon: sym("gearshape.fill"), text: nil, tint: nil, tip: "설정", badge: "", on: false) { [unowned self] _ in app.closeQuickBar(); app.openSettings() },
+        ]
+    }
+
+    private let row = NSView()
+    override func loadView() {
+        let list = cells()
+        let cw: CGFloat = 46, ch: CGFloat = 40, gap: CGFloat = 6, pad: CGFloat = 12
+        let W = pad * 2 + CGFloat(list.count) * cw + CGFloat(list.count - 1) * gap
+        let H: CGFloat = pad * 2 + ch + 18
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        let hint = NSTextField(labelWithString: "오른쪽 클릭: 앱 목록 · 더 많은 메뉴")
+        hint.font = .systemFont(ofSize: 10); hint.textColor = .tertiaryLabelColor
+        hint.alignment = .center
+        hint.frame = NSRect(x: pad, y: 8, width: W - pad * 2, height: 13)
+        v.addSubview(hint)
+        // 아이콘들을 감싸는 둥근 판
+        row.wantsLayer = true
+        row.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
+        row.layer?.cornerRadius = 14
+        row.frame = NSRect(x: pad - 4, y: 24, width: W - (pad - 4) * 2, height: ch + 8)
+        v.addSubview(row)
+        view = v
+        preferredContentSize = v.frame.size
+        build(list, cw: cw, ch: ch, gap: gap)
+    }
+    private func reload() { row.subviews.forEach { $0.removeFromSuperview() }; build(cells(), cw: 46, ch: 40, gap: 6) }
+    private func build(_ list: [Cell], cw: CGFloat, ch: CGFloat, gap: CGFloat) {
+        for (i, c) in list.enumerated() {
+            let b = QuickCell(frame: NSRect(x: 4 + CGFloat(i) * (cw + gap), y: 4, width: cw, height: ch))
+            b.set(icon: c.icon, text: c.text, tint: c.tint, badge: c.badge, on: c.on)
+            b.toolTip = c.tip
+            b.onClick = c.act
+            row.addSubview(b)
+        }
+    }
+}
+
+/// 아이콘 칸 하나: 마우스를 올리면 둥근 바탕, 켜진 것(플레이어 열림)은 강조색 바탕
+final class QuickCell: NSView {
+    var onClick: ((NSView) -> Void)?
+    private let img = NSImageView()
+    private let txt = NSTextField(labelWithString: "")
+    private let badge = NSTextField(labelWithString: "")
+    private var on = false
+    private var hovering = false { didSet { needsDisplay = true } }
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        img.imageScaling = .scaleProportionallyDown
+        img.frame = bounds.insetBy(dx: 10, dy: 8)
+        addSubview(img)
+        txt.font = .systemFont(ofSize: 19, weight: .heavy); txt.alignment = .center
+        txt.frame = NSRect(x: 0, y: (bounds.height - 24) / 2, width: bounds.width, height: 24)
+        addSubview(txt)
+        badge.font = .systemFont(ofSize: 9, weight: .bold); badge.textColor = .white
+        badge.alignment = .center
+        badge.wantsLayer = true
+        badge.layer?.backgroundColor = NSColor.systemBlue.cgColor
+        badge.layer?.cornerRadius = 7
+        addSubview(badge)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    func set(icon: NSImage?, text: String?, tint: NSColor?, badge b: String, on: Bool) {
+        self.on = on
+        img.image = icon; img.isHidden = icon == nil
+        if icon?.isTemplate != false { img.contentTintColor = on ? .white : tint }
+        txt.stringValue = text ?? ""; txt.isHidden = text == nil
+        txt.textColor = tint ?? .labelColor
+        badge.stringValue = b; badge.isHidden = b.isEmpty
+        badge.sizeToFit()
+        let bw = max(14, badge.frame.width + 6)
+        badge.frame = NSRect(x: bounds.width - bw - 2, y: bounds.height - 15, width: bw, height: 14)
+        needsDisplay = true
+    }
+    override func updateTrackingAreas() {
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func draw(_ r: NSRect) {
+        let path = NSBezierPath(roundedRect: bounds, xRadius: 11, yRadius: 11)
+        if on { NSColor.launcherAccent.setFill(); path.fill() }
+        else if hovering { NSColor.labelColor.withAlphaComponent(0.12).setFill(); path.fill() }
+    }
+    // 팝업이 아직 활성 창이 아니어도 첫 번째 클릭에 바로 동작 (없으면 첫 클릭은 팝업을 깨우기만 해서 두 번 눌러야 했음)
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return }
+        // 연 창이 다른 앱 뒤에 숨지 않게 도구함을 앞으로
+        NSApp.activate(ignoringOtherApps: true)
+        onClick?(self)
+    }
 }

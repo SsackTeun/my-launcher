@@ -67,6 +67,14 @@ final class EdgeDock {
     private var animating = false
     private var observer: NSObjectProtocol?
 
+    /// 화면 끝에서 떼기 (도구함 밑에 붙일 때처럼 다른 곳에 둘 때)
+    func undock() {
+        guard side != nil else { return }
+        if collapsed { collapsed = false }
+        side = nil
+        sync()
+    }
+
     /// 지금 붙은 쪽 (없으면 nil)
     private(set) var side: Side? {
         get { Side(rawValue: d.string(forKey: k("dockSide")) ?? "") }

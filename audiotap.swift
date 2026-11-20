@@ -59,6 +59,46 @@ final class TapEQ: @unchecked Sendable {
     private var lock = os_unfair_lock()
     /// 들어온 소리 크기 (권한이 없으면 계속 0 → 알아채고 끔)
     private var inputPeak: Float = 0
+    /// 진단: 나간 소리 최대 크기 · 1 을 넘어 잘린 횟수
+    private var outPeak: Float = 0
+    private var clips = 0
+    /// 나간 소리 세기 (청력 보호 표시용: 제곱 합 · 개수)
+    private var sqSum: Double = 0
+    private var sqN = 0
+    /// 지난번에 꺼낸 뒤로 나간 소리의 RMS (0 ~ 1). 소리가 없으면 nil
+    func takeRMS() -> Double? {
+        os_unfair_lock_lock(&lock)
+        defer { sqSum = 0; sqN = 0; os_unfair_lock_unlock(&lock) }
+        guard sqN > 0 else { return nil }
+        return sqrt(sqSum / Double(sqN))
+    }
+    /// 귀가 느끼는 크기로 재기 (A 가중: 사람 귀가 둔한 아주 낮은 · 아주 높은 소리는 덜 셈 — 맥 · 애플 건강 앱의 헤드폰 음량과 같은 방식)
+    ///   48kHz 용 6차 필터 계수 (표준 A 가중 곡선을 디지털로 옮긴 것)
+    private static let awB: [Double] = [0.234301792299513, -0.468603584599026, -0.234301792299513, 0.937207168598053,
+                                        -0.234301792299513, -0.468603584599026, 0.234301792299513]
+    private static let awA: [Double] = [1, -4.113043408775871, 6.553121752655047, -4.990849294163381,
+                                        1.785737302937573, -0.246190595319487, 0.011224250033231]
+    private let awX = UnsafeMutablePointer<Double>.allocate(capacity: 7)
+    private let awY = UnsafeMutablePointer<Double>.allocate(capacity: 7)
+    private func aWeight(_ x: Double) -> Double {
+        var i = 6
+        while i > 0 { awX[i] = awX[i - 1]; awY[i] = awY[i - 1]; i -= 1 }
+        awX[0] = x
+        var y = 0.0
+        for k in 0..<7 { y += Self.awB[k] * awX[k] }
+        for k in 1..<7 { y -= Self.awA[k] * awY[k] }
+        awY[0] = y
+        return y
+    }
+
+    /// 최대 크기 제한: 이만큼 소리를 줄임 (dB, 0 이하). 바로 바꾸면 '툭' 끊겨서 실시간 쪽에서 부드럽게 따라감
+    var limitDB: Double = 0
+    private var limitGain: Double = 1
+    /// 프레임마다 쓴 크기 (왼쪽 차례에 정하고 오른쪽도 같은 값을 씀 — 좌우가 어긋나지 않게)
+    private let gainBuf = UnsafeMutablePointer<Double>.allocate(capacity: 8192)
+
+    /// 효과 없이 그대로 내보내기 (소리 보정은 꺼져 있지만 청력 보호 측정은 할 때)
+    var bypass = false
 
     // MARK: 곡 분석 (필터 거치기 전 소리를 10초쯤 모아서 대역별 세기를 잼)
 
@@ -130,6 +170,8 @@ final class TapEQ: @unchecked Sendable {
         act.initialize(repeating: 0, count: Self.filters)
         nextAct.initialize(repeating: 0, count: Self.filters)
         spec.initialize(repeating: 0, count: Self.specSize)
+        awX.initialize(repeating: 0, count: 7); awY.initialize(repeating: 0, count: 7)
+        gainBuf.initialize(repeating: 1, count: 8192)
         coef.initialize(repeating: 0, count: Self.filters * 5)
         nextCoef.initialize(repeating: 0, count: Self.filters * 5)
         for b in 0..<Self.filters { coef[b * 5] = 1; nextCoef[b * 5] = 1 }
@@ -208,8 +250,9 @@ final class TapEQ: @unchecked Sendable {
         if currentPids() != tapped { stop(); start(); return }
         os_unfair_lock_lock(&lock); let peak = inputPeak; inputPeak = 0; os_unfair_lock_unlock(&lock)
         if UserDefaults.standard.bool(forKey: "ytmDebug") {   // 진단용
-            try? "running=\(running) pids=\(tapped) peak=\(peak) rate=\(sampleRate) flat=\(flat) playing=\(playing) loud=\(loud) outDB=\(Self.outputVolumeDB())".write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-eq.txt", atomically: true, encoding: .utf8)
+            try? "running=\(running) pids=\(tapped) peak=\(peak) rate=\(sampleRate) flat=\(flat) playing=\(playing) loud=\(loud) outDB=\(Self.outputVolumeDB()) outPeak=\(outPeak) clips=\(clips)".write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-eq.txt", atomically: true, encoding: .utf8)
         }
+        outPeak = 0; clips = 0
         if playing && peak == 0 {
             if silentSince == nil { silentSince = Date() }
             if Date().timeIntervalSince(silentSince!) > 3 {
@@ -352,7 +395,10 @@ final class TapEQ: @unchecked Sendable {
         for (i, f) in YTMusicFreqs.enumerated() where gains[i] != 0 {
             slots[i] = EQFilter(kind: i == 0 ? .lowShelf : (i == 9 ? .highShelf : .peak), f: f, g: gains[i], q: i == 0 || i == 9 ? 0.71 : 1.1)
         }
-        if abs(loud.bass) > 0.05 { slots[Self.slotLoud] = EQFilter(kind: .lowShelf, f: 100, g: loud.bass, q: 0.71) }
+        // 저음은 겹치면 먹먹해짐: '내 취향'에서 이미 저음을 올렸으면 그만큼 저음량 보정의 저음을 덜 올림
+        let tasteBass = max(0, gains[0], gains[1])
+        let lb = max(0, loud.bass - tasteBass)
+        if lb > 0.05 { slots[Self.slotLoud] = EQFilter(kind: .lowShelf, f: 100, g: lb, q: 0.71) }
         if abs(loud.treble) > 0.05 { slots[Self.slotLoud + 1] = EQFilter(kind: .highShelf, f: 10000, g: loud.treble, q: 0.71) }
         for (i, f) in Self.thirdOctave.enumerated() where auto31[i] != 0 { slots[Self.slotAuto + i] = EQFilter(kind: .peak, f: f, g: auto31[i], q: 4.3) }
         for (i, f) in param.enumerated() where f.kind == .highPass || f.kind == .lowPass || f.g != 0 { slots[Self.slotParam + i] = f }
@@ -373,7 +419,8 @@ final class TapEQ: @unchecked Sendable {
                 nextAct[i] = 0
             }
         }
-        nextPre = pow(10, -max(0, peak) * 0.6 / 20)
+        // 전체를 낮추면 고음까지 같이 작아져 먹먹하게 들려서 조금만 낮추고, 넘치는 순간은 부드럽게 눌러 줌(아래 리미터)
+        nextPre = pow(10, -max(0, peak) * 0.25 / 20)
         nextFlat = slots.allSatisfy { $0 == nil }
         hasNext = true
         os_unfair_lock_unlock(&lock)
@@ -401,6 +448,10 @@ final class TapEQ: @unchecked Sendable {
         let inFrames = Int(first.mDataByteSize) / (4 * inInter)
         let right: UnsafeMutablePointer<Float>? = ins.count > 1 ? ins[1].mData?.assumingMemoryBound(to: Float.self) : nil
         var peak: Float = 0
+        var sq: Double = 0, sqc = 0
+        // 크기 제한: 줄일 땐 빠르게(0.05초), 풀 땐 천천히(0.8초)
+        let gTarget = pow(10, min(0, limitDB) / 20)
+        let kDown = 1 - exp(-1 / (sampleRate * 0.05)), kUp = 1 - exp(-1 / (sampleRate * 0.8))
         // 나갈 곳: 버퍼마다 채널 수만큼 (왼 · 오른만 채우고 나머지는 0)
         var outCh = 0
         for o in outs {
@@ -418,7 +469,7 @@ final class TapEQ: @unchecked Sendable {
                     // 곡 분석: 필터 거치기 전 왼쪽 소리를 모아 둠
                     if ch == 0, capturing, capIndex < capMax { cap[capIndex] = xin; capIndex += 1 }
                     var x = Double(xin)
-                    if !flat {
+                    if !flat && !bypass {
                         x *= pre
                         for b in 0..<Self.filters where act[b] != 0 {
                             let k = coef + b * 5, s = m + b * 4
@@ -427,14 +478,30 @@ final class TapEQ: @unchecked Sendable {
                             x = y
                         }
                     }
-                    let yo = Float(max(-1, min(1, x)))
+                    if abs(x) > 1 { clips += 1 }
+                    if Float(abs(x)) > outPeak { outPeak = Float(abs(x)) }
+                    // 크기 제한 (왼쪽 채널 차례에서 한 번 움직이고, 오른쪽은 같은 값)
+                    if ch == 0 {
+                        limitGain += (gTarget - limitGain) * (gTarget < limitGain ? kDown : kUp)
+                        if i < 8192 { gainBuf[i] = limitGain }
+                    }
+                    x *= i < 8192 ? gainBuf[i] : limitGain
+                    // 부드러운 리미터: 0.8 까지는 그대로, 넘으면 1 을 넘지 않게 둥글게 (딱 잘려 찢어지는 소리 대신)
+                    let ax = abs(x)
+                    if ax > 0.8 { x = (x < 0 ? -1 : 1) * (0.8 + 0.2 * tanh((ax - 0.8) / 0.2)) }
+                    let yo = Float(x)
+                    if ch == 0 { let aw = aWeight(x); sq += aw * aw; sqc += 1 }
                     d[i * nch + c] = yo
                     if ch == 0, spectrumOn { spec[specIdx] = yo; specIdx = (specIdx + 1) % Self.specSize }
                 }
             }
             outCh += nch
         }
-        if os_unfair_lock_trylock(&lock) { if peak > inputPeak { inputPeak = peak }; os_unfair_lock_unlock(&lock) }
+        if os_unfair_lock_trylock(&lock) {
+            if peak > inputPeak { inputPeak = peak }
+            sqSum += sq; sqN += sqc
+            os_unfair_lock_unlock(&lock)
+        }
     }
 
     // MARK: Core Audio 도우미

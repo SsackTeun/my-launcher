@@ -10,7 +10,7 @@ final class BigPlayerView: NSView {
         set { UserDefaults.standard.set(newValue, forKey: "playerBig") }
     }
     /// 아래 칸 높이 · 크게 보기일 때 가장 좁은 창 폭
-    static let height: CGFloat = 300
+    static let height: CGFloat = 326
     static let minWidth: CGFloat = 560
 
     private weak var music: YTMusic?
@@ -40,7 +40,11 @@ final class BigPlayerView: NSView {
     /// 스피커: 누르면 볼륨 팝업 · 휠로 조절 (플레이어 줄의 것을 그대로 씀)
     var onVolume: ((NSView) -> Void)?
     var onNudge: ((CGFloat) -> Void)?
-    static let controlsH: CGFloat = 40
+    /// 앨범 밑: 재생바 줄(시간 · 바) + 재생 버튼 알약
+    static let controlsH: CGFloat = 66
+    private let bar = ProgressBar()
+    private let elapsed = NSTextField(labelWithString: "0:00")
+    private let total = NSTextField(labelWithString: "0:00")
     private let pill = NSView()
 
     private var tab: Int {
@@ -62,6 +66,8 @@ final class BigPlayerView: NSView {
         art.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)
         art.contentTintColor = .tertiaryLabelColor
         addSubview(art)
+        addSubview(hearing)
+        HearingMeter.shared.onWarn = { [weak self] m in self?.toast(m) }
 
         tabs.segmentStyle = .rounded
         tabs.controlSize = .small
@@ -109,6 +115,15 @@ final class BigPlayerView: NSView {
         pill.layer?.borderColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
         pill.layer?.borderWidth = 1
         addSubview(pill, positioned: .below, relativeTo: prev)
+        // 재생바는 재생 버튼 바로 위에 (위 플레이어 줄의 것은 크게 보기에서 숨김)
+        bar.onSeek = { [weak self] f in self?.music?.seek(f); DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { self?.syncControls() } }
+        addSubview(bar)
+        for l in [elapsed, total] {
+            l.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular)
+            l.textColor = .secondaryLabelColor
+            addSubview(l)
+        }
+        total.alignment = .right
 
         albumScroll.documentView = albumDoc
         albumScroll.hasVerticalScroller = false
@@ -225,15 +240,22 @@ final class BigPlayerView: NSView {
     private func syncControls() {
         guard let st = music?.state else { return }
         playBtn.image = NSImage(systemSymbolName: st.playing == true ? "pause.fill" : "play.fill", accessibilityDescription: nil)
+        func mmss(_ t: Double) -> String { let s = Int(max(0, t)); return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60) }
+        bar.fraction = st.duration > 0 ? st.position / st.duration : 0
+        elapsed.stringValue = mmss(st.position)
+        total.stringValue = mmss(st.duration)
         repBtn.image = NSImage(systemSymbolName: st.repeatOne ? "repeat.1" : "repeat", accessibilityDescription: nil)
         repBtn.contentTintColor = st.repeatOn ? .launcherAccent : nil
         spkBtn.image = NSImage(systemSymbolName: st.muted ? "speaker.slash.fill" : "speaker.wave.2.fill", accessibilityDescription: nil)
         eqBtn.contentTintColor = YTMusic.eqOn && YTMusic.eqGains.contains(where: { $0 != 0 }) ? .launcherAccent : nil
     }
 
+    private let hearing = HearingBadge()
     private var ticks = 0
     private func tick() {
         syncControls()
+        hearing.update()
+        if hearing.frame.width != (HearingMeter.limitOn ? 98 : 78) { needsLayout = true }
         guard let st = music?.state else { return }
         ticks += 1
         loadArt(st.artURL)
@@ -274,11 +296,17 @@ final class BigPlayerView: NSView {
         let pad: CGFloat = 12
         let side = max(80, min(bounds.height - pad * 2 - Self.controlsH, bounds.width * 0.46))
         art.frame = NSRect(x: pad + 2, y: pad, width: side, height: side)
+        hearing.frame = NSRect(x: art.frame.minX + 8, y: art.frame.minY + 8, width: HearingMeter.limitOn ? 98 : 78, height: 20)
         // 앨범 밑 가운데에 재생 버튼: ◀◀ ▶ ▶▶ 🔁 🔊 — 모두 같은 칸 크기 · 같은 가운데 줄, 옅은 알약 바탕 위에
         let cell: CGFloat = 32, gap: CGFloat = 4
         let total = cell * CGFloat(ctl.count) + gap * CGFloat(ctl.count - 1)
         let pillH: CGFloat = 32
-        let py = art.frame.maxY + (Self.controlsH - pillH) / 2 + 2
+        // 재생바 줄: 0:42 ━━━●──── 3:24
+        let by = art.frame.maxY + 8
+        elapsed.frame = NSRect(x: art.frame.minX, y: by, width: 44, height: 14)
+        self.total.frame = NSRect(x: art.frame.maxX - 44, y: by, width: 44, height: 14)
+        bar.frame = NSRect(x: elapsed.frame.maxX + 2, y: by, width: art.frame.width - 92, height: 14)
+        let py = art.frame.maxY + Self.controlsH - pillH - 2
         pill.frame = NSRect(x: art.frame.minX, y: py, width: art.frame.width, height: pillH)
         pill.layer?.cornerRadius = pillH / 2
         var bx = art.frame.midX - total / 2

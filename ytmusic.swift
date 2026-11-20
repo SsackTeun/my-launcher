@@ -114,6 +114,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
 
         isActive = true
         onFoundChange?()
+        HearingMeter.shared.start()
         timer?.invalidate()
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.poll() } }
         RunLoop.main.add(t, forMode: .common)
@@ -232,7 +233,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         }
         // 이퀄라이저: 페이지를 다시 불러오거나 영상 칸이 바뀌면 필터가 빠지므로 3초마다 확인
         eqTick += 1
-        if Self.masterOn && (Self.eqOn || Self.loudOn || Self.peqOn || Self.auto31On), eqTick % 3 == 0 {
+        if (Self.masterOn && (Self.eqOn || Self.loudOn || Self.peqOn || Self.auto31On)) || HearingMeter.on, eqTick % 3 == 0 {
             // 아직 연결 전(소리를 낸 적이 없음)이면 다시 시도, 연결돼 있으면 소리가 들어오는지 확인
             if TapEQ.shared.running { TapEQ.shared.check(playing: state?.playing == true) }
             else if TapEQ.shared.problem == nil { applyEQ() }
@@ -243,6 +244,13 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         if UserDefaults.standard.bool(forKey: "ytmOpenEQ") {
             UserDefaults.standard.set(false, forKey: "ytmOpenEQ")
             NotificationCenter.default.post(name: Notification.Name("openEQPopover"), object: nil)
+        }
+        // 진단: 곡마다 자동 맞춤을 지금 한 번 (결과를 파일로)
+        if UserDefaults.standard.bool(forKey: "ytmAuto31Now") {
+            UserDefaults.standard.set(false, forKey: "ytmAuto31Now")
+            runAuto31 { ok in
+                try? "ok=\(ok) gains=\(Self.auto31Gains)".write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-analyze.txt", atomically: true, encoding: .utf8)
+            }
         }
         // 진단: 정밀 EQ 창 열기
         if UserDefaults.standard.bool(forKey: "ytmOpenPEQ") {
@@ -512,7 +520,8 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     }
     static let eqPresets: [(String, [Double])] = [
         ("기본", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-        ("저음 강조", [6, 5, 4, 2, 0, 0, 0, 0, 0, 0]),
+        // 저음 강조: 둥둥 울리는 아래쪽(32 · 64Hz)만 올리고, 먹먹해지는 125 · 250Hz 는 거의 그대로 · 고음을 살짝 살려 또렷하게
+        ("저음 강조", [5, 4, 1, 0, -1, 0, 0, 0, 1, 1]),
         ("저음 줄이기", [-6, -5, -4, -2, 0, 0, 0, 0, 0, 0]),
         ("고음 강조", [0, 0, 0, 0, 0, 1, 2, 4, 5, 6]),
         ("보컬", [-2, -2, -1, 1, 3, 4, 3, 1, 0, -1]),
@@ -529,8 +538,13 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         Self.migrateEQ()
         updateLoudness()
         TapEQ.shared.setParam(Self.peqOn ? Self.peqFilters : [])
-        TapEQ.shared.setAuto(Self.auto31On ? Self.auto31Gains : Array(repeating: 0, count: 31))
-        TapEQ.shared.update(on: Self.masterOn && (Self.eqOn || Self.loudOn || Self.peqOn || Self.auto31On),
+        // 예전에 저장된 값도 같은 규칙으로 (250Hz 아래 올리기 없음)
+        let a31 = zip(Self.auto31Gains, TapEQ.thirdOctave).map { $1 < 250 ? min($0, 0) : $0 }
+        TapEQ.shared.setAuto(Self.auto31On ? a31 : Array(repeating: 0, count: 31))
+        // 청력 보호 표시가 켜져 있으면 소리 크기를 재려고 탭은 켜 두되, 보정이 꺼져 있으면 소리는 그대로 통과
+        let effects = Self.masterOn && (Self.eqOn || Self.loudOn || Self.peqOn || Self.auto31On)
+        TapEQ.shared.bypass = !effects
+        TapEQ.shared.update(on: effects || HearingMeter.on,
                             gains: Self.eqOn ? Self.eqGains : Array(repeating: 0, count: 10))
     }
 
@@ -544,6 +558,9 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     /// - 10밴드에 들어 있던 '추천' 값은 곡 보정이 두 번 되지 않게 0 으로, 10밴드 자동 추천을 쓰던 사람은 31칸 자동으로
     static func migrateEQ() {
         let d = UserDefaults.standard
+        // 프리셋 모양을 바꾼 경우: 그 프리셋을 쓰고 있으면 새 모양으로
+        if let p = eqPresets.first(where: { $0.0 == eqPreset }), p.1 != eqGains, !d.bool(forKey: "ytmEQMigrated3") { eqGains = p.1 }
+        d.set(true, forKey: "ytmEQMigrated3")
         guard !d.bool(forKey: "ytmEQMigrated2") else { return }
         d.set(true, forKey: "ytmEQMigrated2")
         if autoSuggest { autoSuggest = false; auto31On = true }
@@ -579,12 +596,17 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         return t[i] + (t[i + 1] - t[i]) * r
     }
 
-    /// 31밴드 추천 (10밴드와 같은 방식, 이웃 5칸으로 더 부드럽게)
+    /// 31밴드 추천 — 곡의 성격은 살리고 크게 치우친 곳만 살짝 다듬음
+    /// - 기준: 보컬 · 악기가 있는 가운데(250Hz ~ 4kHz)를 0 으로 맞춤 (예전엔 전체 중앙값이라 가운데를 -6dB 까지 파 버려 소리가 텅 비었음)
+    /// - 차이의 1/3 만 따라감, 줄이기는 -4dB · 올리기는 +3dB 까지
+    /// - 120Hz 아래는 +2dB 까지만 (작게 들을 때 보정이 저음을 따로 채움 — 겹치면 웅웅거림)
+    /// - 40Hz 아래 · 12.5kHz 위는 건드리지 않음 (이어폰 · 압축 음원의 끝자락)
     static func suggest31(from measured: [Double]) -> [Double] {
         let fs = TapEQ.thirdOctave
         let d = zip(measured, fs).map { $0 - target(at: $1) }
-        let mid = d.sorted()[d.count / 2]
-        let raw = d.map { -($0 - mid) * 0.5 }
+        let mids = fs.indices.filter { fs[$0] >= 250 && fs[$0] <= 4000 }.map { d[$0] }
+        let ref = mids.reduce(0, +) / Double(max(1, mids.count))
+        let raw = d.map { -($0 - ref) / 3 }
         let w = [1.0, 2, 3, 2, 1]
         let smooth = raw.indices.map { i -> Double in
             var sum = 0.0, ws = 0.0
@@ -592,9 +614,10 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
             return sum / ws
         }
         return smooth.enumerated().map { i, v in
-            var g = max(-6, min(6, (v * 2).rounded() / 2))
-            if fs[i] >= 12500 { g = min(g, 2) }   // 압축으로 깎인 고음은 조금만
-            if fs[i] <= 40 { g = min(g, 3) }       // 이어폰이 못 내는 저음도 조금만
+            if fs[i] < 40 || fs[i] > 12500 { return 0 }
+            var g = max(-4, min(3, (v * 2).rounded() / 2))
+            // 250Hz 아래는 줄이기만 (올리면 먹먹해짐 — 저음은 '내 취향' · '작게 들을 때 보정'이 맡음)
+            if fs[i] < 250 { g = min(g, 0) }
             return g == 0 ? 0 : g
         }
     }

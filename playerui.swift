@@ -372,7 +372,7 @@ final class PlayerBar: NSView {
         super.layout()
         layoutMain()
         // 크게 보기: 재생 버튼은 아래(앨범 밑)로 옮겨 가서 여기선 숨기고, 제목을 그만큼 길게
-        let moved: [NSView] = [prev, play, next, rep, mute]
+        let moved: [NSView] = [prev, play, next, rep, mute, progress, timeLabel]
         if detached && big {
             moved.forEach { $0.isHidden = true }
             let right = lyricsBtn.frame.minX - 8
