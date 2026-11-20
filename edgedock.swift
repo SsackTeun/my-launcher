@@ -319,7 +319,11 @@ final class EdgeDock {
     }
 
     private func screen(of w: NSWindow) -> NSScreen {
-        w.screen ?? NSScreen.screens.first { $0.frame.intersects(w.frame) } ?? NSScreen.screens.first!
+        // 겹치는 모니터가 없으면(창이 화면 밖) 창 가운데에서 가장 가까운 모니터
+        w.screen ?? NSScreen.screens.min { a, b in
+            func dist(_ s: NSScreen) -> CGFloat { hypot(s.frame.midX - w.frame.midX, s.frame.midY - w.frame.midY) }
+            return dist(a) < dist(b)
+        } ?? NSScreen.screens.first!
     }
 
     /// 그 가장자리 너머에 다른 모니터가 이어져 있으면 접을 수 없음 (손잡이가 화면 가운데에 떠 버림)
@@ -343,11 +347,21 @@ final class EdgeDock {
 
     func toggle() { collapsed ? expand() : collapse() }
 
+    /// 붙어 있을 자리: 늘 화면(막대 자리 뺀) 끝에 딱 붙게 다시 계산
+    /// (펴지는 중에 접기를 누르면 화면 밖 중간 위치가 '원래 자리' 로 기억돼, 다음부터 펴도 화면 밖에 펴지던 문제)
+    private func dockedFrame(_ w: NSWindow, side: Side, screen s: NSScreen) -> NSRect {
+        var f = w.frame
+        let vf = Self.area(s, f)
+        f.origin.x = side == .left ? vf.minX + Self.inset : vf.maxX - Self.inset - f.width
+        f.origin.y = min(max(f.minY, vf.minY), vf.maxY - f.height)
+        return f
+    }
+
     func collapse() {
-        guard let w = window, let side, !collapsed else { return }
+        guard let w = window, let side, !collapsed, !animating else { return }
         peek = false
         let s = screen(of: w)
-        let docked = w.frame
+        let docked = dockedFrame(w, side: side, screen: s)
         var out = docked
         out.origin.x = side == .left ? s.frame.minX - docked.width - 2 : s.frame.maxX + 2
         collapsed = true
@@ -368,12 +382,12 @@ final class EdgeDock {
     }
 
     func expand() {
-        guard let w = window, collapsed else { return }
+        guard let w = window, collapsed, !animating else { return }
         collapsed = false
         grace = Date().addingTimeInterval(2.5)
         guard let side else { present(w); HoverRaise.raiseWhileHovered(w); sync(); return }
         let s = screen(of: w)
-        let docked = w.frame
+        let docked = dockedFrame(w, side: side, screen: s)
         var out = docked
         out.origin.x = side == .left ? s.frame.minX - docked.width - 2 : s.frame.maxX + 2
         animating = true
@@ -392,6 +406,12 @@ final class EdgeDock {
 
     /// 다른 길(메뉴 · 단축키)로 창을 띄우면 접힘을 풂
     func windowShown() {
+        // 붙어 있는 창이 화면 밖에 떠 있으면(예전에 잘못 기억된 자리) 화면 끝으로 되돌림
+        if let w = window, let side, !animating {
+            let s = screen(of: w)
+            let seen = s.frame.intersection(w.frame)
+            if seen.width < w.frame.width * 0.9 { w.setFrame(dockedFrame(w, side: side, screen: s), display: true) }
+        }
         guard collapsed else { return }
         collapsed = false
         grace = Date().addingTimeInterval(2.5)

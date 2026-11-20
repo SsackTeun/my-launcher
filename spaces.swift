@@ -143,28 +143,19 @@ enum Spaces {
             press(steps) {}
             return
         }
-        // 다른 모니터: ⌃← / ⌃→ 는 '지금 활성인 모니터' 에 먹어서 그대로는 안 됨
-        // 1) 그 데스크탑에 앱 창이 있으면 그 앱을 앞으로 → macOS 가 그 데스크탑으로 넘어감
-        let me = ProcessInfo.processInfo.processIdentifier
-        //    (그 앱이 지금 데스크탑에도 창이 있으면 macOS 가 안 넘어가서 — 예: VMware 창이 1 · 2 에 다 있을 때 — 그 데스크탑에만 있는 앱만)
-        //    지금 보이는 데스크탑 (모든 모니터) 에 창이 없는 앱이 제일 확실함
-        //    (앱이 지금 보이는 데스크탑 — 어느 모니터든 — 에도 창이 있으면 macOS 가 안 넘어감. 예: VMware 창이 1 · 4 에 나뉨 → 2) 로)
-        let visible = Set(desks.filter(\.current).flatMap(\.pids))
-        if let pid = target.pids.first(where: { $0 != me && !visible.contains($0) }), let app = NSRunningApplication(processIdentifier: pid) {
-            MainActor.assumeIsolated { bringToFront(app) }
-            return
-        }
-        // 2) 빈 데스크탑 · 다른 데스크탑에도 창이 있는 앱뿐: 그 모니터 메뉴 막대 빈 곳을 한 번 눌러 그 모니터를 활성으로 만든 뒤 넘기고, 마우스는 제자리로
+        // 다른 모니터: ⌃← / ⌃→ 는 마우스가 있는 모니터에 먹음
+        // → 마우스를 그 모니터 가운데로 잠깐 옮겨(누르지 않음) 넘긴 뒤 제자리로
+        //   (예전: 그 데스크탑 앱을 앞으로 부르기 — 앱 창이 다른 데스크탑에도 있으면 엉뚱한 곳으로 감,
+        //    빈 데스크탑이면 메뉴 막대 가운데를 눌렀는데 맥북은 거기가 노치라 안 눌림)
         guard let scr = screen(forUUID: target.display) else { return }
         let primaryTop = NSScreen.screens.first?.frame.maxY ?? 0
         let back = CGPoint(x: mouse.x, y: primaryTop - mouse.y)
-        let menuSpot = CGPoint(x: scr.frame.midX, y: primaryTop - scr.frame.maxY + 6)
-        post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: menuSpot, mouseButton: .left))
-        post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseDown, mouseCursorPosition: menuSpot, mouseButton: .left))
-        post(CGEvent(mouseEventSource: nil, mouseType: .leftMouseUp, mouseCursorPosition: menuSpot, mouseButton: .left))
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+        let spot = CGPoint(x: scr.frame.midX, y: primaryTop - scr.frame.midY)
+        post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: spot, mouseButton: .left))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
             press(steps) {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                // 넘어가는 애니메이션이 끝날 때까지 마우스를 그 모니터에 둠 (일찍 돌아오면 다음 칸이 다른 모니터에 먹음)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                     post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: back, mouseButton: .left))
                 }
             }

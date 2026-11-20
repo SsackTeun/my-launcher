@@ -41,6 +41,14 @@ enum Options {
                 ["left": 0, "right": 1, "top": 2, "bottom": 3][FavBar.all.first(where: \.isDesktop)?.edge.rawValue ?? "left"] ?? 0) {
             FavBar.setEdgeForAll([FavBar.Edge.left, .right, .top, .bottom][Int($0)])
         }
+        if NSScreen.screens.count > 1 {
+            let scrs = NSScreen.screens
+            let cur = FavBar.desktopBarsScreen.flatMap { s in scrs.firstIndex { $0 == s } } ?? 0
+            f.popup("데스크탑 막대 모니터", scrs.enumerated().map { ($0.element.localizedName, Double($0.offset)) }, Double(cur)) { i in
+                let s = NSScreen.screens
+                if s.indices.contains(Int(i)) { FavBar.setScreenForAll(s[Int(i)], bars: FavBar.all.filter(\.isDesktop)) }
+            }
+        }
         f.note("데스크탑 막대(1 · 2 · 3 · 4)를 한 번에 옮겨요. 위 · 아래로 두면 가로로 늘어서요. 막대 하나만 옮기려면 막대 끝 손잡이를 잡고 원하는 가장자리로 끌어 놓으면 돼요.")
                 f.check("막대 자리 비워 두기 (다른 앱 창이 막대를 덮지 않게 옆으로 밀거나 줄임)", BarReserve.enabled) { BarReserve.enabled = $0 }
         f.check("게임은 비키게 하지 않기 (롤 · 스팀 등 게임 창은 그대로)", BarReserve.skipGames) { BarReserve.skipGames = $0 }

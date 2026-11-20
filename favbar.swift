@@ -625,7 +625,7 @@ final class FavBar {
         place(animate: animate)
     }
 
-    fileprivate var screen: NSScreen {
+    var screen: NSScreen {
         let n = d.integer(forKey: k("favScreen"))
         return NSScreen.screens.first { ($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue == n }
             ?? NSScreen.screens.first ?? NSScreen.main!
@@ -932,6 +932,30 @@ final class FavBar {
         shared.onChange()
     }
 
+    /// 막대들을 한꺼번에 다른 모니터로 (가장자리 · 순서 · 줄은 그대로). desktopOnly 면 데스크탑 막대만
+    static func setScreenForAll(_ scr: NSScreen, bars: [FavBar]) {
+        let num = (scr.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.intValue ?? 0
+        for b in bars { b.d.set(num, forKey: b.k("favScreen")) }
+        for b in all { b.rebuild(animate: true) }
+        shared.onChange()
+    }
+    /// 지금 데스크탑 막대들이 놓인 모니터 (여럿이면 첫 막대 기준)
+    static var desktopBarsScreen: NSScreen? { all.first(where: \.isDesktop)?.screen }
+    /// 우클릭 메뉴용: 다른 모니터로 옮기기 (데스크탑 막대면 전부, 아니면 이 막대만)
+    func screenMenuItem() -> NSMenuItem? {
+        guard NSScreen.screens.count > 1 else { return nil }
+        let targets = isDesktop ? Self.all.filter(\.isDesktop) : [self]
+        let it = NSMenuItem(title: isDesktop ? "데스크탑 막대 전부 다른 모니터로" : "다른 모니터로", action: nil, keyEquivalent: "")
+        let m = NSMenu()
+        for scr in NSScreen.screens {
+            let a = MenuAction(scr.localizedName) { FavBar.setScreenForAll(scr, bars: targets) }
+            a.state = scr == screen ? .on : .off
+            m.addItem(a)
+        }
+        it.submenu = m
+        return it
+    }
+
     // MARK: [+] 메뉴
 
     func showAddMenu(from v: NSView) { FavPicker.shared.show(near: v, bar: self) }
@@ -1101,6 +1125,7 @@ class FavBase: NSView {
         if !bar.isDesktop {
             m.addItem(MenuAction(bar.editing ? "편집 끝내기" : "편집 (넣기 · 빼기)") { bar.editing.toggle() })
         }
+        if let sm = bar.screenMenuItem() { m.addItem(sm) }
         // 막대 종류: 직접 넣는 막대 / 데스크탑 n 에 열린 앱
         let desks = Spaces.numbered().desks
         let kind = NSMenuItem(title: "막대 종류", action: nil, keyEquivalent: "")
