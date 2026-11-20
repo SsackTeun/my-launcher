@@ -29,6 +29,21 @@ struct QueueItem {
     let duration: String
     let current: Bool
     let index: Int
+    /// 자동재생(재생목록이 끝난 뒤 YouTube Music 이 붙이는 곡)
+    var auto = false
+    /// 가수 페이지 ID (UC…), 링크가 있을 때만
+    var artistId = ""
+    /// 재생목록에 넣을 곡 ID (노래 버전이 있으면 그것)
+    var videoId = ""
+}
+
+/// 가수의 앨범 · 싱글 한 줄
+struct AlbumEntry {
+    let title: String
+    let sub: String
+    let id: String       // MPREb…
+    let thumb: String
+    let section: String  // 앨범 · 싱글 및 EP
 }
 
 @MainActor
@@ -40,7 +55,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     /// 미니 플레이어를 보여 줄지 (브라우저가 켜져 있으면 true)
     private(set) var isActive = false
 
-    private var webView: WKWebView?
+    var webView: WKWebView?
     private var window: NSWindow?
     private var timer: Timer?
     private var artURL = ""
@@ -215,6 +230,37 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                 try? ((r as? String) ?? "nil").write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-queue-debug.txt", atomically: true, encoding: .utf8)
             }
         }
+        // 이퀄라이저: 페이지를 다시 불러오거나 영상 칸이 바뀌면 필터가 빠지므로 3초마다 확인
+        eqTick += 1
+        if Self.masterOn && (Self.eqOn || Self.loudOn || Self.peqOn || Self.auto31On), eqTick % 3 == 0 {
+            // 아직 연결 전(소리를 낸 적이 없음)이면 다시 시도, 연결돼 있으면 소리가 들어오는지 확인
+            if TapEQ.shared.running { TapEQ.shared.check(playing: state?.playing == true) }
+            else if TapEQ.shared.problem == nil { applyEQ() }
+        }
+        autoSuggestTick()
+        auto31Tick()
+        // 진단: 소리 보정 팝업 열기
+        if UserDefaults.standard.bool(forKey: "ytmOpenEQ") {
+            UserDefaults.standard.set(false, forKey: "ytmOpenEQ")
+            NotificationCenter.default.post(name: Notification.Name("openEQPopover"), object: nil)
+        }
+        // 진단: 정밀 EQ 창 열기
+        if UserDefaults.standard.bool(forKey: "ytmOpenPEQ") {
+            UserDefaults.standard.set(false, forKey: "ytmOpenPEQ")
+            PEQWindow.shared.show(music: self)
+        }
+        // 진단: ytmAnalyzeTest 가 켜져 있으면 한 번 분석해서 결과만 파일로 (적용은 안 함)
+        if UserDefaults.standard.bool(forKey: "ytmAnalyzeTest"), TapEQ.shared.running, !TapEQ.shared.isCapturing {
+            UserDefaults.standard.set(false, forKey: "ytmAnalyzeTest")
+            TapEQ.shared.startCapture(seconds: 10)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 12) {
+                let prog = TapEQ.shared.captureProgress; let m = TapEQ.shared.finishCapture()
+                let out = m.map { "measured=\($0.map { Int($0.rounded()) })\nsuggest=\(Self.suggest(from: $0))\n\(Self.describe(Self.suggest(from: $0)))" } ?? "nil progress=\(prog) running=\(TapEQ.shared.running) playing=\(String(describing: self.state?.playing))"
+                try? out.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-analyze.txt", atomically: true, encoding: .utf8)
+            }
+        }
+        // 볼륨을 바꾸면 보정도 따라감
+        if Self.loudOn, eqTick % 2 == 0 { updateLoudness() }
         wv.evaluateJavaScript(Self.stateJS) { [weak self] result, _ in
             MainActor.assumeIsolated {
                 guard let self, let json = result as? String,
@@ -412,12 +458,19 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
       const txt = el => el ? el.textContent.replace(/\\s+/g,' ').trim() : '';
       // 곡마다 노래·뮤직비디오 두 버전이 들어 있어서, 뮤직비디오 쪽(counterpart)은 빼고
       const list = [...document.querySelectorAll('ytmusic-player-queue-item')].filter(i => !i.closest('#counterpart-renderer'));
+      // 자동재생이 꺼져 있으면 이미 받아 둔 자동재생 곡은 안 나오므로 빼고 보여 줌 (맨 뒤에 있어서 앞 곡 번호는 그대로)
+      const autoOn = !!(document.querySelector('#automix') || {}).checked;
       return JSON.stringify(list.map((it, i) => ({
         title: txt(it.querySelector('.song-title')),
         artist: txt(it.querySelector('.byline')),
         dur: txt(it.querySelector('.duration')),
-        cur: it.hasAttribute('selected') || ['playing','paused'].includes(it.getAttribute('play-button-state') || '')
-      })));
+        cur: it.hasAttribute('selected') || ['playing','paused'].includes(it.getAttribute('play-button-state') || ''),
+        auto: !!it.closest('#automix-contents'),
+        vid: (() => { const w = it.closest('ytmusic-playlist-panel-video-wrapper-renderer');
+          const cp = w && w.querySelector('#counterpart-renderer ytmusic-player-queue-item');
+          return (cp && cp.data && cp.data.videoId) || (it.data && it.data.videoId) || ''; })(),
+        aid: ((it.data && it.data.longBylineText && it.data.longBylineText.runs || []).map(r => r.navigationEndpoint && r.navigationEndpoint.browseEndpoint && r.navigationEndpoint.browseEndpoint.browseId).find(x => x && x.startsWith('UC'))) || ''
+      })).filter(x => autoOn || !x.auto));
     })()
     """
 
@@ -431,13 +484,422 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                     let t = o["title"] as? String ?? ""
                     guard !t.isEmpty else { return nil }
                     return QueueItem(title: t, artist: o["artist"] as? String ?? "", duration: o["dur"] as? String ?? "",
-                                     current: o["cur"] as? Bool ?? false, index: i)
+                                     current: o["cur"] as? Bool ?? false, index: i,
+                                     auto: o["auto"] as? Bool ?? false, artistId: o["aid"] as? String ?? "",
+                                     videoId: o["vid"] as? String ?? "")
                 })
             }
         }
     }
 
     func queueClosed() {}
+
+    // MARK: 이퀄라이저 (숨은 페이지의 소리를 Web Audio 필터 10개에 통과시킴 — 도구함에서 나오는 YouTube Music 소리에만)
+
+    static let eqFreqs: [Double] = [32, 64, 125, 250, 500, 1000, 2000, 4000, 8000, 16000]
+    static var eqOn: Bool {
+        get { UserDefaults.standard.bool(forKey: "ytmEQOn") }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmEQOn") }
+    }
+    static var eqGains: [Double] {
+        get { (UserDefaults.standard.array(forKey: "ytmEQ") as? [Double]).flatMap { $0.count == 10 ? $0 : nil } ?? Array(repeating: 0, count: 10) }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmEQ") }
+    }
+    /// 고른 프리셋 이름 (직접 바꾸면 "직접 설정")
+    static var eqPreset: String {
+        get { UserDefaults.standard.string(forKey: "ytmEQPreset") ?? "기본" }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmEQPreset") }
+    }
+    static let eqPresets: [(String, [Double])] = [
+        ("기본", [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        ("저음 강조", [6, 5, 4, 2, 0, 0, 0, 0, 0, 0]),
+        ("저음 줄이기", [-6, -5, -4, -2, 0, 0, 0, 0, 0, 0]),
+        ("고음 강조", [0, 0, 0, 0, 0, 1, 2, 4, 5, 6]),
+        ("보컬", [-2, -2, -1, 1, 3, 4, 3, 1, 0, -1]),
+        ("록", [5, 4, 2, -1, -2, -1, 2, 3, 4, 4]),
+        ("팝", [-1, 1, 3, 4, 3, 0, -1, -1, 1, 2]),
+        ("어쿠스틱", [3, 3, 2, 1, 1, 1, 2, 2, 2, 1]),
+        ("일렉트로닉", [5, 4, 1, 0, -2, 1, 0, 1, 4, 5]),
+        ("작은 스피커", [-4, -2, 1, 3, 3, 2, 1, 1, 0, -1]),
+    ]
+
+    /// 켜기 · 끄기 · 값 바꾸기를 오디오 탭에 전달 (웹 페이지 안 Web Audio 로는 YouTube Music 소리를 받지 못해서 맥 쪽에서 처리)
+    /// 이퀄라이저나 저음량 보정 중 하나라도 켜져 있으면 탭을 씀
+    func applyEQ() {
+        Self.migrateEQ()
+        updateLoudness()
+        TapEQ.shared.setParam(Self.peqOn ? Self.peqFilters : [])
+        TapEQ.shared.setAuto(Self.auto31On ? Self.auto31Gains : Array(repeating: 0, count: 31))
+        TapEQ.shared.update(on: Self.masterOn && (Self.eqOn || Self.loudOn || Self.peqOn || Self.auto31On),
+                            gains: Self.eqOn ? Self.eqGains : Array(repeating: 0, count: 10))
+    }
+
+    /// 소리 보정 전체 (끄면 원래 소리 — 눌러서 비교)
+    static var masterOn: Bool {
+        get { UserDefaults.standard.object(forKey: "ytmEQMaster") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmEQMaster") }
+    }
+
+    /// 예전 설정 정리: 곡 분석은 '곡마다 자동 맞춤'(31칸) 하나로 합침
+    /// - 10밴드에 들어 있던 '추천' 값은 곡 보정이 두 번 되지 않게 0 으로, 10밴드 자동 추천을 쓰던 사람은 31칸 자동으로
+    static func migrateEQ() {
+        let d = UserDefaults.standard
+        guard !d.bool(forKey: "ytmEQMigrated2") else { return }
+        d.set(true, forKey: "ytmEQMigrated2")
+        if autoSuggest { autoSuggest = false; auto31On = true }
+        if eqPreset == "추천" { eqGains = Array(repeating: 0, count: 10); eqPreset = "기본" }
+    }
+
+    // MARK: 정밀 EQ (점 필터) · 자동 31밴드
+
+    static var peqOn: Bool {
+        get { UserDefaults.standard.bool(forKey: "ytmPEQOn") }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmPEQOn") }
+    }
+    static var peqFilters: [EQFilter] {
+        get { (UserDefaults.standard.data(forKey: "ytmPEQ")).flatMap { try? JSONDecoder().decode([EQFilter].self, from: $0) } ?? [] }
+        set { UserDefaults.standard.set(try? JSONEncoder().encode(newValue), forKey: "ytmPEQ") }
+    }
+    static var auto31On: Bool {
+        get { UserDefaults.standard.bool(forKey: "ytmAuto31") }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmAuto31") }
+    }
+    static var auto31Gains: [Double] {
+        get { (UserDefaults.standard.array(forKey: "ytmAuto31Gains") as? [Double]).flatMap { $0.count == 31 ? $0 : nil } ?? Array(repeating: 0, count: 31) }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmAuto31Gains") }
+    }
+
+    /// 기준 곡선을 아무 주파수에서나 (10점 사이는 로그 눈금으로 잇고, 양 끝 밖은 기울기대로 늘림)
+    static func target(at f: Double) -> Double {
+        let fs = YTMusicFreqs, t = targetCurve
+        if f <= fs[0] { return t[0] - 4 * log2(fs[0] / f) }
+        if f >= fs[fs.count - 1] { return t[t.count - 1] - 6 * log2(f / fs[fs.count - 1]) }
+        let i = fs.lastIndex { $0 <= f }!
+        let r = log2(f / fs[i]) / log2(fs[i + 1] / fs[i])
+        return t[i] + (t[i + 1] - t[i]) * r
+    }
+
+    /// 31밴드 추천 (10밴드와 같은 방식, 이웃 5칸으로 더 부드럽게)
+    static func suggest31(from measured: [Double]) -> [Double] {
+        let fs = TapEQ.thirdOctave
+        let d = zip(measured, fs).map { $0 - target(at: $1) }
+        let mid = d.sorted()[d.count / 2]
+        let raw = d.map { -($0 - mid) * 0.5 }
+        let w = [1.0, 2, 3, 2, 1]
+        let smooth = raw.indices.map { i -> Double in
+            var sum = 0.0, ws = 0.0
+            for (j, wj) in w.enumerated() { let k = i + j - 2; if k >= 0 && k < raw.count { sum += raw[k] * wj; ws += wj } }
+            return sum / ws
+        }
+        return smooth.enumerated().map { i, v in
+            var g = max(-6, min(6, (v * 2).rounded() / 2))
+            if fs[i] >= 12500 { g = min(g, 2) }   // 압축으로 깎인 고음은 조금만
+            if fs[i] <= 40 { g = min(g, 3) }       // 이어폰이 못 내는 저음도 조금만
+            return g == 0 ? 0 : g
+        }
+    }
+
+    /// 지금 곡을 들어 31밴드 자동 값을 만들고 적용
+    func runAuto31(seconds: Double = 8, done: ((Bool) -> Void)? = nil) {
+        if !TapEQ.shared.running { applyEQ() }
+        let started = Date()
+        var began = false
+        func step() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                MainActor.assumeIsolated {
+                    let tap = TapEQ.shared
+                    if !began {
+                        guard tap.running, !tap.isCapturing else {
+                            if Date().timeIntervalSince(started) > 8 { done?(false) } else { step() }
+                            return
+                        }
+                        tap.startCapture(seconds: seconds); began = true
+                    }
+                    if let m = tap.finishCapture(centers: TapEQ.thirdOctave, width: pow(2, 1.0 / 6)) {
+                        Self.auto31Gains = Self.suggest31(from: m)
+                        self.applyEQ()
+                        NotificationCenter.default.post(name: .eqChanged, object: nil)
+                        done?(true); return
+                    }
+                    if Date().timeIntervalSince(started) > seconds + 15 { tap.cancelCapture(); done?(false); return }
+                    step()
+                }
+            }
+        }
+        step()
+    }
+    private var auto31Title = ""
+    private func auto31Tick() {
+        guard Self.auto31On, let st = state, st.playing == true, !st.title.isEmpty, st.title != auto31Title else { return }
+        auto31Title = st.title
+        let t = st.title
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, self.state?.title == t else { return }
+            self.runAuto31()
+        }
+    }
+
+    // MARK: 곡 분석 추천 — 지금 곡의 대역별 세기를 '보통 잘 섞인 곡' 기준과 비교해서, 튀는 곳은 줄이고 빈 곳은 채움
+
+    /// 잘 섞인 대중음악의 옥타브별 평균 세기 (1kHz 기준 dB, 32Hz ~ 16kHz)
+    static let targetCurve: [Double] = [-5, -1.5, 0, 0.5, 0.5, 0, -1, -2.5, -4.5, -8]
+
+    /// 잰 세기 → 추천 EQ (반만 따라가고 ±6dB 안에서, 이웃 밴드와 부드럽게)
+    static func suggest(from measured: [Double]) -> [Double] {
+        let d = zip(measured, targetCurve).map { $0 - $1 }
+        let mid = d.sorted()[d.count / 2]   // 전체 크기 차이는 빼고 모양만 봄
+        let raw = d.map { -($0 - mid) * 0.5 }
+        let smooth = raw.indices.map { i -> Double in
+            let l = raw[max(0, i - 1)], r = raw[min(raw.count - 1, i + 1)]
+            return (l + 2 * raw[i] + r) / 4
+        }
+        var g = smooth.map { max(-6, min(6, ($0 * 2).rounded() / 2)) }
+        // 스트리밍 음원은 16kHz 위를 압축하며 많이 깎아서 비어 보이는 것 — 크게 올리면 잡음만 커짐
+        g[9] = min(g[9], 2)
+        // 이어폰이 잘 못 내는 아주 낮은 저음도 조금만
+        g[0] = min(g[0], 3)
+        return g.map { $0 == 0 ? 0 : $0 }
+    }
+
+    /// 추천 결과를 한 줄로 (가장 많이 바꾼 곳 위주)
+    static func describe(_ g: [Double]) -> String {
+        let low = (g[0] + g[1] + g[2]) / 3, mid = (g[4] + g[5] + g[6]) / 3, high = (g[7] + g[8] + g[9]) / 3
+        var parts: [String] = []
+        if low < -1 { parts.append("저음이 많아 줄이고") } else if low > 1 { parts.append("저음이 약해 채우고") }
+        if mid < -1 { parts.append("중음이 두꺼워 덜고") } else if mid > 1 { parts.append("보컬 쪽을 살리고") }
+        if high < -1 { parts.append("고음이 날카로워 누그러뜨렸어요") } else if high > 1 { parts.append("고음을 밝게 했어요") }
+        if parts.isEmpty { return "이미 고르게 섞인 곡이라 거의 바꾸지 않았어요" }
+        // 마지막 말을 끝맺음으로 (줄이고 → 줄였어요)
+        let ends = ["줄이고": "줄였어요", "채우고": "채웠어요", "덜고": "덜었어요", "살리고": "살렸어요"]
+        if let last = parts.last, let k = ends.keys.first(where: { last.hasSuffix($0) }) {
+            parts[parts.count - 1] = String(last.dropLast(k.count)) + ends[k]!
+        }
+        return parts.joined(separator: " ")
+    }
+
+    /// 지금 곡을 seconds 초 듣고 추천 EQ 를 만듦 (탭이 꺼져 있으면 켬). progress 0~1
+    func analyzeSong(seconds: Double = 10, progress: @escaping (Double) -> Void, done: @escaping ([Double]?) -> Void) {
+        if !TapEQ.shared.running {
+            Self.eqOn = true
+            applyEQ()
+        }
+        let started = Date()
+        var began = false
+        func step() {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                MainActor.assumeIsolated {
+                    let tap = TapEQ.shared
+                    if !began {
+                        guard tap.running else {
+                            if Date().timeIntervalSince(started) > 6 { done(nil) } else { step() }
+                            return
+                        }
+                        tap.startCapture(seconds: seconds); began = true
+                    }
+                    if let m = tap.finishCapture() { done(Self.suggest(from: m)); return }
+                    if Date().timeIntervalSince(started) > seconds + 15 { tap.cancelCapture(); done(nil); return }
+                    progress(tap.captureProgress)
+                    step()
+                }
+            }
+        }
+        step()
+    }
+
+    /// 추천을 적용 (원래 값은 eqBeforeSuggest 에 기억 → '원래대로')
+    func applySuggestion(_ g: [Double]) {
+        if Self.eqPreset != "추천" { UserDefaults.standard.set(Self.eqGains, forKey: "ytmEQBefore"); UserDefaults.standard.set(Self.eqPreset, forKey: "ytmEQBeforePreset") }
+        Self.eqGains = g
+        Self.eqPreset = "추천"
+        Self.eqOn = true
+        applyEQ()
+        NotificationCenter.default.post(name: .eqChanged, object: nil)
+    }
+    func revertSuggestion() {
+        guard let g = UserDefaults.standard.array(forKey: "ytmEQBefore") as? [Double], g.count == 10 else { return }
+        Self.eqGains = g
+        Self.eqPreset = UserDefaults.standard.string(forKey: "ytmEQBeforePreset") ?? "기본"
+        applyEQ()
+        NotificationCenter.default.post(name: .eqChanged, object: nil)
+    }
+
+    /// 자동 추천: 곡이 바뀌고 5초 뒤(앞부분 조용한 곳을 지나서) 8초 듣고 적용
+    private func autoSuggestTick() {
+        guard Self.autoSuggest, let st = state, st.playing == true, !st.title.isEmpty else { return }
+        guard st.title != autoTitle else { return }
+        autoTitle = st.title
+        let t = st.title
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+            guard let self, self.state?.title == t, !TapEQ.shared.isCapturing else { return }
+            self.analyzeSong(seconds: 8, progress: { _ in }) { [weak self] g in
+                guard let self, let g, self.state?.title == t else { return }
+                self.applySuggestion(g)
+                self.lastSuggestNote = "‘\(t)’ · " + Self.describe(g)
+            }
+        }
+    }
+    private var autoTitle = ""
+    /// 마지막 자동 추천 설명 (팝업에 보여 줌)
+    var lastSuggestNote = ""
+
+    /// 곡이 바뀔 때마다 자동으로 분석 · 적용
+    static var autoSuggest: Bool {
+        get { UserDefaults.standard.bool(forKey: "ytmEQAuto") }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmEQAuto") }
+    }
+
+    // MARK: 저음량 보정 — 작게 들을수록 귀가 저음 · 고음을 덜 느끼는 만큼 채워 줌
+
+    static var loudOn: Bool {
+        get { UserDefaults.standard.bool(forKey: "ytmLoudOn") }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmLoudOn") }
+    }
+    /// 세기 (0 ~ 1.5, 기본 1)
+    static var loudStrength: Double {
+        get { UserDefaults.standard.object(forKey: "ytmLoudStrength") as? Double ?? 1 }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmLoudStrength") }
+    }
+
+    /// 지금 얼마나 작게 듣는지(YouTube Music 볼륨 + 이어폰 · 스피커 볼륨)로 올릴 저음 · 고음을 정함
+    /// - 기준: 둘 다 합쳐 -10dB 정도까지는 보정 없음, 그보다 작을수록 저음은 0.35배 · 고음은 0.15배씩 (최대 +12 · +6dB)
+    ///   (사람 귀의 등청감 곡선을 단순하게 맞춘 값)
+    func updateLoudness() {
+        guard Self.loudOn else { TapEQ.shared.setLoudness(bass: 0, treble: 0); return }
+        let vol = max(0.5, (state?.muted == true ? 0 : (state?.volume ?? 100)))
+        let pageDB = 20 * log10(vol / 100)
+        let atten = -(pageDB + TapEQ.outputVolumeDB())
+        let over = max(0, atten - 10) * Self.loudStrength
+        TapEQ.shared.setLoudness(bass: min(12, over * 0.35), treble: min(6, over * 0.15))
+    }
+    private var eqTick = 0
+
+    // MARK: 이 곡의 앨범 재생 (섞인 다음 트랙에서 마음에 드는 곡 → 그 앨범으로)
+    // 다음 트랙 곡엔 앨범 정보가 없어서: 그 곡의 '노래' 버전 → YouTube Music 이 주는 앨범 → 앨범 재생목록(OLAK…) 순서로 찾음
+
+    struct AlbumInfo { let videoId: String; let albumId: String; let name: String; let playlist: String }
+
+    private static let albumJS = """
+    const list = [...document.querySelectorAll('ytmusic-player-queue-item')].filter(i => !i.closest('#counterpart-renderer'));
+    const it = list[idx];
+    if (!it) return null;
+    const w = it.closest('ytmusic-playlist-panel-video-wrapper-renderer');
+    const cp = w && w.querySelector('#counterpart-renderer ytmusic-player-queue-item');
+    const cands = [cp && cp.data && cp.data.videoId, it.data && it.data.videoId].filter(Boolean);
+    const ctx = ytcfg.get('INNERTUBE_CONTEXT');
+    const post = async (p, b) => (await fetch('/youtubei/v1/' + p + '?prettyPrint=false', {method: 'POST',
+      headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({context: ctx}, b))})).text();
+    for (const v of cands) {
+      const s = await post('next', {videoId: v, isAudioOnly: true});
+      const m = s.match(/"text":"([^"]+)","navigationEndpoint":\\{"clickTrackingParams":"[^"]*","browseEndpoint":\\{"browseId":"(MPRE[^"]+)"/)
+             || s.match(/()"browseId":"(MPRE[^"]+)"/);
+      if (!m) continue;
+      const b = await post('browse', {browseId: m[2]});
+      const pl = (b.match(/"urlCanonical":"[^"]*list=(OLAK[^"&\\\\]+)/) || b.match(/"playlistId":"(OLAK[^"]+)"/) || [])[1];
+      if (pl) return {vid: v, album: m[2], name: m[1] || '', list: pl};
+    }
+    return null;
+    """
+
+    func findAlbum(_ item: QueueItem, done: @escaping (AlbumInfo?) -> Void) {
+        guard let wv = webView else { done(nil); return }
+        wv.callAsyncJavaScript(Self.albumJS, arguments: ["idx": item.index], in: nil, in: .page) { r in
+            MainActor.assumeIsolated {
+                guard case .success(let v) = r, let o = v as? [String: Any],
+                      let vid = o["vid"] as? String, let al = o["album"] as? String, let pl = o["list"] as? String else { done(nil); return }
+                done(AlbumInfo(videoId: vid, albumId: al, name: o["name"] as? String ?? "", playlist: pl))
+            }
+        }
+    }
+
+    /// 앨범 재생: fromSong 이면 그 곡부터, 아니면 첫 곡부터 (지금 다음 트랙은 그 앨범으로 바뀜)
+    func playAlbum(_ a: AlbumInfo, fromSong: Bool) {
+        playList(a.playlist, from: fromSong ? a.videoId : nil)
+    }
+
+    /// 재생목록(OLAK…) 재생 + 자동재생 끄기 (앨범이 끝나면 섞인 곡이 이어 붙지 않게)
+    func playList(_ list: String, from video: String? = nil) {
+        guard let wv = webView else { return }
+        var c = URLComponents(string: "https://music.youtube.com/watch")!
+        c.queryItems = (video.map { [URLQueryItem(name: "v", value: $0)] } ?? []) + [URLQueryItem(name: "list", value: list)]
+        guard let u = c.url else { return }
+        wv.load(URLRequest(url: u))
+        // 페이지가 다 뜨는 시간이 들쭉날쭉해서 몇 번 확인
+        for t in [3.0, 6.0, 10.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.setAutoplay(false) }
+        }
+    }
+
+    /// 다음 트랙 아래 '자동재생' 스위치
+    func setAutoplay(_ on: Bool) {
+        webView?.evaluateJavaScript("(() => { const t = document.querySelector('#automix'); if (t && !!t.checked !== \(on)) t.click(); return t ? t.checked : null; })()")
+    }
+
+    /// 앨범 페이지 ID(MPREb…) 로 재생 (첫 곡부터)
+    func playAlbum(id: String, done: @escaping (Bool) -> Void) {
+        guard let wv = webView else { done(false); return }
+        wv.callAsyncJavaScript("""
+        const ctx = ytcfg.get('INNERTUBE_CONTEXT');
+        const b = await (await fetch('/youtubei/v1/browse?prettyPrint=false', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({context: ctx, browseId: id})})).text();
+        return (b.match(/"urlCanonical":"[^"]*list=(OLAK[^"&\\\\]+)/) || b.match(/"playlistId":"(OLAK[^"]+)"/) || [])[1] || null;
+        """, arguments: ["id": id], in: nil, in: .page) { [weak self] r in
+            MainActor.assumeIsolated {
+                guard case .success(let v) = r, let list = v as? String else { done(false); return }
+                self?.playList(list)
+                done(true)
+            }
+        }
+    }
+
+    /// 지금 곡의 가수 페이지 ID (플레이어 줄 아티스트 링크)
+    func currentArtistId(_ done: @escaping (String?) -> Void) {
+        webView?.evaluateJavaScript("""
+        (() => { const a = [...document.querySelectorAll('ytmusic-player-bar .byline a')].find(a => (a.getAttribute('href') || '').includes('channel/UC'));
+          return a ? a.getAttribute('href').split('channel/')[1].split(/[?&]/)[0] : null; })()
+        """) { r, _ in MainActor.assumeIsolated { done(r as? String) } }
+    }
+
+    /// 가수의 앨범 · 싱글 및 EP 전부 (더 보기 링크가 있으면 그 목록까지)
+    func artistAlbums(_ artistId: String, done: @escaping (String, [AlbumEntry]) -> Void) {
+        guard let wv = webView else { done("", []); return }
+        wv.callAsyncJavaScript("""
+        const ctx = ytcfg.get('INNERTUBE_CONTEXT');
+        const post = async (b) => (await fetch('/youtubei/v1/browse?prettyPrint=false', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(Object.assign({context: ctx}, b))})).json();
+        const r = await post({browseId: aid});
+        const name = (JSON.stringify(r).match(/"musicImmersiveHeaderRenderer":\\{"title":\\{"runs":\\[\\{"text":"([^"]+)"/) ||
+                      JSON.stringify(r).match(/"musicVisualHeaderRenderer":\\{"title":\\{"runs":\\[\\{"text":"([^"]+)"/) || [])[1] || '';
+        const shelves = []; JSON.stringify(r, (k, v) => { if (k === 'musicCarouselShelfRenderer') shelves.push(v); return v; });
+        const pick = (o) => { const out = []; JSON.stringify(o, (k, v) => { if (k === 'musicTwoRowItemRenderer') out.push(v); return v; }); return out; };
+        const conv = (i, sec) => {
+          const id = i.navigationEndpoint && i.navigationEndpoint.browseEndpoint && i.navigationEndpoint.browseEndpoint.browseId;
+          const th = ((i.thumbnailRenderer && i.thumbnailRenderer.musicThumbnailRenderer && i.thumbnailRenderer.musicThumbnailRenderer.thumbnail.thumbnails) || []).slice(-1)[0];
+          return {t: (i.title.runs || [])[0].text, sub: (i.subtitle && i.subtitle.runs || []).map(x => x.text).join(''), id, th: th ? th.url : '', sec};
+        };
+        const out = [];
+        for (const s of shelves) {
+          const h = s.header && s.header.musicCarouselShelfBasicHeaderRenderer;
+          const title = h && h.title && h.title.runs && h.title.runs[0].text || '';
+          if (!/^(앨범|싱글|Albums|Singles)/.test(title)) continue;
+          const more = (h.title.runs[0].navigationEndpoint && h.title.runs[0].navigationEndpoint.browseEndpoint)
+                    || (h.moreContentButton && h.moreContentButton.buttonRenderer.navigationEndpoint.browseEndpoint);
+          let items = pick(s.contents);
+          if (more) { try { const m = pick(await post({browseId: more.browseId, params: more.params})); if (m.length) items = m; } catch (e) {} }
+          for (const i of items) { const c = conv(i, title); if (c.id && c.id.startsWith('MPRE')) out.push(c); }
+        }
+        return JSON.stringify({name, out});
+        """, arguments: ["aid": artistId], in: nil, in: .page) { r in
+            MainActor.assumeIsolated {
+                guard case .success(let v) = r, let json = v as? String, let data = json.data(using: .utf8),
+                      let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { done("", []); return }
+                let arr = (o["out"] as? [[String: Any]] ?? []).map {
+                    AlbumEntry(title: $0["t"] as? String ?? "", sub: $0["sub"] as? String ?? "", id: $0["id"] as? String ?? "",
+                               thumb: $0["th"] as? String ?? "", section: $0["sec"] as? String ?? "")
+                }
+                done(o["name"] as? String ?? "", arr)
+            }
+        }
+    }
 
     func play(_ item: QueueItem) {
         run("""
@@ -464,4 +926,8 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
             try? s.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-web-debug.txt", atomically: true, encoding: .utf8)
         }
     }
+}
+
+extension Notification.Name {
+    static let eqChanged = Notification.Name("eqChanged")
 }

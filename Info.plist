@@ -18,6 +18,8 @@
 	<string>1.1</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>26.0</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>이퀄라이저를 적용하려고 도구함 안 YouTube Music 소리만 가로채요. 녹음하거나 저장 · 전송하지 않아요.</string>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Dock 자동 가리기를 켜고 끄기 위해 System Events 를 사용해요.</string>
 	<key>NSHighResolutionCapable</key>

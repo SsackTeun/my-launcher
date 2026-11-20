@@ -563,8 +563,51 @@ final class QueueRow: NSView {
     private let onClick: () -> Void
     private var hovering = false { didSet { needsDisplay = true } }
     private let current: Bool
+    var isCurrent: Bool { current }
     private let icon = NSImageView()
+    /// 곡 번호 (앨범 · 재생목록에서 몇 번째인지), 0 이면 음표
+    private let numLabel = NSTextField(labelWithString: "")
+    var number = 0 { didSet { syncIcon() } }
+    /// 고르기 모드: nil = 보통, true/false = 체크 표시
+    var check: Bool? { didSet { syncIcon() } }
+    private func syncIcon() {
+        if let c = check {
+            icon.isHidden = false; numLabel.isHidden = true
+            icon.image = NSImage(systemSymbolName: c ? "checkmark.circle.fill" : "circle", accessibilityDescription: nil)
+            icon.contentTintColor = c ? .launcherAccent : .tertiaryLabelColor
+        } else if current {
+            icon.isHidden = false; numLabel.isHidden = true
+            icon.image = NSImage(systemSymbolName: "speaker.wave.2.fill", accessibilityDescription: nil)
+            icon.contentTintColor = .systemRed
+        } else if number > 0 {
+            icon.isHidden = true; numLabel.isHidden = false
+            numLabel.stringValue = "\(number)"
+        } else {
+            icon.isHidden = false; numLabel.isHidden = true
+            icon.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil)
+            icon.contentTintColor = .tertiaryLabelColor
+        }
+    }
     private let t: NSTextField, a: NSTextField, d: NSTextField
+    /// 오른쪽 클릭 · ⋯ 버튼 메뉴 (크게 보기에서만)
+    var makeMenu: (() -> NSMenu)? { didSet { more.isHidden = true; needsLayout = true } }
+    private lazy var more: NSButton = {
+        let b = NSButton(image: NSImage(systemSymbolName: "ellipsis.circle", accessibilityDescription: "더 보기")!, target: self, action: #selector(showMore))
+        b.isBordered = false
+        b.contentTintColor = .secondaryLabelColor
+        b.toolTip = "이 곡의 앨범 재생 …"
+        b.isHidden = true
+        addSubview(b)
+        return b
+    }()
+    @objc private func showMore() {
+        guard let m = makeMenu?() else { return }
+        m.popUp(positioning: nil, at: NSPoint(x: more.frame.minX, y: more.frame.minY), in: self)
+    }
+    override func rightMouseDown(with event: NSEvent) {
+        guard let m = makeMenu?() else { return super.rightMouseDown(with: event) }
+        NSMenu.popUpContextMenu(m, with: event, for: self)
+    }
 
     /// width: 팝업에선 고정 폭(320, 줄 세우기용 제약), 크게 보기에선 relayout() 으로 폭에 맞춤
     init(item: QueueItem, width: CGFloat = 320, fixed: Bool = false, onClick: @escaping () -> Void) {
@@ -579,9 +622,11 @@ final class QueueRow: NSView {
             widthAnchor.constraint(equalToConstant: width).isActive = true
             heightAnchor.constraint(equalToConstant: Self.rowH).isActive = true
         }
-        icon.image = NSImage(systemSymbolName: item.current ? "speaker.wave.2.fill" : "music.note", accessibilityDescription: nil)
-        icon.contentTintColor = item.current ? .systemRed : .tertiaryLabelColor
         addSubview(icon)
+        numLabel.font = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+        numLabel.textColor = .tertiaryLabelColor
+        numLabel.alignment = .center
+        addSubview(numLabel)
         t.font = item.current ? .boldSystemFont(ofSize: Self.titleSize) : .systemFont(ofSize: Self.titleSize)
         t.lineBreakMode = .byTruncatingTail
         addSubview(t)
@@ -594,13 +639,16 @@ final class QueueRow: NSView {
         d.alignment = .right
         addSubview(d)
         toolTip = item.current ? "지금 재생 중" : "이 곡 재생"
+        syncIcon()
         relayout()
     }
     /// 폭에 맞춰 글자 칸 배치 (아래가 0 인 좌표)
     func relayout() {
         let w = bounds.width
         icon.frame = NSRect(x: 12, y: 14, width: 16, height: 16)
+        numLabel.frame = NSRect(x: 4, y: 14, width: 30, height: 15)
         d.frame = NSRect(x: w - 54, y: 14, width: 42, height: 15)
+        if makeMenu != nil { more.frame = NSRect(x: w - 30, y: 12, width: 20, height: 20) }
         let tw = max(40, d.frame.minX - 36 - 6)
         t.frame = NSRect(x: 36, y: 22, width: tw, height: 18)
         a.frame = NSRect(x: 36, y: 5, width: tw, height: 16)
@@ -611,8 +659,9 @@ final class QueueRow: NSView {
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
     }
-    override func mouseEntered(with event: NSEvent) { hovering = true }
-    override func mouseExited(with event: NSEvent) { hovering = false }
+    // 마우스를 올리면 재생 시간 자리에 ⋯ 버튼
+    override func mouseEntered(with event: NSEvent) { hovering = true; if makeMenu != nil { more.isHidden = false; d.isHidden = true } }
+    override func mouseExited(with event: NSEvent) { hovering = false; if makeMenu != nil { more.isHidden = true; d.isHidden = false } }
     override func draw(_ dirtyRect: NSRect) {
         if current {
             NSColor.systemRed.withAlphaComponent(0.10).setFill()

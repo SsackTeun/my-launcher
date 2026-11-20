@@ -241,9 +241,8 @@ final class EdgeDock {
         var ghost = f
         ghost.origin.x = e == .left ? vf.minX + Self.inset : vf.maxX - Self.inset - f.width
         ghost.origin.y = alignY(f, vf: vf)
-        let slots = slotYs(h: f.height, vf: vf).map { NSRect(x: ghost.minX, y: $0, width: f.width, height: f.height) }
         EdgeIndicator.shared.show(screen: s, edge: e == .left ? .left : .right, zone: Self.zone + Self.inset, active: active,
-                                  ghost: active ? ghost : nil, slots: active ? slots : [],
+                                  ghost: active ? ghost : nil, slots: [],
                                   text: "놓으면 여기에 붙어요 · 손잡이로 접을 수 있어요")
     }
 
@@ -252,8 +251,10 @@ final class EdgeDock {
         guard h < vf.height else { return [vf.maxY - h] }
         return [vf.minY, vf.midY - h / 2, vf.maxY - h]
     }
+    /// 가장자리에 붙일 때 높이: 위 · 가운데 · 아래 세 자리로 끌어당기지 않고, 다른 곳처럼 격자 칸에만 맞춤
+    /// (세 자리로 자동 정렬되는 게 오히려 불편했음)
     private func alignY(_ f: NSRect, vf: NSRect) -> CGFloat {
-        slotYs(h: f.height, vf: vf).min { abs($0 + f.height / 2 - f.midY) < abs($1 + f.height / 2 - f.midY) }!
+        Self.snapped(f, in: vf).minY
     }
 
     private func stopWatch() {
