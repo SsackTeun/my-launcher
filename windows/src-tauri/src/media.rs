@@ -148,11 +148,17 @@ pub fn site_select(dir: i32) -> String {
     act.clone()
 }
 
-fn active_site() -> Option<(String, Now, Vec<String>)> {
+/// want 가 있으면 그 재생기만 (크게 보기 = YouTube Music 전용), 없으면 지금 보여 주는 재생기
+fn pick_site(want: Option<&str>) -> Option<(String, Now, Vec<String>)> {
     let list = SITES.lock().unwrap();
-    let act = ACTIVE.lock().unwrap().clone();
     let have: Vec<String> = ORDER.iter().filter(|o| list.iter().any(|(l, _)| l == *o)).map(|s| s.to_string()).collect();
-    let (l, n) = list.iter().find(|(l, _)| *l == act).or(list.first())?;
+    let (l, n) = match want {
+        Some(w) => list.iter().find(|(l, _)| l == w)?,
+        None => {
+            let act = ACTIVE.lock().unwrap().clone();
+            list.iter().find(|(l, _)| *l == act).or(list.first())?
+        }
+    };
     Some((l.clone(), n.clone(), have))
 }
 
@@ -192,11 +198,15 @@ fn is_playing(s: &Session) -> bool {
 /// - 모든 앱: Windows 는 가장 최근에 나타난 앱을 '현재' 로 삼아서 플레이어가 넘어가 버림. 그래서
 ///   1) 따라가던 곡이 아직 재생 중이면 그대로  2) 아니면 재생 중인 다른 것  3) 아무것도 재생 중이 아니면 따라가던 곡
 fn session() -> Option<Session> {
+    session_for(None)
+}
+
+fn session_for(want: Option<&str>) -> Option<Session> {
     com();
     let mgr = Manager::RequestAsync().ok()?.get().ok()?;
     let list: Vec<Session> = mgr.GetSessions().ok().map(|v| v.into_iter().collect()).unwrap_or_default();
-    if APP_ONLY.load(Ordering::Relaxed) {
-        let (_, now, _) = active_site()?;
+    if APP_ONLY.load(Ordering::Relaxed) || want.is_some() {
+        let (_, now, _) = pick_site(want)?;
         let want = norm(&now.title);
         let title_of = |s: &Session| s.TryGetMediaPropertiesAsync().ok().and_then(|op| op.get().ok()).and_then(|p| p.Title().ok()).map(|h| norm(&h.to_string())).unwrap_or_default();
         let same: Vec<Session> = list.into_iter().filter(|s| !want.is_empty() && title_of(s) == want).collect();
@@ -232,17 +242,18 @@ fn now_ticks() -> i64 {
     TICKS_1601_TO_1970 + (d.as_nanos() / 100) as i64
 }
 
-pub fn state() -> MediaState {
-    on_mta(state_inner).unwrap_or_default()
+/// want: 그 재생기만 보기 (크게 보기 창 = "ytmusic"), None 이면 미니 플레이어처럼
+pub fn state(want: Option<String>) -> MediaState {
+    on_mta(move || state_inner(want.as_deref())).unwrap_or_default()
 }
 
-fn state_inner() -> MediaState {
-    let app_only = APP_ONLY.load(Ordering::Relaxed);
-    let site = if app_only { active_site() } else { None };
+fn state_inner(want: Option<&str>) -> MediaState {
+    let app_only = APP_ONLY.load(Ordering::Relaxed) || want.is_some();
+    let site = if app_only { pick_site(want) } else { None };
     if app_only && site.is_none() {
         return MediaState { app_only, ..Default::default() };
     }
-    let Some(s) = session() else {
+    let Some(s) = session_for(want) else {
         // 재생기가 알려 준 것만으로 (Windows 미디어 정보에 아직 없거나 · Netflix 처럼 안 알리는 사이트)
         let (label, n, sites) = site.unwrap();
         let mut pos = n.pos;
@@ -345,12 +356,12 @@ fn rep_of(r: &str) -> Option<String> {
 }
 
 /// 앨범 사진 (PNG/JPEG, base64 data URL)
-pub fn thumbnail() -> Option<String> {
-    on_mta(thumbnail_inner).flatten()
+pub fn thumbnail(want: Option<String>) -> Option<String> {
+    on_mta(move || thumbnail_inner(want.as_deref())).flatten()
 }
 
-fn thumbnail_inner() -> Option<String> {
-    let s = session()?;
+fn thumbnail_inner(want: Option<&str>) -> Option<String> {
+    let s = session_for(want)?;
     let p = s.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
     let r = p.Thumbnail().ok()?;
     let stream = r.OpenReadAsync().ok()?.get().ok()?;
@@ -581,7 +592,7 @@ mod site_tests {
         // Netflix 에서 소리 나게 재생 시작 ('시작' 알림이 빠졌어도) → YouTube Music 멈춤, Netflix 로 넘어감
         let p = site_update("netflix", now("Show", true), false);
         assert!(p.contains(&"ytmusic".to_string()), "{p:?}");
-        assert_eq!(active_site().unwrap().0, "netflix");
+        assert_eq!(pick_site(None).unwrap().0, "netflix");
         // 계속 재생 중인 알림은 다시 멈추지 않음
         assert!(site_update("netflix", now("Show", true), false).is_empty());
         // ‹ › 로 돌아가기

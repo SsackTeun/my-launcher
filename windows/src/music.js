@@ -15,7 +15,13 @@ const JS = {
       i, title: txt(it.querySelector('.song-title')), artist: txt(it.querySelector('.byline')), dur: txt(it.querySelector('.duration')),
       cur: it.hasAttribute('selected') || ['playing', 'paused'].includes(it.getAttribute('play-button-state') || ''),
       auto: !!it.closest('#automix-contents'),
-      th: ((it.querySelector('img') || {}).src) || '',
+      // 사진: 화면에 안 보인 곡은 아직 빈 그림이라, 곡 정보(data)에 든 사진 주소를 먼저 씀
+      th: (() => {
+        const fromData = (d) => { const t = d && d.thumbnail && (d.thumbnail.thumbnails || (d.thumbnail.musicThumbnailRenderer && d.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails)); return t && t.length ? t[t.length - 1].url : ''; };
+        const img = it.querySelector('img');
+        const src = img ? (img.currentSrc || img.src || '') : '';
+        return fromData(it.data) || (src.startsWith('http') ? src : '');
+      })(),
       vid: (() => { const w = it.closest('ytmusic-playlist-panel-video-wrapper-renderer');
         const cp = w && w.querySelector('#counterpart-renderer ytmusic-player-queue-item');
         return (cp && cp.data && cp.data.videoId) || (it.data && it.data.videoId) || ''; })(),
@@ -608,7 +614,7 @@ async function makeRandom() {
 (async function () {
   let cfg = await readConfig();
   await applyTheme(cfg);
-  Player.start(cfg);
+  Player.start(cfg, { site: "ytmusic" }); // 크게 보기는 YouTube Music 전용
   onConfigChanged(async () => { cfg = await readConfig(); applyTheme(cfg); Player.setCfg(cfg); });
   const el = $("#player");
   Player.bindPlayer(el, { lyrics: () => { tab = 1; drawTabs(); show(); } });

@@ -427,3 +427,6 @@ body.decorated.music, body.decorated[data-view="lyrics"] { background: transpare
 body.decorated.music #app, body.decorated[data-view="lyrics"] #app { background: var(--bg); }
 html.has-bgimg body.decorated.music #app { background: linear-gradient(var(--bg), var(--bg)), var(--bgimg) center / cover no-repeat; }
 .mz-left, .mz-tabs, .wbar, .mz-bar { background: transparent; }
+
+/* 재생기 아이콘: 늘 불투명 · 원래 색 (열림 여부는 아래 점으로만) */
+.site img, .site.bg img { opacity: 1; filter: none; }

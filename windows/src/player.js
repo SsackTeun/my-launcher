@@ -27,6 +27,8 @@ const LANGS = [["", "번역 안 함"], ["ko", "한국어"], ["en", "English"], [
 
 const Player = (() => {
   let st = { has: false };
+  /// 이 재생기만 보기 (크게 보기 창 = "ytmusic"), null 이면 미니 플레이어처럼 ‹ › 재생기
+  let fixedSite = null;
   let cfg = {};
   let thumb = "";
   let trackKey = "";
@@ -41,7 +43,7 @@ const Player = (() => {
 
   async function poll() {
     let s;
-    try { s = await invoke("media_state"); } catch { return; }
+    try { s = await invoke("media_state", fixedSite ? { site: fixedSite } : {}); } catch { return; }
     st = s; polledAt = Date.now();
     const key = s.has ? `${s.title}\u0000${s.artist}` : "";
     if (key !== trackKey) {
@@ -50,7 +52,7 @@ const Player = (() => {
       if (s.has) {
         // 앨범 사진은 곡이 바뀐 뒤 앱이 조금 늦게 알려 줄 때가 있어 두 번 봄
         const k = key;
-        const getThumb = async () => { const t = await invoke("media_thumb").catch(() => null); if (k === trackKey && t) { thumb = t; notify(); } };
+        const getThumb = async () => { const t = await invoke("media_thumb", fixedSite ? { site: fixedSite } : {}).catch(() => null); if (k === trackKey && t) { thumb = t; notify(); } };
         getThumb(); setTimeout(getThumb, 1500);
         loadLyrics(s);
       } else Object.assign(lyr, { key: "", status: "", lines: [], trans: [], roman: [], pron: [] });
@@ -191,8 +193,10 @@ const Player = (() => {
     ytOpen = true; notify();
   }
 
-  function start(c) {
+  /// opts.site: 그 재생기만 보기 (크게 보기 = "ytmusic" — YouTube · Netflix 가 재생 중이어도 안 넘어감)
+  function start(c, opts = {}) {
     cfg = c || {};
+    fixedSite = opts.site || null;
     poll();
     setInterval(poll, 1000);
     // 가사 줄 · 진행바는 재생 중이면 더 자주
@@ -223,6 +227,11 @@ const Player = (() => {
     }
     el._sig = sig;
     if (!st.has) {
+      if (fixedSite) {
+        // 한 재생기 전용(크게 보기): 그 재생기를 여는 단추 하나
+        el.innerHTML = `<div class="pl-empty"><span>${esc(SITES[fixedSite][0])} 에서 곡을 틀어 주세요</span><button class="pl-open" data-open="${fixedSite}">${esc(SITES[fixedSite][0])} 열기</button></div>`;
+        return;
+      }
       if (st.app_only) {
         // 재생기가 하나도 안 열려 있으면: 여는 단추
         el.innerHTML = `<div class="pl-empty"><span>재생기를 열어 주세요</span>${Object.entries(SITES).map(([l, [n]]) => `<button class="pl-open" data-open="${l}">${esc(n)}</button>`).join("")}</div>`;
@@ -238,7 +247,7 @@ const Player = (() => {
         <div class="pl-art">${thumb || st.art ? `<img src="${esc(thumb || st.art)}" alt="" referrerpolicy="no-referrer">` : ""}</div>
         <div class="pl-meta"><div class="pl-title" title="${esc(st.title)}">${esc(st.title || "제목 없음")}</div><div class="pl-artist">${esc(st.artist || st.app)}</div></div>
         ${st.site === "ytmusic" ? `<button class="icon ${st.like === "LIKE" ? "on liked" : ""}" data-p="like" title="${st.like === "LIKE" ? "좋아요 취소" : "좋아요"}">${PI.heart}</button>` : ""}
-        ${st.site ? `<span class="pl-src" title="재생기 — 새로 재생을 시작한 재생기로 넘어가고 나머지는 일시정지">${(st.sites || []).length > 1 ? `<button data-p="src-prev" title="이전 재생기">‹</button>` : ""}<span>${esc(SITES[st.site]?.[0] || st.app)}</span>${(st.sites || []).length > 1 ? `<button data-p="src-next" title="다음 재생기">›</button>` : ""}</span>` : ""}
+        ${st.site && !fixedSite ? `<span class="pl-src" title="재생기 — 새로 재생을 시작한 재생기로 넘어가고 나머지는 일시정지">${(st.sites || []).length > 1 ? `<button data-p="src-prev" title="이전 재생기">‹</button>` : ""}<span>${esc(SITES[st.site]?.[0] || st.app)}</span>${(st.sites || []).length > 1 ? `<button data-p="src-next" title="다음 재생기">›</button>` : ""}</span>` : ""}
       </div>
       <div class="pl-bar"><span class="pl-t" data-pos>${fmtTime(pos())}</span><div class="pl-track" data-p="seek"><div class="pl-fill" style="width:${d ? (pos() / d) * 100 : 0}%"></div></div><span class="pl-t">${fmtTime(d)}</span></div>
       <div class="pl-ctl">

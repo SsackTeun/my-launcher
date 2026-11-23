@@ -187,13 +187,13 @@ fn appbar_release() {
 // MARK: 미니 플레이어 · 볼륨 · 청력
 
 #[tauri::command]
-async fn media_state() -> media::MediaState {
-    tauri::async_runtime::spawn_blocking(media::state).await.unwrap_or_default()
+async fn media_state(site: Option<String>) -> media::MediaState {
+    tauri::async_runtime::spawn_blocking(move || media::state(site)).await.unwrap_or_default()
 }
 
 #[tauri::command]
-async fn media_thumb() -> Option<String> {
-    tauri::async_runtime::spawn_blocking(media::thumbnail).await.ok().flatten()
+async fn media_thumb(site: Option<String>) -> Option<String> {
+    tauri::async_runtime::spawn_blocking(move || media::thumbnail(site)).await.ok().flatten()
 }
 
 /// toggle · play · pause · next · prev · seek(초) · shuffle(0/1) · repeat(0 끔 / 1 한 곡 / 2 전체)
