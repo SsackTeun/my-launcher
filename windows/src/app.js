@@ -1143,7 +1143,12 @@ async function showAsHost() {
   if (!w) return;
   if (S.playerMode && !hostShown) {
     hostShown = true;
-    try { await w.setSize(new T.dpi.LogicalSize(460, 700)); await w.center(); } catch (e) { console.warn(e); }
+    try {
+      // 설정 창: 폭은 고정, 위아래로만 늘이기
+      await w.setMinSize(new T.dpi.LogicalSize(460, 360));
+      await w.setMaxSize(new T.dpi.LogicalSize(460, 4000));
+      await w.setSize(new T.dpi.LogicalSize(460, 700)); await w.center();
+    } catch (e) { console.warn(e); }
   }
   // 플레이어 창만 쓸 때: 뒤의 앱 목록은 감추고 대화 상자만 (창 = 설정 창)
   document.body.classList.toggle("host", !!S.playerMode);
@@ -1152,7 +1157,7 @@ async function showAsHost() {
 /// 대화 상자를 닫으면 (플레이어 창만 쓸 때) 다시 숨김
 function hideHostLater() {
   setTimeout(() => {
-    if (S.playerMode && hostShown && $("#modal").hidden && $("#menu").hidden) { hostShown = false; win()?.hide(); document.body.classList.remove("host"); }
+    if (S.playerMode && hostShown && $("#modal").hidden && $("#menu").hidden) { hostShown = false; const w = win(); w?.hide(); document.body.classList.remove("host"); w?.setMaxSize(null).catch(() => {}); w?.setMinSize(new T.dpi.LogicalSize(300, 200)).catch(() => {}); }
   }, 150);
 }
 new MutationObserver(() => { if ($("#modal").hidden) hideHostLater(); }).observe($("#modal"), { attributes: true, attributeFilter: ["hidden"] });

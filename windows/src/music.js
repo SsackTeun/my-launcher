@@ -124,6 +124,53 @@ const JS = {
     for (const a of sugOut.reverse()) { const i = out.findIndex((o) => o.id === a.id); if (i >= 0) out.splice(i, 1); out.unshift(a); seen.add(a.id); }
     if (out.length === 0 && firstSug && firstSug.toLowerCase() !== q.toLowerCase()) fromList(await api('search', { query: firstSug }));
     return out.slice(0, 12);`,
+  // 장르 목록: YouTube Music '분위기 및 장르' 페이지 (묶음 이름 · 단추 이름 · 여는 값)
+  genres: `
+    const r = await api('browse', { browseId: 'FEmusic_moods_and_genres' });
+    const out = [];
+    const btn = (b, sec) => {
+      const e = b.clickCommand && b.clickCommand.browseEndpoint;
+      const t = b.buttonText && b.buttonText.runs && b.buttonText.runs[0].text;
+      if (e && t && e.params) out.push({ sec, t, id: e.browseId, params: e.params });
+    };
+    const grids = collect(r, 'gridRenderer');
+    for (const g of grids) {
+      const sec = (((g.header || {}).gridHeaderRenderer || {}).title || {}).runs?.[0]?.text || '';
+      for (const b of collect(g.items || [], 'musicNavigationButtonRenderer')) btn(b, sec);
+    }
+    if (!out.length) for (const b of collect(r, 'musicNavigationButtonRenderer')) btn(b, '');
+    return out;`,
+  // 장르에서 가수 추천: 그 장르의 대표 재생목록 몇 개를 열어 가장 많이 나오는 가수
+  genreArtists: `
+    const r = await api('browse', { browseId: args.id || 'FEmusic_moods_and_genres_category', params: args.params });
+    const lists = [];
+    for (const i of collect(r, 'musicTwoRowItemRenderer')) {
+      const id = i.navigationEndpoint && i.navigationEndpoint.browseEndpoint && i.navigationEndpoint.browseEndpoint.browseId;
+      if (id && id.startsWith('VL') && !lists.includes(id)) lists.push(id);
+    }
+    const isArtist = (e) => e && e.browseEndpoint && /^UC/.test(e.browseEndpoint.browseId || '') &&
+      (((e.browseEndpoint.browseEndpointContextSupportedConfigs || {}).browseEndpointContextMusicConfig || {}).pageType === 'MUSIC_PAGE_TYPE_ARTIST');
+    const count = new Map();
+    // 앨범 · 가수 카드가 장르 페이지에 바로 있으면 그것도 (가중치 2)
+    for (const i of collect(r, 'musicTwoRowItemRenderer')) {
+      const e = i.navigationEndpoint;
+      if (isArtist(e)) { const id = e.browseEndpoint.browseId, name = (i.title.runs || [])[0].text; const c = count.get(id) || { id, name, n: 0 }; c.n += 2; count.set(id, c); }
+      for (const run of (i.subtitle && i.subtitle.runs) || []) if (isArtist(run.navigationEndpoint)) {
+        const id = run.navigationEndpoint.browseEndpoint.browseId; const c = count.get(id) || { id, name: run.text, n: 0 }; c.n += 1; count.set(id, c);
+      }
+    }
+    for (const vl of lists.slice(0, args.lists || 4)) {
+      let j;
+      try { j = await api('browse', { browseId: vl }); } catch (e) { continue; }
+      for (const v of collect(j, 'musicResponsiveListItemRenderer')) {
+        const runs = (v.flexColumns && v.flexColumns[1] && v.flexColumns[1].musicResponsiveListItemFlexColumnRenderer.text.runs) || [];
+        for (const run of runs) if (isArtist(run.navigationEndpoint)) {
+          const id = run.navigationEndpoint.browseEndpoint.browseId;
+          const c = count.get(id) || { id, name: run.text, n: 0 }; c.n += 1; count.set(id, c);
+        }
+      }
+    }
+    return [...count.values()].sort((a, b) => b.n - a.n).slice(0, args.max || 16);`,
   artistSongs: `
     const r = await api('browse', { browseId: args.aid });
     let list = null;
@@ -476,12 +523,19 @@ const R = { picks: [], mode: "count", amount: 30, unit: "min", popular: true, ta
 try { Object.assign(R, JSON.parse(localStorage.getItem("mzRandom") || "{}"), { picks: (JSON.parse(localStorage.getItem("mzRandom") || "{}").picks || []).map((p) => ({ ...p, songs: null })) }); } catch { /* 없음 */ }
 const saveR = () => { try { localStorage.setItem("mzRandom", JSON.stringify({ ...R, picks: R.picks.map(({ id, name, w }) => ({ id, name, w })) })); } catch { /* 없음 */ } };
 let searchHits = [];
+let genreCache = null; // 장르 목록 (한 번 읽으면 기억)
+let recHits = [];       // 장르 추천 가수
 async function drawRandom() {
   const lists = myLists || [];
   body.innerHTML = `<div class="mz-rand">
     <div class="mz-h">랜덤 재생목록</div>
     <p class="mz-note">가수를 고르고(비중 1~5), 곡 수나 시간을 정하면 그 가수들의 인기곡에서 골라 재생목록으로 만들고 바로 재생해요.</p>
     <div class="mz-rand-search"><div class="mz-rand-row"><input type="search" id="rq" placeholder="가수 찾기 (이름 앞부분만 써도 돼요)"><button class="pl-open ghost" id="rFromQueue" title="지금 다음 트랙 목록에 있는 가수들을 한 번에">다음 트랙에서 가수 가져오기</button></div><div class="mz-hits" id="rhits"></div></div>
+    <div class="mz-genre">
+      <button class="pl-open ghost" id="rGenreBtn" title="YouTube Music 의 장르별 대표 재생목록에서 많이 나오는 가수를 추천">장르로 가수 추천 ▾</button>
+      <div class="mz-chips" id="rGenres" hidden></div>
+      <div class="mz-hits" id="rRec"></div>
+    </div>
     <div class="mz-rand-picks" id="rpicks"></div>
     <div class="mz-rand-opts">
       <div class="seg" id="rmode"><button data-m="count" class="${R.mode === "count" ? "on" : ""}">곡 수</button><button data-m="time" class="${R.mode === "time" ? "on" : ""}">시간</button></div>
@@ -510,6 +564,48 @@ async function drawRandom() {
       if ($("#rq").value.trim() !== q) return;
       $("#rhits").innerHTML = searchHits.length ? searchHits.map((a, i) => `<button class="pl-open ghost" data-hit="${i}">＋ ${esc(a.name)}</button>`).join("") : '<div class="mz-note">못 찾았어요</div>';
     }, 350);
+  };
+  // 장르로 가수 추천: 장르 단추 → 그 장르에서 많이 나오는 가수 → ＋ 로 넣기 · 모두 넣기
+  $("#rGenreBtn").onclick = async () => {
+    const box = $("#rGenres");
+    if (!box.hidden) { box.hidden = true; return; }
+    box.hidden = false;
+    if (!genreCache) {
+      box.innerHTML = '<div class="mz-note">장르 읽는 중…</div>';
+      try { genreCache = await call("genres", {}, 25); } catch (err) { box.innerHTML = ""; fail(err); return; }
+    }
+    if (!genreCache.length) { box.innerHTML = '<div class="mz-note">장르를 못 읽었어요</div>'; return; }
+    const groups = {};
+    for (const [i, g] of genreCache.entries()) (groups[g.sec || "장르"] = groups[g.sec || "장르"] || []).push([i, g]);
+    // '장르' 묶음을 먼저 (분위기 · 상황은 뒤에)
+    const order = Object.keys(groups).sort((a, b) => (/장르|genre/i.test(b) ? 1 : 0) - (/장르|genre/i.test(a) ? 1 : 0));
+    box.innerHTML = order.map((sec) => `<div class="mz-sec">${esc(sec)}</div><div class="mz-chipline">${groups[sec].map(([i, g]) => `<button class="pl-open ghost" data-genre="${i}">${esc(g.t)}</button>`).join("")}</div>`).join("");
+  };
+  $("#rGenres").onclick = async (e) => {
+    const b = e.target.closest("[data-genre]");
+    if (!b) return;
+    const g = genreCache[+b.dataset.genre];
+    $("#rGenres").querySelectorAll("[data-genre]").forEach((x) => x.classList.toggle("on", x === b));
+    const rec = $("#rRec");
+    rec.innerHTML = `<div class="mz-note">‘${esc(g.t)}’ 대표 재생목록에서 가수 모으는 중…</div>`;
+    let list;
+    try { list = await call("genreArtists", { id: g.id, params: g.params, lists: 4, max: 16 }, 60); } catch (err) { rec.innerHTML = ""; fail(err); return; }
+    const fresh = list.filter((a) => !R.picks.some((p) => p.id === a.id));
+    if (!fresh.length) { rec.innerHTML = `<div class="mz-note">‘${esc(g.t)}’ 에서 새로 추천할 가수가 없어요</div>`; return; }
+    recHits = fresh;
+    rec.innerHTML = `<div class="mz-note">‘${esc(g.t)}’ 추천 가수 — 눌러서 넣기</div>` +
+      fresh.map((a, i) => `<button class="pl-open ghost" data-rec="${i}" title="대표 재생목록에 ${a.n}번 나옴">＋ ${esc(a.name)}</button>`).join("") +
+      `<button class="pl-open" data-rec="all">모두 넣기</button>`;
+  };
+  $("#rRec").onclick = (e) => {
+    const b = e.target.closest("[data-rec]");
+    if (!b) return;
+    const add = b.dataset.rec === "all" ? recHits : [recHits[+b.dataset.rec]];
+    let n = 0;
+    for (const a of add) if (a && !R.picks.some((p) => p.id === a.id)) { R.picks.push({ id: a.id, name: a.name, w: 3, songs: null }); n++; }
+    saveR(); drawPicks();
+    if (b.dataset.rec === "all") $("#rRec").innerHTML = ""; else b.remove();
+    if (n) toast(`가수 ${n}명을 넣었어요`);
   };
   $("#rFromQueue").onclick = async () => {
     status("다음 트랙 읽는 중…");
@@ -547,8 +643,14 @@ function drawPicks() {
   if (!el) return;
   el.innerHTML = R.picks.length ? R.picks.map((p, i) => `<div class="mz-pick"><b>${esc(p.name)}</b>
       <span class="mz-w" title="비중: 높을수록 이 가수 곡이 많이 들어가요">${[1, 2, 3, 4, 5].map((n) => `<button data-w="${i}:${n}" class="${p.w >= n ? "on" : ""}">●</button>`).join("")}</span>
-      <button class="mz-x" data-del="${i}" title="빼기">✕</button></div>`).join("") : '<div class="mz-note">아직 고른 가수가 없어요</div>';
-  el.onclick = (e) => {
+      <button class="mz-x" data-del="${i}" title="빼기">✕</button></div>`).join("") +
+      `<div class="mz-picks-foot"><span class="mz-note">가수 ${R.picks.length}명</span><button class="pl-open ghost" data-clear="1" title="고른 가수를 모두 빼기">모두 비우기</button></div>`
+    : '<div class="mz-note">아직 고른 가수가 없어요</div>';
+  el.onclick = async (e) => {
+    if (e.target.closest("[data-clear]")) {
+      if (R.picks.length > 2 && !(await confirmBox(`고른 가수 ${R.picks.length}명을 모두 뺄까요?`, R.picks.map((p) => p.name).join(", "), "모두 비우기"))) return;
+      R.picks = []; saveR(); drawPicks(); return;
+    }
     const w = e.target.closest("[data-w]");
     if (w) { const [i, n] = w.dataset.w.split(":").map(Number); R.picks[i].w = n; saveR(); drawPicks(); return; }
     const d = e.target.closest("[data-del]");

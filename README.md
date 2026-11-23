@@ -72,4 +72,4 @@
 - Mac 판에만 있는 것: 소리 보정 · 이퀄라이저 · 정밀 EQ (Windows 는 시스템 소리를 바꾸려면 별도 드라이버가 필요), 메일
 - 받기: [Releases](https://github.com/SsackTeun/my-launcher/releases) 의 `win-v…` 에서 `Launcher-Windows-Setup.exe`
 - 빌드는 GitHub Actions(Windows)가 해요: `windows/` 가 바뀌면 빌드, `win-v0.2.0` 같은 태그를 올리면 Releases 에 올라감
-- 로컬에서: `cd windows && npm ci && npx tauri dev` (Windows PC 에서)
+- 로컬에서: `cd windows && npm ci && npm run dev` (Windows PC 에서) — 개발용은 저장소(로그인 · 설정)를 따로 써서, 코드를 고칠 때마다 다시 시작돼도 설치한 도구함의 로그인이 안 풀림
