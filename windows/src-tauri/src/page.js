@@ -7,6 +7,17 @@
   if (window.top !== window || window.__ml) return;
   window.__ml = true;
 
+  // '사이트에서 나갈까요?' 안 띄우기: 사이트가 떠나기 전 확인(beforeunload)을 걸어도 무시
+  // (도구함이 다른 재생목록으로 넘기거나 창을 닫을 때 막히지 않게. 이 사이트들엔 저장 안 한 문서 같은 게 없음)
+  try {
+    const add = EventTarget.prototype.addEventListener;
+    EventTarget.prototype.addEventListener = function (type, fn, opt) {
+      if (type === 'beforeunload' && (this === window || this === document)) return;
+      return add.call(this, type, fn, opt);
+    };
+    Object.defineProperty(window, 'onbeforeunload', { configurable: true, get() { return null; }, set() {} });
+  } catch (e) {}
+
   // 로그인 안 한 채 YouTube Music 을 열면 YouTube 가 Premium 안내 페이지로 보냄 → 로그인 페이지로 (로그인하면 YouTube Music 으로 돌아옴)
   if (location.hostname === 'www.youtube.com' && location.pathname.startsWith('/musicpremium') && !document.cookie.includes('SAPISID=') && !sessionStorage.__mlLoginTried) {
     sessionStorage.__mlLoginTried = '1';
