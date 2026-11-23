@@ -1,4 +1,4 @@
-// 떼어 낸 플레이어 · 떼어 낸 가사 줄 · 전체 가사 창 (body 의 data-view 로 나눔)
+// 떼어 낸 가사 줄 · 전체 가사 창 (body 의 data-view 로 나눔) — 플레이어 창은 music.html
 "use strict";
 
 (async function () {
@@ -9,12 +9,7 @@
   Player.start(cfg);
   onConfigChanged(async () => { cfg = await readConfig(); applyTheme(cfg); Player.setCfg(cfg); });
 
-  if (VIEW === "player") {
-    Player.on((tick) => (tick ? Player.tickPlayer(el) : Player.renderPlayer(el, { detached: true, lyricsOn: false })));
-    Player.bindPlayer(el, { lyrics: () => Player.openLyricsWindow() });
-    // 재생기 단추 (YouTube Music · YouTube · Netflix) — 창이 작아서 오른쪽 클릭은 Windows 기본 메뉴
-    Sites.mount($("#sites"));
-  } else if (VIEW === "line") {
+  if (VIEW === "line") {
     Player.on(() => Player.renderLine(el, { detached: true }));
     Player.bindLine(el);
   } else {
@@ -39,10 +34,9 @@
     });
   }
 
-  // 닫기: 떼어 낸 창은 도구함 창으로 되돌림
+  // 닫기: 플레이어 창만 쓰면 트레이로 숨기기, 아니면 도구함 창으로 되돌림
   $("#close")?.addEventListener("click", () => {
-    if (VIEW === "player") setConfig("detachPlayer", false);
-    else if (VIEW === "line") setConfig("detachLyrics", false);
+    if (VIEW === "line") setConfig("detachLyrics", false);
     else win().close();
   });
 

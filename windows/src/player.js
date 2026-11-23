@@ -237,7 +237,7 @@ const Player = (() => {
         el.innerHTML = `<div class="pl-empty"><span>재생기를 열어 주세요</span>${Object.entries(SITES).map(([l, [n]]) => `<button class="pl-open" data-open="${l}">${esc(n)}</button>`).join("")}</div>`;
         return;
       }
-      el.innerHTML = `<div class="pl-empty"><span>재생 중인 곡이 없어요</span><button class="icon" data-p="yt" title="YouTube Music 열기">${PI.yt}</button>${opts.detached ? "" : `<button class="icon" data-p="detach" title="플레이어 떼어 내기">${PI.detach}</button>`}</div>`;
+      el.innerHTML = `<div class="pl-empty"><span>재생 중인 곡이 없어요</span>${opts.detached ? "" : `<button class="icon" data-p="detach" title="플레이어 떼어 내기">${PI.detach}</button>`}</div>`;
       return;
     }
     const d = st.duration || 0;
@@ -261,7 +261,6 @@ const Player = (() => {
         <span class="pl-sp"></span>
         ${opts.noBig ? "" : `<button class="icon" data-p="big" title="크게 보기 — 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 재생목록 · 랜덤 재생목록">${PI.big}</button>`}
         <button class="icon ${opts.lyricsOn ? "on" : ""}" data-p="lyrics" title="가사">${PI.lyrics}</button>
-        <button class="icon" data-p="yt" title="YouTube Music 창">${PI.yt}</button>
         ${opts.detached ? "" : `<button class="icon" data-p="detach" title="플레이어 떼어 내기">${PI.detach}</button>`}
       </div>`;
     const vol = el.querySelector('[data-p="vol"]');
@@ -296,7 +295,7 @@ const Player = (() => {
       if (a === "mute") invoke("volume", { set: 0 }).then(() => notify());
       if (a === "like") like();
       if (a === "yt") openYTMusic();
-      if (a === "big") openBig();
+      if (a === "big" && !handlers.big) openBig();
       if (handlers[a]) handlers[a]();
     });
     el.addEventListener("input", (e) => { if (e.target.dataset.p === "vol") invoke("volume", { set: e.target.value / 100 }); });
@@ -384,15 +383,31 @@ const Player = (() => {
   function openLyricsWindow() {
     invoke("open_window", { label: "lyrics", url: "lyrics.html", title: "가사", width: 420, height: 640 }).catch((e) => toast(String(e)));
   }
+  /// 사진 주소를 큰 크기로: YouTube Music(googleusercontent · ggpht)은 주소 끝 크기(=w544-h544…)를 바꾸면 크게 줌,
+  /// YouTube 영상 사진(i.ytimg.com)은 maxresdefault
+  function hiRes(u) {
+    if (!u) return "";
+    if (/googleusercontent\.com|ggpht\.com/.test(u)) return u.replace(/=w\d+-h\d+[^/?#]*$/, "=w1200-h1200-l90-rj").replace(/=s\d+[^/?#]*$/, "=s1200");
+    if (/i\.ytimg\.com\/vi\//.test(u)) return u.replace(/\/(default|mqdefault|hqdefault|sddefault)(\.jpg|\.webp)/, "/maxresdefault$2");
+    return u;
+  }
   /// 크게 보기: 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 재생목록 · 랜덤 재생목록
   function openBig() {
-    invoke("open_window", { label: "music", url: "music.html", title: "음악", width: 940, height: 640 }).catch((e) => toast(String(e)));
+    // 플레이어 창을 크게 (열려 있으면 그 창이 '크게' 로 바뀜, 없으면 크게 열림)
+    try { localStorage.setItem("playerBig", "1"); } catch { /* 없음 */ }
+    if (T) T.event.emit("player-big", true);
+    invoke("open_window", { label: "player", url: "music.html", title: "플레이어", width: 940, height: 640, frameless: true }).catch((e) => toast(String(e)));
   }
 
   return {
     start, setCfg, poll, control, seek, openYTMusic, openLyricsWindow, openBig,
+    /// 보는 재생기 바꾸기 (플레이어 창: 크게 = "ytmusic" 전용, 작게 = null 로 ‹ › 재생기)
+    setSite: (s) => { if (fixedSite === (s || null)) return; fixedSite = s || null; trackKey = ""; thumb = ""; poll(); },
     /// 지금 곡 사진 (Windows 미디어 정보 사진 · 없으면 페이지가 알려 준 주소)
-    artUrl: () => thumb || st.art || "",
+    /// 큰 자켓: 페이지가 알려 준 사진을 크게(1200px) 받아 씀 — Windows 미디어 정보 사진은 작아서 흐림
+    artUrl: () => hiRes(st.art) || thumb || "",
+    /// 큰 사진을 못 받으면 쓸 사진
+    artFallback: () => thumb || st.art || "",
     on: (f) => subs.push(f),
     state: () => st,
     renderPlayer, tickPlayer, bindPlayer, renderLine, bindLine, renderFull, bindFull,

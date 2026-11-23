@@ -218,6 +218,22 @@
   for (const ev of ['play', 'playing', 'volumechange']) document.addEventListener(ev, startNow, true);
   for (const ev of ['pause', 'ended', 'loadedmetadata', 'seeked', 'volumechange']) document.addEventListener(ev, () => later(false), true);
   document.addEventListener('timeupdate', () => report(false), true);
+
+  // YouTube: 늘 그 영상의 가장 높은 화질로 (영상이 열릴 때마다 · 다음 영상 · 쇼츠도)
+  if (site === 'youtube') {
+    let maxFor = '';
+    const maxQuality = () => {
+      const mp = ytPlayer();
+      if (!mp || !mp.getAvailableQualityLevels) return;
+      const best = mp.getAvailableQualityLevels().filter((q) => q && q !== 'auto')[0];
+      if (!best) return;
+      const key = location.pathname + location.search + best;
+      if (maxFor === key && mp.getPlaybackQuality && mp.getPlaybackQuality() === best) return;
+      maxFor = key;
+      try { if (mp.setPlaybackQualityRange) mp.setPlaybackQualityRange(best, best); if (mp.setPlaybackQuality) mp.setPlaybackQuality(best); } catch (e) {}
+    };
+    for (const ev of ['loadedmetadata', 'playing']) document.addEventListener(ev, (e) => { if (isMain(e.target)) setTimeout(maxQuality, 300); }, true);
+  }
   try {
     const d = Object.getOwnPropertyDescriptor(MediaSession.prototype, 'metadata');
     Object.defineProperty(navigator.mediaSession, 'metadata', { configurable: true, get() { return d.get.call(this); }, set(x) { d.set.call(this, x); later(false); } });

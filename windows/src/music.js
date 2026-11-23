@@ -244,6 +244,7 @@ $("#mzTabs").onclick = (e) => {
 };
 const body = $("#mzBody");
 async function show() {
+  if (!big) return;
   drawBar();
   body.className = "mz-body";
   if (tab === 1) { body.classList.add("lyfull"); body.dataset.key = ""; Player.renderFull(body); return; }
@@ -281,7 +282,7 @@ async function loadQueue(quiet) {
   if (quiet && sig === queueSig) return;
   queueSig = sig;
   if (!q.length) { body.innerHTML = `<div class="mz-empty">다음 트랙이 비어 있어요<br><small>YouTube Music 에서 곡이나 재생목록을 틀면 여기에 나와요</small></div>`; return; }
-  body.innerHTML = q.map((x) => `<div class="mz-row ${x.cur ? "cur" : ""} ${x.auto ? "auto" : ""}" data-i="${x.i}" data-vid="${esc(x.vid)}">
+  body.innerHTML = q.map((x) => `<div class="mz-row ${x.cur ? "cur" : ""} ${x.auto ? "auto" : ""}" data-i="${x.i}" data-vid="${esc(x.vid)}" data-aid="${esc(x.aid)}" data-artist="${esc(artistOf(x.artist))}">
       <input type="checkbox" class="pick" ${picked.has(x.vid) ? "checked" : ""} title="골라서 재생목록에 넣기">
       ${x.th ? `<img src="${esc(x.th)}" alt="" referrerpolicy="no-referrer">` : '<span class="mz-noimg"></span>'}
       <span class="mz-t"><b>${esc(x.title)}</b><small>${esc(x.artist)}</small></span>
@@ -312,6 +313,7 @@ body.addEventListener("contextmenu", (e) => {
     showMenu(e.clientX, e.clientY, [
       { label: "이 곡 재생", action: () => call("playQueue", { i: +row.dataset.i }).catch(fail) },
       { label: "재생목록에 넣기…", action: () => addMenu(e.clientX, e.clientY, [row.dataset.vid], []) },
+      { label: `‘${row.dataset.artist}’ 를 랜덤 가수에 넣기`, disabled: !row.dataset.artist, action: () => addArtistsToRandom([{ aid: row.dataset.aid, name: row.dataset.artist }]) },
     ]);
   }
   if (tab === 2 && row.dataset.album) albumMenu(e.clientX, e.clientY, row.dataset.album, row.dataset.title);
@@ -479,7 +481,7 @@ async function drawRandom() {
   body.innerHTML = `<div class="mz-rand">
     <div class="mz-h">랜덤 재생목록</div>
     <p class="mz-note">가수를 고르고(비중 1~5), 곡 수나 시간을 정하면 그 가수들의 인기곡에서 골라 재생목록으로 만들고 바로 재생해요.</p>
-    <div class="mz-rand-search"><input type="search" id="rq" placeholder="가수 찾기 (이름 앞부분만 써도 돼요)"><div class="mz-hits" id="rhits"></div></div>
+    <div class="mz-rand-search"><div class="mz-rand-row"><input type="search" id="rq" placeholder="가수 찾기 (이름 앞부분만 써도 돼요)"><button class="pl-open ghost" id="rFromQueue" title="지금 다음 트랙 목록에 있는 가수들을 한 번에">다음 트랙에서 가수 가져오기</button></div><div class="mz-hits" id="rhits"></div></div>
     <div class="mz-rand-picks" id="rpicks"></div>
     <div class="mz-rand-opts">
       <div class="seg" id="rmode"><button data-m="count" class="${R.mode === "count" ? "on" : ""}">곡 수</button><button data-m="time" class="${R.mode === "time" ? "on" : ""}">시간</button></div>
@@ -508,6 +510,22 @@ async function drawRandom() {
       if ($("#rq").value.trim() !== q) return;
       $("#rhits").innerHTML = searchHits.length ? searchHits.map((a, i) => `<button class="pl-open ghost" data-hit="${i}">＋ ${esc(a.name)}</button>`).join("") : '<div class="mz-note">못 찾았어요</div>';
     }, 350);
+  };
+  $("#rFromQueue").onclick = async () => {
+    status("다음 트랙 읽는 중…");
+    let q;
+    try { q = await call("queue", {}, 15); } catch (err) { fail(err); return; }
+    const seen = new Set();
+    const list = [];
+    for (const x of q) {
+      const name = artistOf(x.artist);
+      const key = x.aid || name.toLowerCase();
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      list.push({ aid: x.aid, name });
+    }
+    if (!list.length) { status(""); toast("다음 트랙이 비어 있어요"); return; }
+    addArtistsToRandom(list);
   };
   $("#rhits").onclick = (e) => {
     const b = e.target.closest("[data-hit]");
@@ -609,23 +627,54 @@ async function makeRandom() {
   finally { const b = $("#rgo"); if (b) b.disabled = false; }
 }
 
-// MARK: 시작 — 플레이어 · 큰 앨범 · 곡이 바뀌면 다음 트랙 · 앨범 새로
+// MARK: 시작 — 플레이어 창 (작게 · 크게), 위쪽 줄 단추, 곡이 바뀌면 다음 트랙 · 앨범 새로
+
+let big = false;
+try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
 
 (async function () {
   let cfg = await readConfig();
   await applyTheme(cfg);
-  Player.start(cfg, { site: "ytmusic" }); // 크게 보기는 YouTube Music 전용
-  onConfigChanged(async () => { cfg = await readConfig(); applyTheme(cfg); Player.setCfg(cfg); });
+  // 크게 볼 때는 YouTube Music 전용, 작게 볼 때는 ‹ › 로 세 재생기
+  Player.start(cfg, { site: big ? "ytmusic" : null });
+  onConfigChanged(async () => { cfg = await readConfig(); applyTheme(cfg); Player.setCfg(cfg); drawLock(); drawPlayer(); });
   const el = $("#player");
-  Player.bindPlayer(el, { lyrics: () => { tab = 1; drawTabs(); show(); } });
+  const line = $("#lyline");
+  const showLine = () => !big && cfg.lyricsLine !== false && !cfg.detachLyrics;
+
+  // MARK: 플레이어 · 가사 줄 · 큰 앨범
+  function drawPlayer() {
+    el._sig = "";
+    Player.renderPlayer(el, { detached: true, noBig: true, lyricsOn: big ? tab === 1 : showLine() });
+    line.hidden = !showLine();
+    if (showLine()) { line._sig = ""; Player.renderLine(line, { detached: true }); }
+  }
+  Player.bindPlayer(el, {
+    big: () => setBig(!big),
+    lyrics: () => { if (big) { tab = 1; drawTabs(); show(); } else setConfig("lyricsLine", !showLine()); },
+  });
+  Player.bindLine(line, { detach: () => setConfig("detachLyrics", true) });
   let lastTitle = "";
   Player.on((tick) => {
-    if (tick) { Player.tickPlayer(el); if (tab === 1) Player.renderFull(body); return; }
-    Player.renderPlayer(el, { detached: true, noBig: true });
+    if (tick) {
+      Player.tickPlayer(el);
+      if (showLine()) Player.renderLine(line, { detached: true });
+      if (big && tab === 1) Player.renderFull(body);
+      return;
+    }
+    Player.renderPlayer(el, { detached: true, noBig: true, lyricsOn: big ? tab === 1 : showLine() });
+    line.hidden = !showLine();
+    if (showLine()) Player.renderLine(line, { detached: true });
     const art = Player.artUrl();
     const img = $("#art");
-    if (art && img.getAttribute("src") !== art) img.src = art;
+    if (art && img.dataset.want !== art) {
+      img.dataset.want = art;
+      // 큰 사진이 없으면(404 등) 원래 사진으로
+      img.onerror = () => { const fb = Player.artFallback(); if (fb && img.src !== fb) img.src = fb; };
+      img.src = art;
+    }
     img.hidden = !art;
+    if (!big) return;
     if (tab === 1) Player.renderFull(body);
     const t = Player.state().title || "";
     if (t !== lastTitle) {
@@ -636,9 +685,154 @@ async function makeRandom() {
     }
   });
   Player.bindFull(body);
+
+  // MARK: 작게 ↔ 크게
+  const w = win();
+  const getSize = (k, d) => { try { const v = JSON.parse(localStorage.getItem(k) || "null"); return v && v[0] > 100 && v[1] > 50 ? v : d; } catch { return d; } };
+  async function rememberSize() {
+    try {
+      const f = await w.scaleFactor();
+      const s = (await w.innerSize()).toLogical(f);
+      localStorage.setItem(big ? "playerBigSize" : "playerSmallW", JSON.stringify(big ? [Math.round(s.width), Math.round(s.height)] : [Math.round(s.width), 100]));
+    } catch { /* 없음 */ }
+  }
+  async function setBig(on, first) {
+    if (!first) await rememberSize();
+    big = on;
+    try { localStorage.setItem("playerBig", big ? "1" : "0"); } catch { /* 없음 */ }
+    document.body.classList.toggle("compact", !big);
+    Player.setSite(big ? "ytmusic" : null);
+    $("#bigBtn").innerHTML = big ? ICON_SMALL : ICON_BIG;
+    $("#bigBtn").title = big ? "작게 보기" : "크게 보기 — 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 재생목록 · 랜덤 (YouTube Music)";
+    lastH = 0;
+    try {
+      if (big) {
+        const [bw, bh] = getSize("playerBigSize", [940, 640]);
+        await w.setAlwaysOnTop(false);
+        await w.setMinSize(new T.dpi.LogicalSize(600, 400));
+        await w.setSize(new T.dpi.LogicalSize(bw, bh));
+      } else {
+        await w.setAlwaysOnTop(true);
+        await w.setMinSize(new T.dpi.LogicalSize(260, 60));
+        const [sw] = getSize("playerSmallW", [360, 100]);
+        const f = await w.scaleFactor();
+        const s = (await w.innerSize()).toLogical(f);
+        await w.setSize(new T.dpi.LogicalSize(sw, s.height));
+      }
+    } catch (e) { console.warn(e); }
+    drawPlayer();
+    if (big) { drawTabs(); show(); } else fit();
+  }
+  if (T) T.event.listen("player-big", () => { if (!big) setBig(true); else w.setFocus(); });
+
+  // 작게: 창 높이 = 위쪽 줄 + 플레이어 + 가사 줄 (가사를 펼치거나 곡이 바뀌어 높이가 달라지면 따라감)
+  let fitT = null, lastH = 0;
+  function fit() {
+    if (big) return;
+    clearTimeout(fitT);
+    fitT = setTimeout(async () => {
+      const h = Math.ceil(["#app > .ptool", "#player", "#lyline"].reduce((a, s) => { const e = $(s); return a + (e && !e.hidden ? e.getBoundingClientRect().height : 0); }, 0) + 12);
+      if (Math.abs(h - lastH) < 2) return;
+      lastH = h;
+      try {
+        const f = await w.scaleFactor();
+        const s = (await w.innerSize()).toLogical(f);
+        await w.setSize(new T.dpi.LogicalSize(s.width, h));
+      } catch { /* 없음 */ }
+    }, 60);
+  }
+  new ResizeObserver(fit).observe(el);
+  new ResizeObserver(fit).observe(line);
+  // 크게: 오른쪽 아래 모서리를 끌어 크기 조절 (제목 막대가 없는 창)
+  $("#mzResize").addEventListener("mousedown", (e) => { if (e.button === 0 && big) w.startResizeDragging("SouthEast").catch(() => {}); });
+
+  // MARK: 위쪽 줄 — 재생기 아이콘 · 위치 고정 · 창 정리 · 크게 보기 · 설정 · 숨기기
+  Sites.mount($("#sites"));
+  const tool = $(".ptool");
+  function drawLock() {
+    const on = !!cfg.playerLocked;
+    $("#lockBtn").innerHTML = on ? ICON_LOCK : ICON_UNLOCK;
+    $("#lockBtn").classList.toggle("on", on);
+    $("#lockBtn").title = on ? "위치 고정됨 — 누르면 풀려요" : "누르면 창 위치를 고정해요";
+    for (const x of [tool, ...tool.querySelectorAll(".ptool-grip, .ptool-grip i")]) x.toggleAttribute("data-tauri-drag-region", !on);
+  }
+  drawLock();
+  $("#lockBtn").onclick = () => { cfg.playerLocked = !cfg.playerLocked; drawLock(); setConfig("playerLocked", cfg.playerLocked); };
+  $("#bigBtn").onclick = () => setBig(!big);
+  $("#gearBtn").onclick = () => T.event.emit("ui", { open: "settings" });
+  $("#tidyBtn").onclick = async () => {
+    // 작게 볼 땐 창이 작아서 Windows 기본 메뉴로
+    const M = T.menu;
+    const item = (text, action) => M.MenuItem.new({ text, action });
+    const done = (n, what) => toast(`창 ${n}개를 ${what}`);
+    const menu = await M.Menu.new({ items: await Promise.all([
+      item("열린 창 모두 닫기", async () => { if (confirm("지금 데스크탑의 창을 모두 닫을까요? 저장 안 한 문서가 있으면 앱이 저장할지 물어봐요.")) done(await invoke("tidy", { action: "close_all" }), "닫았어요"); }),
+      item("모두 최소화", async () => done(await invoke("tidy", { action: "minimize_all" }), "최소화했어요")),
+      item("최소화한 창 모두 되살리기", async () => done(await invoke("tidy", { action: "restore_all" }), "되살렸어요")),
+      M.PredefinedMenuItem.new({ item: "Separator" }),
+      item("앱 모두 종료 (도구함 · 탐색기 제외)…", () => T.event.emit("ui", { open: "quitall" })),
+      item("앱 골라서 종료…", () => T.event.emit("ui", { open: "pickquit" })),
+    ]) });
+    menu.popup();
+  };
+  // 숨기기: 플레이어 창만 쓰면 트레이로, 아니면 도구함 창으로 되돌림
+  $("#close").onclick = async () => {
+    await rememberSize();
+    if (cfg.playerMode !== false) w.hide(); else setConfig("detachPlayer", false);
+  };
+
+  // 위치 기억 (작게 볼 때 위치)
+  let moveT = null;
+  w.onMoved(({ payload }) => {
+    clearTimeout(moveT);
+    moveT = setTimeout(async () => {
+      const f = await w.scaleFactor();
+      const p = payload.toLogical ? payload.toLogical(f) : { x: payload.x / f, y: payload.y / f };
+      setConfig("playerPos", [Math.round(p.x), Math.round(p.y)]);
+    }, 500);
+  });
+
   drawTabs();
-  show();
-  // 다음 트랙: 가끔 새로 (곡 순서가 바뀌었을 수 있음)
-  setInterval(() => { if (tab === 0 && !document.hidden) loadQueue(true); }, 15000);
-  document.addEventListener("keydown", (e) => { if (e.key === "Escape") { closeMenu(); modal.hidden = true; } });
+  await setBig(big, true);
+  setInterval(() => { if (big && tab === 0 && !document.hidden) loadQueue(true); }, 15000);
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { closeMenu(); modal.hidden = true; }
+    // 스페이스: 재생 / 멈춤 (글자 입력 칸에서는 그냥 띄어쓰기)
+    if (e.key === " " && !e.repeat && !e.target.closest("input, textarea, select, [contenteditable]")) {
+      e.preventDefault();
+      Player.control("toggle");
+    }
+  });
+  document.addEventListener("contextmenu", (e) => { if (!e.target.closest(".mz-row, input, textarea")) e.preventDefault(); });
 })();
+
+const ICON_BIG = '<svg viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M6.5 13.5h-4v-4M13.5 2.5L9 7M2.5 13.5L7 9" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_SMALL = '<svg viewBox="0 0 16 16"><path d="M13 7H9V3M3 9h4v4M9 7l4.5-4.5M7 9l-4.5 4.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+const ICON_LOCK = '<svg viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="currentColor"/><path d="M5 7V5a3 3 0 016 0v2" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>';
+const ICON_UNLOCK = '<svg viewBox="0 0 16 16"><rect x="3" y="7" width="10" height="7" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5 7V5a3 3 0 015.6-1.5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+
+// MARK: 다음 트랙 → 랜덤 가수
+
+/// 다음 트랙의 가수 글자 '가수 • 앨범 • 조회수' 에서 가수만 (여럿이면 '&' · ',' 앞 첫 가수)
+function artistOf(byline) {
+  return String(byline || "").split(" • ")[0].split(/\s*(?:,|&|feat\.|ft\.)\s*/i)[0].trim();
+}
+/// 랜덤 재생목록 가수에 넣기: 가수 페이지 ID 가 있으면 그대로, 없으면 이름으로 찾아 첫 가수 (비중 3, 이미 있으면 건너뜀)
+async function addArtistsToRandom(list) {
+  let added = 0, missed = 0;
+  for (const [i, a] of list.entries()) {
+    status(`가수 넣는 중… ${i + 1}/${list.length}`);
+    let id = a.aid, name = a.name;
+    if (!id) {
+      try { const hit = (await call("searchArtists", { q: name }, 20))[0]; if (hit) { id = hit.id; name = hit.name; } } catch { /* 건너뜀 */ }
+    }
+    if (!id) { missed++; continue; }
+    if (R.picks.some((p) => p.id === id)) continue;
+    R.picks.push({ id, name, w: 3, songs: null });
+    added++;
+  }
+  saveR();
+  status("");
+  toast(added ? `가수 ${added}명을 랜덤에 넣었어요${missed ? ` (${missed}명은 못 찾음)` : ""}` : "새로 넣을 가수가 없어요");
+  if (tab === 4) drawPicks(); else { tab = 4; drawTabs(); show(); }
+}

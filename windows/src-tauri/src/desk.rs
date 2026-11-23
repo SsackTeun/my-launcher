@@ -1,9 +1,9 @@
-// 창 · 데스크탑 · 작업 표시줄 기능 (Mac 판의 창 정리 · 앱별 창 메뉴 · 데스크탑 탭 · Dock 가리기 · 메모리 · 막대 자리 비우기)
-use crate::win::{exe_of, file_description, wide, windows_list_all, WinRec};
+// 창 · 작업 표시줄 기능 (Mac 판의 창 정리 · 앱별 창 메뉴 · Dock 가리기 · 메모리 · 막대 자리 비우기)
+use crate::win::{exe_of, wide, windows_list_all, WinRec};
 use serde::Serialize;
 use std::collections::HashMap;
 use std::ffi::c_void;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use windows::core::{GUID, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
@@ -16,7 +16,7 @@ use windows::Win32::System::Diagnostics::ToolHelp::{
 use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegDeleteValueW, RegGetValueW, RegOpenKeyExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
-    REG_SZ, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
+    REG_SZ, RRF_RT_REG_DWORD, RRF_RT_REG_SZ,
 };
 use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ};
 use windows::Win32::UI::Shell::{
@@ -121,56 +121,10 @@ pub fn tidy(action: &str) -> usize {
     n
 }
 
-// MARK: 데스크탑 (가상 데스크톱) — 목록 · 이름은 레지스트리에서 읽기만
-
-#[derive(Serialize)]
-pub struct Desktop {
-    pub id: String,
-    pub name: String,
-}
-
-#[derive(Serialize)]
-pub struct DeskApp {
-    pub pid: u32,
-    pub hwnd: isize,
-    pub exe: String,
-    pub name: String,
-    pub title: String,
-}
-
-#[derive(Serialize)]
-pub struct Desktops {
-    pub current: String,
-    pub list: Vec<Desktop>,
-    /// 데스크탑 id → 그 데스크탑의 앱 (실행 파일 단위)
-    pub apps: HashMap<String, Vec<DeskApp>>,
-}
+// MARK: 도우미
 
 pub fn guid_str(g: &GUID) -> String {
     format!("{:?}", g).to_lowercase()
-}
-
-fn reg_binary(key: &str, value: &str) -> Option<Vec<u8>> {
-    unsafe {
-        let k = wide(key);
-        let v = wide(value);
-        let mut size = 0u32;
-        RegGetValueW(HKEY_CURRENT_USER, PCWSTR(k.as_ptr()), PCWSTR(v.as_ptr()), RRF_RT_REG_BINARY, None, None, Some(&mut size)).ok().ok()?;
-        let mut buf = vec![0u8; size as usize];
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            PCWSTR(k.as_ptr()),
-            PCWSTR(v.as_ptr()),
-            RRF_RT_REG_BINARY,
-            None,
-            Some(buf.as_mut_ptr() as *mut c_void),
-            Some(&mut size),
-        )
-        .ok()
-        .ok()?;
-        buf.truncate(size as usize);
-        Some(buf)
-    }
 }
 
 fn reg_string(key: &str, value: &str) -> Option<String> {
@@ -194,73 +148,6 @@ fn reg_string(key: &str, value: &str) -> Option<String> {
         let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
         Some(String::from_utf16_lossy(&buf[..end]))
     }
-}
-
-fn guid_from_bytes(b: &[u8]) -> GUID {
-    GUID::from_values(
-        u32::from_le_bytes([b[0], b[1], b[2], b[3]]),
-        u16::from_le_bytes([b[4], b[5]]),
-        u16::from_le_bytes([b[6], b[7]]),
-        [b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]],
-    )
-}
-
-const VD_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Explorer\VirtualDesktops";
-
-pub fn desktops() -> Desktops {
-    let ids: Vec<GUID> = reg_binary(VD_KEY, "VirtualDesktopIDs")
-        .map(|b| b.chunks_exact(16).map(guid_from_bytes).collect())
-        .unwrap_or_default();
-    let current = reg_binary(VD_KEY, "CurrentVirtualDesktop").filter(|b| b.len() >= 16).map(|b| guid_str(&guid_from_bytes(&b)));
-    let list: Vec<Desktop> = ids
-        .iter()
-        .enumerate()
-        .map(|(i, g)| {
-            let id = guid_str(g);
-            let key = format!(r"{}\Desktops\{{{}}}", VD_KEY, format!("{:?}", g).to_uppercase());
-            let name = reg_string(&key, "Name").filter(|s| !s.is_empty()).unwrap_or_else(|| format!("데스크탑 {}", i + 1));
-            Desktop { id, name }
-        })
-        .collect();
-
-    let me = std::process::id();
-    let mut apps: HashMap<String, Vec<DeskApp>> = HashMap::new();
-    let mut exe_cache: HashMap<u32, Option<String>> = HashMap::new();
-    let mut name_cache: HashMap<String, String> = HashMap::new();
-    let mut cur_guess = None;
-    for r in windows_list_all() {
-        if r.pid == me || r.desktop.is_empty() {
-            continue;
-        }
-        if r.on_current && cur_guess.is_none() {
-            cur_guess = Some(r.desktop.clone());
-        }
-        let Some(exe) = exe_cache.entry(r.pid).or_insert_with(|| exe_of(r.pid)).clone() else { continue };
-        let lower = exe.to_lowercase();
-        if lower.ends_with(r"\explorer.exe") && r.title == "Program Manager" {
-            continue;
-        }
-        let list = apps.entry(r.desktop.clone()).or_default();
-        if list.iter().any(|a| a.exe.to_lowercase() == lower) {
-            continue;
-        }
-        let name = name_cache
-            .entry(lower.clone())
-            .or_insert_with(|| {
-                file_description(&exe)
-                    .or_else(|| Path::new(&exe).file_stem().map(|s| s.to_string_lossy().to_string()))
-                    .unwrap_or_else(|| r.title.clone())
-            })
-            .clone();
-        list.push(DeskApp { pid: r.pid, hwnd: r.hwnd.0 as isize, exe, name, title: r.title.clone() });
-    }
-    let current = current.or(cur_guess).unwrap_or_default();
-    let mut list = list;
-    if list.is_empty() {
-        // 레지스트리에 목록이 없으면(데스크탑을 한 번도 안 만든 경우) 지금 데스크탑 하나
-        list.push(Desktop { id: current.clone(), name: "데스크탑 1".into() });
-    }
-    Desktops { current, list, apps }
 }
 
 // MARK: 작업 표시줄

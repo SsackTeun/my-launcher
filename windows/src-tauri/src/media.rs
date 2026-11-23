@@ -255,7 +255,8 @@ fn state_inner(want: Option<&str>) -> MediaState {
     }
     let Some(s) = session_for(want) else {
         // 재생기가 알려 준 것만으로 (Windows 미디어 정보에 아직 없거나 · Netflix 처럼 안 알리는 사이트)
-        let (label, n, sites) = site.unwrap();
+        // ('모든 앱' 모드에서 재생 중인 앱이 하나도 없으면 site 도 없음 → 빈 상태)
+        let Some((label, n, sites)) = site else { return MediaState { app_only, ..Default::default() } };
         let mut pos = n.pos;
         if n.playing {
             pos += n.at.elapsed().as_secs_f64();

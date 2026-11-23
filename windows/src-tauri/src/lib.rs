@@ -1,6 +1,6 @@
 // 도구함 (Windows) — 화면은 src/ 의 웹 화면, 시스템 기능은 여기서
 // win.rs   : 시작 메뉴 앱 · 아이콘 · 실행 · 실행 중 · 종료
-// desk.rs  : 창 정리 · 앱별 창 · 데스크탑 · 작업 표시줄 · 메모리 · 자동 실행 · 막대 자리 비우기
+// desk.rs  : 창 정리 · 앱별 창 · 작업 표시줄 · 메모리 · 자동 실행 · 막대 자리 비우기
 // media.rs : 미니 플레이어(미디어 컨트롤) · 볼륨 · 청력 보호
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -58,6 +58,13 @@ struct TrayApp {
 struct TrayApps(Mutex<Vec<TrayApp>>);
 
 static CLOSE_TO_TRAY: AtomicBool = AtomicBool::new(true);
+/// 대표 창: 트레이 아이콘 · '도구함 열기' 가 띄우는 창. 플레이어 창만 쓰면 "player", 아니면 "main"
+static FACE: Mutex<String> = Mutex::new(String::new());
+
+fn face_label() -> String {
+    let f = FACE.lock().unwrap().clone();
+    if f.is_empty() { "main".into() } else { f }
+}
 /// 도구함이 작업 표시줄 자동 숨기기를 켰으면, 끌 때 원래대로 돌려놓음
 static TASKBAR_RESTORE: Mutex<Option<bool>> = Mutex::new(None);
 
@@ -133,10 +140,6 @@ fn tidy(action: String) -> usize {
     desk::tidy(&action)
 }
 
-#[tauri::command]
-fn desktops() -> desk::Desktops {
-    desk::desktops()
-}
 
 #[tauri::command]
 fn taskbar_autohide(on: Option<bool>) -> bool {
@@ -318,7 +321,7 @@ async fn http_fetch(url: String, body: Option<String>) -> Result<String, String>
 
 // MARK: 다른 창 (떼어 낸 플레이어 · 가사 · 막대 · YouTube Music · 영상)
 
-/// url 이 http 로 시작하면 바깥 사이트, 아니면 도구함 화면(player.html 등)
+/// url 이 http 로 시작하면 바깥 사이트, 아니면 도구함 화면(music.html 등)
 #[tauri::command]
 async fn open_window(
     app: tauri::AppHandle,
@@ -332,6 +335,9 @@ async fn open_window(
     frameless: Option<bool>,
     on_top: Option<bool>,
 ) -> Result<(), String> {
+    // 거의 동시에 두 번 불려도 창이 둘 생기지 않게: '있나 보고 → 만들기' 를 한 번에 하나씩
+    static OPENING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _guard = OPENING.lock().await;
     if let Some(w) = app.get_webview_window(&label) {
         let _ = w.show();
         let _ = w.unminimize();
@@ -433,7 +439,7 @@ fn web_pip_state(label: String) -> bool {
 // MARK: 트레이 (Mac 판 메뉴 막대 🧰)
 
 fn show_main(app: &tauri::AppHandle) {
-    if let Some(w) = app.get_webview_window("main") {
+    if let Some(w) = app.get_webview_window(&face_label()).or_else(|| app.get_webview_window("main")) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -481,6 +487,12 @@ fn tray_apps(app: tauri::AppHandle, apps: Vec<TrayApp>) {
 #[tauri::command]
 fn js_log(window: tauri::WebviewWindow, msg: String) {
     eprintln!("[{}] {}", window.label(), msg);
+}
+
+/// 대표 창 정하기 (플레이어 창만 쓰기 = "player")
+#[tauri::command]
+fn set_face(label: String) {
+    *FACE.lock().unwrap() = label;
 }
 
 #[tauri::command]
@@ -626,7 +638,7 @@ pub fn run() {
                 .on_tray_icon_event(|tray, e| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
                         let app = tray.app_handle();
-                        if let Some(w) = app.get_webview_window("main") {
+                        if let Some(w) = app.get_webview_window(&face_label()).or_else(|| app.get_webview_window("main")) {
                             if w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false) {
                                 let _ = w.hide();
                             } else {
@@ -654,7 +666,7 @@ pub fn run() {
                 }
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = e {
-                if w.label() == "main" && CLOSE_TO_TRAY.load(Ordering::Relaxed) {
+                if w.label() == "main" && (CLOSE_TO_TRAY.load(Ordering::Relaxed) || face_label() != "main") {
                     api.prevent_close();
                     let _ = w.hide();
                 }
@@ -681,7 +693,6 @@ pub fn run() {
             app_windows,
             window_action,
             tidy,
-            desktops,
             taskbar_autohide,
             taskbar_pinned,
             memory_usage,
@@ -714,6 +725,7 @@ pub fn run() {
             tray_apps,
             js_log,
             set_close_to_tray,
+            set_face,
             restart_self,
             quit_self,
             install_dev_app,

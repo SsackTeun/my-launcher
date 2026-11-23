@@ -11,6 +11,7 @@
     "windows": [
       {
         "label": "main",
+        "visible": false,
         "title": "도구함",
         "width": 420,
         "height": 640,

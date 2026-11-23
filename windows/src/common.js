@@ -46,6 +46,11 @@ function onConfigChanged(fn) {
 async function applyTheme(cfg) {
   const t = cfg.theme || "default";
   document.documentElement.dataset.theme = t;
+  // 배경 투명도 (설정 → 모양): 0 이면 테마 기본값
+  const BASE = { default: [32, 32, 36, 0.62], light: [246, 246, 248, 0.8], bear: [255, 245, 227, 0.94] };
+  const b = BASE[t] || BASE.default;
+  const a = cfg.bgOpacity ? Math.max(0.1, Math.min(1, cfg.bgOpacity / 100)) : b[3];
+  document.documentElement.style.setProperty("--bg", `rgba(${b[0]}, ${b[1]}, ${b[2]}, ${a})`);
   let img = null;
   if (cfg.themeImage) { try { img = await invoke("theme_image", {}); } catch { /* 없음 */ } }
   document.documentElement.style.setProperty("--bgimg", img ? `url("${img}")` : "none");
