@@ -60,7 +60,8 @@ const DEFAULT = {
   closeToTray: true,
   hideTaskbar: false,    // 켜져 있는 동안 작업 표시줄 자동 숨기기
   edgeDock: true,        // 위젯을 화면 끝에 붙이면 서랍처럼 접기
-  keepOnScreen: true,    // 창이 화면 밖으로 나가지 않게
+  keepOnScreen: true,
+  showDeskTab: false,    // 데스크탑 탭 (가상 데스크톱별 앱) — 기본은 숨김, 설정에서 켬    // 창이 화면 밖으로 나가지 않게
   docked: null,          // 접혀 있는 쪽 (left · right)
   dockedW: 0,
   // 자주 쓰는 앱 막대
@@ -247,7 +248,9 @@ function renderTop() {
 function renderTabs() {
   const ups = devCatalog.filter((a) => hasUpdate(a)).length;
   const labels = ["전체", `실행 중 ${running.length}`, ups ? `개발자 앱 ●${ups}` : "개발자 앱", "데스크탑"];
-  $("#seg").innerHTML = labels.map((l, i) => `<button data-tab="${i}" class="${i === S.tab ? "on" : ""}">${esc(l)}</button>`).join("");
+  // 데스크탑 탭은 설정에서 켰을 때만
+  if (!S.showDeskTab && S.tab === 3) S.tab = 0;
+  $("#seg").innerHTML = labels.map((l, i) => (i === 3 && !S.showDeskTab ? "" : `<button data-tab="${i}" class="${i === S.tab ? "on" : ""}">${esc(l)}</button>`)).join("");
   const tools = [];
   if (S.tab === 1) tools.push(`<button class="icon" data-tool="quitall" title="모두 종료 (도구함 제외)">${I.power}</button>`);
   if (S.tab === 3) tools.push(`<button class="icon" data-tool="deskrefresh" title="새로 고침">${I.refresh}</button>`);
@@ -591,6 +594,7 @@ function settingsDialog() {
     ${chk("hideTaskbar", "도구함이 켜져 있는 동안 작업 표시줄 자동 숨기기", "끄면 · 도구함을 끝내면 원래대로")}
     ${chk("edgeDock", "위젯을 화면 왼쪽 · 오른쪽 끝에 붙이면 서랍 손잡이로 접기")}
     ${chk("keepOnScreen", "창이 화면 밖으로 나가지 않게")}
+    ${chk("showDeskTab", "데스크탑 탭 보이기", "가상 데스크톱마다 창이 열린 앱 — 데스크톱을 여러 개 쓸 때")}
     <label class="set-ck"><input type="checkbox" data-act="autostart" id="autoChk"><span>로그인 시 자동 실행</span></label>
     <h4>플레이어 · 가사</h4>
     ${chk("showPlayer", "미니 플레이어 보이기")}
