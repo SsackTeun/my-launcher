@@ -159,7 +159,12 @@ const JS = {
         const id = run.navigationEndpoint.browseEndpoint.browseId; const c = count.get(id) || { id, name: run.text, n: 0 }; c.n += 1; count.set(id, c);
       }
     }
-    for (const vl of lists.slice(0, args.lists || 4)) {
+    // 무작위로 섞어서 (이미 읽은 건 빼고) 몇 개만 — 누를 때마다 다른 재생목록에서 모음
+    const skip = new Set(args.skip || []);
+    const pool = lists.filter((x) => !skip.has(x));
+    for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
+    const used = pool.slice(0, args.lists || 8);
+    for (const vl of used) {
       let j;
       try { j = await api('browse', { browseId: vl }); } catch (e) { continue; }
       for (const v of collect(j, 'musicResponsiveListItemRenderer')) {
@@ -170,7 +175,7 @@ const JS = {
         }
       }
     }
-    return [...count.values()].sort((a, b) => b.n - a.n).slice(0, args.max || 16);`,
+    return { artists: [...count.values()].sort((a, b) => b.n - a.n).slice(0, args.max || 80), used, total: lists.length };`,
   artistSongs: `
     const r = await api('browse', { browseId: args.aid });
     let list = null;
@@ -524,7 +529,8 @@ try { Object.assign(R, JSON.parse(localStorage.getItem("mzRandom") || "{}"), { p
 const saveR = () => { try { localStorage.setItem("mzRandom", JSON.stringify({ ...R, picks: R.picks.map(({ id, name, w }) => ({ id, name, w })) })); } catch { /* 없음 */ } };
 let searchHits = [];
 let genreCache = null; // 장르 목록 (한 번 읽으면 기억)
-let recHits = [];       // 장르 추천 가수
+let recHits = [];       // 장르 추천 가수 (지금 보여 주는 것)
+let recGenre = null;    // { g: 장르, pool: 모은 가수, shown: 보여 준 가수 id, usedLists: 읽은 재생목록 }
 async function drawRandom() {
   const lists = myLists || [];
   body.innerHTML = `<div class="mz-rand">
@@ -586,18 +592,11 @@ async function drawRandom() {
     if (!b) return;
     const g = genreCache[+b.dataset.genre];
     $("#rGenres").querySelectorAll("[data-genre]").forEach((x) => x.classList.toggle("on", x === b));
-    const rec = $("#rRec");
-    rec.innerHTML = `<div class="mz-note">‘${esc(g.t)}’ 대표 재생목록에서 가수 모으는 중…</div>`;
-    let list;
-    try { list = await call("genreArtists", { id: g.id, params: g.params, lists: 4, max: 16 }, 60); } catch (err) { rec.innerHTML = ""; fail(err); return; }
-    const fresh = list.filter((a) => !R.picks.some((p) => p.id === a.id));
-    if (!fresh.length) { rec.innerHTML = `<div class="mz-note">‘${esc(g.t)}’ 에서 새로 추천할 가수가 없어요</div>`; return; }
-    recHits = fresh;
-    rec.innerHTML = `<div class="mz-note">‘${esc(g.t)}’ 추천 가수 — 눌러서 넣기</div>` +
-      fresh.map((a, i) => `<button class="pl-open ghost" data-rec="${i}" title="대표 재생목록에 ${a.n}번 나옴">＋ ${esc(a.name)}</button>`).join("") +
-      `<button class="pl-open" data-rec="all">모두 넣기</button>`;
+    recGenre = { g, pool: [], shown: new Set(), usedLists: [] };
+    await moreRec();
   };
   $("#rRec").onclick = (e) => {
+    if (e.target.closest("[data-more]")) { moreRec(); return; }
     const b = e.target.closest("[data-rec]");
     if (!b) return;
     const add = b.dataset.rec === "all" ? recHits : [recHits[+b.dataset.rec]];
@@ -937,4 +936,46 @@ async function addArtistsToRandom(list) {
   status("");
   toast(added ? `가수 ${added}명을 랜덤에 넣었어요${missed ? ` (${missed}명은 못 찾음)` : ""}` : "새로 넣을 가수가 없어요");
   if (tab === 4) drawPicks(); else { tab = 4; drawTabs(); show(); }
+}
+
+// MARK: 장르 추천 — 모아 둔 가수 중 아직 안 보여 준 가수를 무작위로 (많이 나온 가수가 조금 더 잘 뽑힘)
+
+/// 모은 가수에서 n명 뽑기: 무게 = √(나온 횟수) 라서 인기 가수만 몰리지 않음
+function sampleArtists(pool, n) {
+  const left = pool.slice();
+  const out = [];
+  while (out.length < n && left.length) {
+    let r = Math.random() * left.reduce((a, x) => a + Math.sqrt(x.n || 1), 0);
+    let k = 0;
+    for (; k < left.length - 1; k++) { r -= Math.sqrt(left[k].n || 1); if (r < 0) break; }
+    out.push(left.splice(k, 1)[0]);
+  }
+  return out;
+}
+async function moreRec() {
+  const st = recGenre;
+  if (!st) return;
+  const rec = $("#rRec");
+  const fresh = () => st.pool.filter((a) => !st.shown.has(a.id) && !R.picks.some((p) => p.id === a.id));
+  // 남은 가수가 적으면 다른 재생목록을 더 읽어서 채움
+  if (fresh().length < 8) {
+    rec.innerHTML = `<div class="mz-note">‘${esc(st.g.t)}’ 재생목록에서 가수 모으는 중…</div>`;
+    let r;
+    try { r = await call("genreArtists", { id: st.g.id, params: st.g.params, lists: 8, max: 80, skip: st.usedLists }, 90); } catch (err) { rec.innerHTML = ""; fail(err); return; }
+    if (recGenre !== st) return;
+    st.usedLists.push(...(r.used || []));
+    for (const a of r.artists || []) {
+      const have = st.pool.find((x) => x.id === a.id);
+      if (have) have.n += a.n; else st.pool.push(a);
+    }
+    // 장르 재생목록을 다 읽었는데도 다 보여 줬으면 처음부터 다시
+    if (!fresh().length && st.pool.length) { st.shown.clear(); st.usedLists = []; }
+  }
+  const pick = sampleArtists(fresh(), 16);
+  if (!pick.length) { rec.innerHTML = `<div class="mz-note">‘${esc(st.g.t)}’ 에서 새로 추천할 가수가 없어요</div>`; return; }
+  pick.forEach((a) => st.shown.add(a.id));
+  recHits = pick;
+  rec.innerHTML = `<div class="mz-note">‘${esc(st.g.t)}’ 추천 가수 ${pick.length}명 (모은 가수 ${st.pool.length}명) — 눌러서 넣기</div>` +
+    pick.map((a, i) => `<button class="pl-open ghost" data-rec="${i}" title="이 장르 재생목록에 ${a.n}번 나옴">＋ ${esc(a.name)}</button>`).join("") +
+    `<button class="pl-open" data-rec="all">모두 넣기</button><button class="pl-open ghost" data-more="1" title="아직 안 보여 준 가수">다른 가수 보기 ↻</button>`;
 }
