@@ -18,6 +18,9 @@ struct PlayerState {
     var pageOpen = false
     var artURL = ""
     var limited = false
+    /// 지금 틀고 있는 재생목록 ID (주소의 list=…) · 곡 ID (v=…)
+    var listId = ""
+    var videoId = ""
     var has: Set<String> = ["prev", "playPause", "next", "like", "dislike", "shuffle", "repeat", "mute", "progress", "volume"]
     var repeatOn: Bool { repeatLabel == "ALL" || repeatLabel == "ONE" }
     var repeatOne: Bool { repeatLabel == "ONE" }
@@ -201,7 +204,9 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
           return r.includes('한 곡') || r.toLowerCase().includes('one') ? 'ONE' : (r.includes('모두') || r.toLowerCase().includes('all') ? 'ALL' : (r ? 'NONE' : ''));
         })(),
         vol: vol, muted: muted,
-        page: document.querySelector('ytmusic-app-layout')?.getAttribute('player-page-open') !== null
+        page: document.querySelector('ytmusic-app-layout')?.getAttribute('player-page-open') !== null,
+        list: new URLSearchParams(location.search).get('list') || '',
+        vid: new URLSearchParams(location.search).get('v') || ''
       });
     })()
     """
@@ -240,6 +245,9 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         }
         autoSuggestTick()
         auto31Tick()
+        // 내 재생목록 · 앨범을 듣는 중이면 자동재생을 계속 꺼 둠 (목록이 끝난 뒤 다른 가수 곡이 이어지지 않게)
+        //   — 처음 틀 때 한 번만 껐더니, 중간에 다시 켜지면 목록 뒤에 섞인 곡이 붙었음. 믹스(RD…)는 원래 이어지는 거라 그대로
+        if eqTick % 5 == 0, let l = state?.listId, l.hasPrefix("PL") || l.hasPrefix("OLAK") { setAutoplay(false) }
         // 진단: 소리 보정 팝업 열기
         if UserDefaults.standard.bool(forKey: "ytmOpenEQ") {
             UserDefaults.standard.set(false, forKey: "ytmOpenEQ")
@@ -250,6 +258,18 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
             UserDefaults.standard.set(false, forKey: "ytmAuto31Now")
             runAuto31 { ok in
                 try? "ok=\(ok) gains=\(Self.auto31Gains)".write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-analyze.txt", atomically: true, encoding: .utf8)
+            }
+        }
+        // 진단: 랜덤 재생목록 고르기만 (만들지는 않음) — ytmRandomTest 에 가수 이름
+        if let q = UserDefaults.standard.string(forKey: "ytmRandomTest"), !q.isEmpty {
+            UserDefaults.standard.removeObject(forKey: "ytmRandomTest")
+            searchArtists(q) { [weak self] hs in
+                guard let a = hs.first else { try? "no artist".write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-analyze.txt", atomically: true, encoding: .utf8); return }
+                self?.artistSongs(a) { songs in
+                    let mix = RandomMix.make([(songs, 1)], limit: .minutes(30), popular: true)
+                    let out = "artists=\(hs.map(\.name))\nsongs=\(songs.count)\nmix=\(RandomMix.describe(mix))\n" + mix.map { "\($0.title) \($0.secs)s" }.joined(separator: "\n")
+                    try? out.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-analyze.txt", atomically: true, encoding: .utf8)
+                }
             }
         }
         // 진단: 정밀 EQ 창 열기
@@ -290,6 +310,11 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                     st.muted = o["muted"] as? Bool ?? false
                     st.pageOpen = o["page"] as? Bool ?? false
                     st.artURL = o["art"] as? String ?? ""
+                    // 도구함을 다시 켜면 주소에 list= 가 없이 이어 재생돼서, 마지막으로 튼 재생목록으로 봄
+                    let l = o["list"] as? String ?? ""
+                    st.listId = l.isEmpty ? (UserDefaults.standard.string(forKey: "ytmLastList") ?? "") : l
+                    if !l.isEmpty { UserDefaults.standard.set(l, forKey: "ytmLastList") }
+                    st.videoId = o["vid"] as? String ?? ""
                     // 모바일 화면에선 좋아요 · 반복 · 셔플 버튼을 못 찾을 수 있어서 기본 조작만
                     if o["mobile"] as? Bool == true { st.has = ["prev", "playPause", "next", "mute", "progress", "volume"] }
                 } else {

@@ -263,6 +263,7 @@ final class BigPlayerView: NSView {
         if tab == 0, st.title != lastTitle || ticks % 4 == 0 { loadQueue() }
         // 앨범 탭: 직접 고른 가수가 아니면 지금 곡의 가수를 따라감
         if tab == 2, st.title != lastTitle, !albumPinned { albumsForCurrent() }
+        if tab == 3 { plPane.tickPlaying() }
         // 처음 켤 땐 페이지가 덜 떠서 목록을 못 받을 수 있어 몇 번 더
         if plPane.playlists.isEmpty, ticks % 3 == 0, ticks < 40 { plPane.reload() }
         lastTitle = st.title
@@ -273,7 +274,7 @@ final class BigPlayerView: NSView {
         showTab()
         if tab == 0 { loadQueue() }
         if tab == 2 { albumsForCurrent() }
-        if tab == 3 { plPane.reload() }
+        if tab == 3 { plPane.reload(); plPane.followPlaying() }
     }
 
     private func showTab() {
@@ -350,7 +351,14 @@ final class BigPlayerView: NSView {
         let main = items.filter { !$0.auto }
         if !main.isEmpty {
             let k = main.firstIndex(where: { $0.current }).map { " · 지금 \($0 + 1)번째" } ?? ""
-            doc.addSubview(SectionHead("\(main.count)곡\(k)"))
+            // 재생목록 · 앨범이면 전체 곡 수도 (다음 트랙은 50곡씩만 불러오고, 나머지는 재생하며 이어서 불러옴)
+            var head = "\(main.count)곡\(k)"
+            if let l = music?.state?.listId, l.hasPrefix("PL") || l.hasPrefix("OLAK"),
+               let total = PlaylistCount.get(l, music: music, changed: { [weak self] in self?.lastQueueKey = ""; self?.loadQueue() }),
+               total > main.count {
+                head = "전체 \(total)곡 중 \(main.count)곡 불러옴\(k) · 나머지는 재생하며 이어서 불러와요"
+            }
+            doc.addSubview(SectionHead(head))
         }
         var no = 0
         for item in items {

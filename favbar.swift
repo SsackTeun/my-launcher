@@ -432,6 +432,25 @@ final class FavBar {
         set { d.set(newValue, forKey: k("favName")); rebuild(animate: false); onChange() }
     }
     /// 막대에 보이는 앱: 일반 막대는 넣어 둔 앱, 데스크탑 막대는 그 데스크탑에 열린 앱
+    /// 직접 넣는 막대: 넣지 않은 앱도 켜져 있으면 뒤쪽에 구분선과 함께 보여 줌 (Dock 가운데 칸처럼)
+    var showRunning: Bool {
+        get { d.object(forKey: k("favShowRunning")) as? Bool ?? true }
+        set { d.set(newValue, forKey: k("favShowRunning")); rebuild() }
+    }
+    /// 켜져 있지만 막대에 넣지 않은 앱들 (켠 순서)
+    func runningExtras() -> [String] {
+        guard !isDesktop, showRunning else { return [] }
+        let me = Bundle.main.bundleIdentifier
+        let f = Set(favs)
+        var seen = Set<String>()
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .sorted { ($0.launchDate ?? .distantPast) < ($1.launchDate ?? .distantPast) }
+            .compactMap { $0.bundleIdentifier }
+            .filter { $0 != me && !f.contains($0) && seen.insert($0).inserted }
+    }
+    fileprivate var lastExtras: [String] = []
+
     var favs: [String] {
         get { isDesktop ? deskCache : (d.stringArray(forKey: k("favApps")) ?? []) }
         set { guard !isDesktop else { return }; d.set(newValue, forKey: k("favApps")); rebuild(); onChange() }
@@ -599,7 +618,12 @@ final class FavBar {
         let ws = NSWorkspace.shared.notificationCenter
         for n in [NSWorkspace.didLaunchApplicationNotification, NSWorkspace.didTerminateApplicationNotification] {
             observers.append(ws.addObserver(forName: n, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { (self?.panel?.contentView as? FavBarView)?.refreshRunning() }
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    // 켜진 앱 칸이 바뀌었으면 막대를 다시 그림, 아니면 점만
+                    if !self.isDesktop, self.showRunning, !self.collapsed, self.runningExtras() != self.lastExtras { self.rebuild(animate: true) }
+                    else { (self.panel?.contentView as? FavBarView)?.refreshRunning() }
+                }
             })
         }
         observers.append(NotificationCenter.default.addObserver(forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main) { [weak self] _ in
@@ -621,7 +645,7 @@ final class FavBar {
         guard let p = panel else { return }
         let vf = screen.visibleFrame
         p.contentView = collapsed ? FavHandleView(edge: edge, bar: self)
-            : FavBarView(edge: edge, bar: self, ids: favs, maxMain: edge.vertical ? vf.height : vf.width)
+            : FavBarView(edge: edge, bar: self, ids: favs, extras: { lastExtras = runningExtras(); return lastExtras }(), maxMain: edge.vertical ? vf.height : vf.width)
         place(animate: animate)
     }
 
@@ -1124,6 +1148,9 @@ class FavBase: NSView {
         m.addItem(rs)
         if !bar.isDesktop {
             m.addItem(MenuAction(bar.editing ? "편집 끝내기" : "편집 (넣기 · 빼기)") { bar.editing.toggle() })
+            let sr = MenuAction("켜진 앱도 보이기 (Dock 처럼 구분선 뒤에)") { bar.showRunning.toggle() }
+            sr.state = bar.showRunning ? .on : .off
+            m.addItem(sr)
         }
         if let sm = bar.screenMenuItem() { m.addItem(sm) }
         // 막대 종류: 직접 넣는 막대 / 데스크탑 n 에 열린 앱
@@ -1248,6 +1275,12 @@ final class FavBarView: FavBase {
     private var gripLen: CGFloat { bar.isDesktop ? (FavBar.multiMonitor ? (edge.vertical ? 38 : 36) : 24) : Self.grip }
     private var fixedLen: CGFloat { Self.pad * 2 + gripLen + (showPlus ? Self.cell : 0) + Self.chev }
     let ids: [String]
+    /// 켜져 있지만 넣지 않은 앱 (구분선 뒤)
+    let extras: [String]
+    private var extraCells: [FavAppCell] = []
+    private let divider = NSView()
+    static let divGap: CGFloat = 12
+    private var docLength: CGFloat { CGFloat(ids.count) * Self.cell + (extras.isEmpty ? 0 : Self.divGap + CGFloat(extras.count) * Self.cell) }
     private let maxMain: CGFloat
     private var cells: [FavAppCell] = []
     private let plus = FavPlusCell()
@@ -1259,16 +1292,17 @@ final class FavBarView: FavBase {
     private let fade = CAGradientLayer()
 
     /// 앱 칸 영역 길이 (넘치면 화면에 맞게 줄이고 스크롤)
-    private var listLen: CGFloat { min(CGFloat(ids.count) * Self.cell, max(Self.cell, maxMain - fixedLen)) }
-    private var overflow: Bool { CGFloat(ids.count) * Self.cell > listLen + 0.5 }
+    private var listLen: CGFloat { min(docLength, max(Self.cell, maxMain - fixedLen)) }
+    private var overflow: Bool { docLength > listLen + 0.5 }
 
     override var wantSize: NSSize {
         let main = fixedLen + listLen
         return edge.vertical ? NSSize(width: Self.thick, height: main) : NSSize(width: main, height: Self.thick)
     }
 
-    init(edge: FavBar.Edge, bar: FavBar, ids: [String], maxMain: CGFloat) {
+    init(edge: FavBar.Edge, bar: FavBar, ids: [String], extras: [String] = [], maxMain: CGFloat) {
         self.ids = ids
+        self.extras = extras
         self.maxMain = maxMain
         showPlus = bar.showsPlus
         editing = bar.editing
@@ -1298,6 +1332,18 @@ final class FavBarView: FavBase {
         for id in ids {
             let c = FavAppCell(id: id, edge: edge, bar: bar, editing: editing)
             cells.append(c)
+            doc.addSubview(c)
+        }
+        // 구분선 뒤: 켜진 앱 (넣지 않은 것)
+        divider.wantsLayer = true
+        divider.layer?.backgroundColor = NSColor(white: 1, alpha: 0.22).cgColor
+        divider.layer?.cornerRadius = 0.5
+        divider.isHidden = extras.isEmpty
+        doc.addSubview(divider)
+        for id in extras {
+            let c = FavAppCell(id: id, edge: edge, bar: bar, editing: false)
+            c.isExtra = true
+            extraCells.append(c)
             doc.addSubview(c)
         }
         marker.wantsLayer = true
@@ -1356,11 +1402,21 @@ final class FavBarView: FavBase {
         let L = listLen
         let off = (Self.thick - Self.cell) / 2
         scroll.frame = edge.vertical ? NSRect(x: 0, y: a0, width: Self.thick, height: L) : NSRect(x: a0, y: 0, width: L, height: Self.thick)
-        let docLen = CGFloat(cells.count) * Self.cell
+        let docLen = docLength
         doc.frame = edge.vertical ? NSRect(x: 0, y: 0, width: Self.thick, height: docLen) : NSRect(x: 0, y: 0, width: docLen, height: Self.thick)
         for (i, c) in cells.enumerated() {
             let a = CGFloat(i) * Self.cell
             c.frame = edge.vertical ? NSRect(x: off, y: a, width: Self.cell, height: Self.cell) : NSRect(x: a, y: off, width: Self.cell, height: Self.cell)
+        }
+        if !extras.isEmpty {
+            let d0 = CGFloat(ids.count) * Self.cell + Self.divGap / 2
+            let dl = Self.thick * 0.55
+            divider.frame = edge.vertical ? NSRect(x: (Self.thick - dl) / 2, y: d0 - 0.5, width: dl, height: 1)
+                                          : NSRect(x: d0 - 0.5, y: (Self.thick - dl) / 2, width: 1, height: dl)
+            for (i, c) in extraCells.enumerated() {
+                let a = CGFloat(ids.count) * Self.cell + Self.divGap + CGFloat(i) * Self.cell
+                c.frame = edge.vertical ? NSRect(x: off, y: a, width: Self.cell, height: Self.cell) : NSRect(x: a, y: off, width: Self.cell, height: Self.cell)
+            }
         }
         let pa = a0 + L
         plus.frame = edge.vertical ? NSRect(x: off, y: pa, width: Self.cell, height: Self.cell) : NSRect(x: pa, y: off, width: Self.cell, height: Self.cell)
@@ -1446,11 +1502,11 @@ final class FavBarView: FavBase {
         }
     }
 
-    func refreshRunning() { cells.forEach { $0.needsDisplay = true } }
+    func refreshRunning() { (cells + extraCells).forEach { $0.needsDisplay = true } }
 
     /// 지금 보이는 데스크탑인지에 따라 막대 모양 · 아이콘 점 다시
     func refreshState() {
-        cells.forEach { $0.needsDisplay = true }
+        (cells + extraCells).forEach { $0.needsDisplay = true }
         needsDisplay = true
         guard let n = bar.desktop else { return }
         let now = FavBar.currentDesks.contains(n)
@@ -1564,6 +1620,8 @@ final class FavAppCell: NSView, NSDraggingSource {
 
     let editing: Bool
     let bar: FavBar
+    /// 막대에 넣지 않았지만 켜져 있어서 보이는 칸 (구분선 뒤)
+    var isExtra = false { didSet { toolTip = isExtra ? "\(name) · 켜져 있는 앱 (오른쪽 클릭: 막대에 고정)" : toolTip } }
     init(id: String, edge: FavBar.Edge, bar: FavBar, editing: Bool = false) {
         self.id = id
         self.edge = edge
@@ -1720,7 +1778,7 @@ final class FavAppCell: NSView, NSDraggingSource {
     }
     func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
         dragging = false
-        if operation.isEmpty, !bar.isDesktop {
+        if operation.isEmpty, !bar.isDesktop, !isExtra {
             NSAnimationEffect.poof.show(centeredAt: screenPoint, size: NSSize(width: 40, height: 40))
             bar.remove(id)
         }
@@ -1740,6 +1798,12 @@ final class FavAppCell: NSView, NSDraggingSource {
         if let mv = FavBar.moveMenu(for: id, except: bar.desktop) { m.addItem(mv); m.addItem(.separator()) }
         if bar.isDesktop {
             m.addItem(FavBar.menuItem(for: id))
+            NSMenu.popUpContextMenu(m, with: e, for: self)
+            return
+        }
+        if isExtra {
+            m.addItem(MenuAction("이 막대에 고정") { [id] in bar.insert(id, at: bar.favs.count) })
+            m.addItem(MenuAction("켜진 앱 보이지 않기 (이 막대)") { bar.showRunning = false })
             NSMenu.popUpContextMenu(m, with: e, for: self)
             return
         }

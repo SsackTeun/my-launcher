@@ -16,6 +16,25 @@ struct PlaylistTrack: Equatable {
     let videoId: String
     let setId: String   // 재생목록 안 자리 ID (빼기 · 옮기기에 씀)
     let thumb: String
+    /// 가수 페이지 ID (UC…) — 가수 링크가 있을 때만
+    var artistId = ""
+}
+
+/// 재생목록 전체 곡 수 (다음 트랙이 50곡씩만 불러와서, 전체가 몇 곡인지 보여 줄 때 씀)
+@MainActor enum PlaylistCount {
+    static var cache: [String: (n: Int, at: Date)] = [:]
+    static var loading = Set<String>()
+    static func get(_ id: String, music: YTMusic?, changed: @escaping () -> Void) -> Int? {
+        if let c = cache[id], Date().timeIntervalSince(c.at) < 60 { return c.n }
+        if !loading.contains(id), let music {
+            loading.insert(id)
+            music.playlistTracks(id) { ts in
+                loading.remove(id)
+                if let ts { cache[id] = (ts.count, Date()); changed() }
+            }
+        }
+        return cache[id]?.n
+    }
 }
 
 extension YTMusic {
@@ -80,8 +99,10 @@ extension YTMusic {
             const d = i.playlistItemData; if (!d || !d.playlistSetVideoId) continue;
             const fx = i.fixedColumns && i.fixedColumns[0] && i.fixedColumns[0].musicResponsiveListItemFixedColumnRenderer;
             const th = ((i.thumbnail && i.thumbnail.musicThumbnailRenderer && i.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails) || []).slice(-1)[0];
+            const ar = ((i.flexColumns[1] && i.flexColumns[1].musicResponsiveListItemFlexColumnRenderer.text.runs) || [])
+              .map(x => x.navigationEndpoint && x.navigationEndpoint.browseEndpoint && x.navigationEndpoint.browseEndpoint.browseId).find(x => x && x.startsWith('UC')) || '';
             out.push({t: txt(i.flexColumns[0]), a: txt(i.flexColumns[1]), d: fx ? (fx.text.runs || [{}])[0].text || '' : '',
-                      v: d.videoId, s: d.playlistSetVideoId, th: th ? th.url : ''});
+                      v: d.videoId, s: d.playlistSetVideoId, th: th ? th.url : '', ar});
           }
           const tok = nextToken(j); if (!tok) break;
           j = await api('browse', {continuation: tok});
@@ -94,7 +115,8 @@ extension YTMusic {
                 let s = $0["s"] as? String ?? ""
                 guard seen.insert(s).inserted else { return nil }
                 return PlaylistTrack(title: $0["t"] as? String ?? "", artist: $0["a"] as? String ?? "", duration: $0["d"] as? String ?? "",
-                                     videoId: $0["v"] as? String ?? "", setId: s, thumb: $0["th"] as? String ?? "")
+                                     videoId: $0["v"] as? String ?? "", setId: s, thumb: $0["th"] as? String ?? "",
+                                     artistId: $0["ar"] as? String ?? "")
             })
         }
     }
@@ -105,6 +127,14 @@ extension YTMusic {
         const j = await api('playlist/create', {title: name, description: '', privacyStatus: 'PRIVATE', videoIds: vids});
         return j.playlistId || null;
         """, ["name": title, "vids": videoIds]) { v in done(v as? String) }
+    }
+
+    /// 재생목록 통째로 지우기 (유튜브 뮤직 계정에서도 지워짐 · 되돌릴 수 없음)
+    func deletePlaylist(_ id: String, done: @escaping (Bool) -> Void) {
+        runAPI("""
+        const j = await api('playlist/delete', {playlistId: pid});
+        return !j.error;
+        """, ["pid": id]) { v in done(v as? Bool ?? false) }
     }
 
     /// 곡 넣기 (이미 있는 곡은 건너뜀). videoIds 와 앨범(MPREb…) 을 섞어 넣을 수 있음
@@ -144,6 +174,8 @@ final class PlaylistPane: NSView {
     private let picker = NSPopUpButton()
     private let playBtn = NSButton()
     private let newBtn = NSButton()
+    private let delBtn = NSButton()
+    private let randBtn = NSButton()
     private let undoBtn = NSButton(title: "되돌리기", target: nil, action: nil)
     private let scroll = NSScrollView()
     private let doc = FlippedView()
@@ -170,7 +202,9 @@ final class PlaylistPane: NSView {
         picker.target = self; picker.action = #selector(picked)
         addSubview(picker)
         for (b, sym, tip, act) in [(playBtn, "play.circle.fill", "이 재생목록 재생", #selector(playAll)),
-                                   (newBtn, "plus.circle", "새 재생목록", #selector(newList))] {
+                                   (newBtn, "plus.circle", "새 재생목록", #selector(newList)),
+                                   (delBtn, "trash", "재생목록 지우기 (여러 개 골라서)", #selector(deleteList)),
+                                   (randBtn, "dice", "랜덤 재생목록 만들기 (가수 · 비중 · 곡 수 · 시간)", #selector(openRandom))] {
             b.image = NSImage(systemSymbolName: sym, accessibilityDescription: tip)
             b.isBordered = false; b.toolTip = tip; b.target = self; b.action = act
             b.symbolConfiguration = .init(pointSize: 16, weight: .regular)
@@ -198,8 +232,10 @@ final class PlaylistPane: NSView {
         let w = bounds.width
         undoBtn.sizeToFit()
         let uw = undoBtn.isHidden ? 0 : undoBtn.frame.width + 6
-        newBtn.frame = NSRect(x: w - 26, y: 2, width: 24, height: 24)
-        playBtn.frame = NSRect(x: newBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        delBtn.frame = NSRect(x: w - 26, y: 2, width: 24, height: 24)
+        newBtn.frame = NSRect(x: delBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        randBtn.frame = NSRect(x: newBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        playBtn.frame = NSRect(x: randBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         undoBtn.frame = NSRect(x: playBtn.frame.minX - uw, y: 5, width: uw - 6, height: 18)
         picker.frame = NSRect(x: 4, y: 2, width: max(80, playBtn.frame.minX - uw - 10), height: 24)
         scroll.frame = NSRect(x: 0, y: 32, width: w, height: bounds.height - 32)
@@ -210,19 +246,53 @@ final class PlaylistPane: NSView {
     // MARK: 불러오기
 
     private var loading = false
+    /// 방금 지운 재생목록 (서버 목록에 잠깐 남아 있어도 숨김)
+    static var recentlyDeleted = Set<String>()
+
+    /// 고르기 칸 · 곡 목록을 이 목록으로
+    private func applyLists(_ ls: [PlaylistInfo]) {
+        lists = ls
+        picker.removeAllItems()
+        for l in ls { picker.menu?.addItem(NSMenuItem(title: l.title, action: nil, keyEquivalent: "")) }
+        if !ls.contains(where: { $0.id == Self.selectedId }) { Self.selectedId = ls.first?.id ?? "" }
+        if let i = ls.firstIndex(where: { $0.id == Self.selectedId }) { picker.selectItem(at: i) }
+        if ls.isEmpty { status.stringValue = "재생목록이 없어요 · ⊕ 로 새로 만들어요"; status.isHidden = false }
+        loadTracks()
+    }
+    /// 재생목록 탭을 열 때: 내 재생목록 중 하나를 듣는 중이면 그 목록을 보여 줌 (보는 목록과 나오는 곡이 달라 헷갈리지 않게)
+    func followPlaying() {
+        guard let l = music?.state?.listId, l.hasPrefix("PL"), l != Self.selectedId, lists.contains(where: { $0.id == l }) else { return }
+        Self.selectedId = l
+        if let i = lists.firstIndex(where: { $0.id == l }) { picker.selectItem(at: i) }
+        loadTracks()
+    }
+    /// 곡이 바뀌면 '지금 재생 중' 표시를 옮김
+    private var lastVid = ""
+    func tickPlaying() {
+        let v = music?.state?.videoId ?? ""
+        guard v != lastVid else { return }
+        lastVid = v
+        if !tracks.isEmpty { show(tracks) }
+    }
+
     func reload(lists again: Bool = true) {
         if again || lists.isEmpty {
             guard !loading else { return }
             loading = true
-            status.stringValue = "재생목록 불러오는 중…"; status.isHidden = false
-            music?.myPlaylists { [weak self] ls in
+            if tracks.isEmpty { status.stringValue = "재생목록 불러오는 중…"; status.isHidden = false }
+            music?.myPlaylists { [weak self] all in
                 guard let self else { return }
+                let ls = all.filter { !Self.recentlyDeleted.contains($0.id) }
                 self.loading = false
-                if ls.isEmpty && !self.lists.isEmpty { return }   // 실패(빈 응답)면 있던 목록 유지
+                // 실패(페이지가 아직 덜 떠서 빈 응답)면 고른 목록을 지우지 않고 다음 시도를 기다림
+                if ls.isEmpty { return }
                 self.lists = ls
+                // 이름이 같은 재생목록이 있어도 하나로 합쳐지지 않게 한 줄씩 (addItems 는 같은 이름을 합쳐 순서가 밀렸음)
                 self.picker.removeAllItems()
-                self.picker.addItems(withTitles: ls.map(\.title))
+                for l in ls { self.picker.menu?.addItem(NSMenuItem(title: l.title, action: nil, keyEquivalent: "")) }
                 if !ls.contains(where: { $0.id == Self.selectedId }) { Self.selectedId = ls.first?.id ?? "" }
+                // 내 재생목록 중 하나를 듣는 중이면 그 목록부터
+                if let l = self.music?.state?.listId, ls.contains(where: { $0.id == l }) { Self.selectedId = l }
                 if let i = ls.firstIndex(where: { $0.id == Self.selectedId }) { self.picker.selectItem(at: i) }
                 if ls.isEmpty { self.status.stringValue = "재생목록이 없어요 · ⊕ 로 새로 만들어요" }
                 self.loadTracks()
@@ -243,8 +313,11 @@ final class PlaylistPane: NSView {
     private func show(_ ts: [PlaylistTrack]) {
         tracks = ts
         doc.subviews.forEach { $0.removeFromSuperview() }
+        let playingHere = music?.state?.listId == Self.selectedId
+        let nowVid = music?.state?.videoId ?? ""
         for (i, t) in ts.enumerated() {
             let r = PlaylistRow(t, index: i)
+            if playingHere && t.videoId == nowVid { r.markPlaying() }
             r.onPlay = { [weak self] in self?.play(from: t) }
             r.onRemove = { [weak self] in self?.remove(t) }
             r.onDrag = { [weak self] row, y, done in self?.dragging(row, y: y, done: done) }
@@ -290,6 +363,78 @@ final class PlaylistPane: NSView {
                 self.reload()
             }
         }
+    }
+
+    /// 🎲 랜덤 재생목록 창 (지금 곡의 가수를 먼저 넣어 둠)
+    @objc private func openRandom() {
+        let w = RandomPlaylistWindow.shared
+        // 만들거나 덧붙인 뒤: 서버 목록이 늦게 바뀌어서 바로 · 3초 · 8초 뒤에 다시 받음
+        w.onCreated = { [weak self] _ in
+            self?.reload()
+            for t in [3.0, 8.0] { DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.reload() } }
+        }
+        music?.currentArtistId { [weak self] id in
+            let name = self?.music?.state?.byline.components(separatedBy: " • ").first ?? ""
+            w.show(music: self?.music, start: id.map { ArtistHit(id: $0, name: name) })
+        }
+    }
+
+    /// 지금 고른 재생목록을 통째로 지우기 (한 번 물어봄)
+    /// 재생목록 지우기: 체크해서 여러 개 한 번에 (지금 보고 있는 목록은 미리 체크)
+    @objc private func deleteList() {
+        guard !lists.isEmpty else { return }
+        // 1) 고르기: 체크 목록 (+ 모두 선택 · 모두 해제)
+        let rowH: CGFloat = 22, w: CGFloat = 320
+        let doc = FlippedView(frame: NSRect(x: 0, y: 0, width: w, height: CGFloat(lists.count) * rowH))
+        var boxes: [NSButton] = []
+        for (i, pl) in lists.enumerated() {
+            let b = NSButton(checkboxWithTitle: pl.sub.isEmpty ? pl.title : "\(pl.title)  ·  \(pl.sub)", target: nil, action: nil)
+            b.state = pl.id == Self.selectedId ? .on : .off
+            b.lineBreakMode = .byTruncatingTail
+            b.frame = NSRect(x: 4, y: CGFloat(i) * rowH, width: w - 8, height: rowH)
+            doc.addSubview(b); boxes.append(b)
+        }
+        let sc = NSScrollView(frame: NSRect(x: 0, y: 0, width: w, height: min(300, CGFloat(lists.count) * rowH)))
+        sc.documentView = doc; sc.hasVerticalScroller = true; sc.borderType = .bezelBorder
+        let pick = NSAlert()
+        pick.messageText = "지울 재생목록을 골라 주세요"
+        pick.informativeText = "여러 개를 체크하면 한 번에 지워요"
+        pick.accessoryView = sc
+        pick.addButton(withTitle: "고른 것 지우기…")
+        pick.addButton(withTitle: "취소")
+        NSApp.activate(ignoringOtherApps: true)
+        guard pick.runModal() == .alertFirstButtonReturn else { return }
+        let chosen = zip(lists, boxes).filter { $0.1.state == .on }.map(\.0)
+        guard !chosen.isEmpty else { return }
+        // 2) 한 번 더 확인 (되돌릴 수 없어서)
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = chosen.count == 1 ? "‘\(chosen[0].title)’ 재생목록을 지울까요?" : "재생목록 \(chosen.count)개를 지울까요?"
+        let names = chosen.prefix(8).map { "· \($0.title)" }.joined(separator: "\n") + (chosen.count > 8 ? "\n… 외 \(chosen.count - 8)개" : "")
+        a.informativeText = names + "\n\n유튜브 뮤직 계정에서도 지워져요 (휴대폰 앱 포함). 되돌릴 수 없어요."
+        a.addButton(withTitle: chosen.count == 1 ? "지우기" : "\(chosen.count)개 지우기")
+        a.addButton(withTitle: "취소")
+        a.buttons[0].hasDestructiveAction = true
+        guard a.runModal() == .alertFirstButtonReturn else { return }
+        // 3) 차례로 지우기
+        var left = chosen, okCount = 0
+        func next() {
+            guard let pl = left.first else {
+                toast?(okCount == chosen.count ? "재생목록 \(okCount)개를 지웠어요" : "\(chosen.count)개 중 \(okCount)개를 지웠어요")
+                let gone = Set(chosen.map(\.id))
+                // 유튜브 뮤직 목록이 몇 초 늦게 바뀌어서, 지운 건 바로 빼고(1분 동안 다시 받아도 숨김) 조금 뒤 새로 받음
+                Self.recentlyDeleted.formUnion(gone)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 60) { Self.recentlyDeleted.subtract(gone) }
+                if gone.contains(Self.selectedId) { Self.selectedId = lists.first(where: { !gone.contains($0.id) })?.id ?? ""; tracks = [] }
+                applyLists(lists.filter { !gone.contains($0.id) })
+                for t in [2.0, 6.0] { DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.reload() } }
+                return
+            }
+            left.removeFirst()
+            toast?("지우는 중… \(chosen.count - left.count)/\(chosen.count)")
+            music?.deletePlaylist(pl.id) { ok in if ok { okCount += 1 }; next() }
+        }
+        next()
     }
 
     /// 새 재생목록 이름 묻기
@@ -395,6 +540,15 @@ final class PlaylistRow: NSView {
     private var moved = false
     override var isFlipped: Bool { true }
 
+    /// 지금 나오는 곡: 번호 대신 빨간 스피커 · 굵게 · 옅은 빨간 바탕
+    private var playing = false
+    func markPlaying() {
+        playing = true
+        num.stringValue = "🔊"
+        t.font = .boldSystemFont(ofSize: QueueRow.titleSize)
+        needsDisplay = true
+    }
+
     init(_ tr: PlaylistTrack, index: Int) {
         self.index = index
         num = NSTextField(labelWithString: "\(index + 1)")
@@ -439,6 +593,10 @@ final class PlaylistRow: NSView {
     override func mouseEntered(with event: NSEvent) { hovering = true }
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func draw(_ dirtyRect: NSRect) {
+        if playing {
+            NSColor.systemRed.withAlphaComponent(0.10).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2), xRadius: 6, yRadius: 6).fill()
+        }
         guard hovering else { return }
         NSColor.labelColor.withAlphaComponent(0.08).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2), xRadius: 6, yRadius: 6).fill()
