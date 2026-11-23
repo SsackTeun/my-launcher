@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>가사</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body data-view="lyrics" class="detached decorated">
+  <div id="app">
+  <header class="dt-head" data-tauri-drag-region><span data-tauri-drag-region>가사</span><span class="dt-tools" id="lyTools"></span><div class="caption">
+        <button data-win="min" title="최소화"><svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1"/></svg></button>
+        <button data-win="max" title="최대화"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/></svg></button>
+        <button data-win="close" class="close" title="닫기"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1"/></svg></button>
+      </div></header>
+    <section id="view" class="lyfull"></section>
+  </div>
+  <script src="common.js"></script>
+  <script src="pron.js"></script>
+  <script src="player.js"></script>
+  <script src="detached.js"></script>
+</body>
+</html>

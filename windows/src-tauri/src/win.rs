@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
-use windows::core::{Interface, PCWSTR, PWSTR};
+use windows::core::{Interface, GUID, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{BOOL, CloseHandle, HWND, LPARAM, MAX_PATH, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::Graphics::Gdi::{
@@ -16,20 +16,20 @@ use windows::Win32::Storage::FileSystem::{
     GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW, FILE_FLAGS_AND_ATTRIBUTES, WIN32_FIND_DATAW,
 };
 use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, STGM_READ,
+    CoCreateInstance, CoInitializeEx, IPersistFile, CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, STGM_READ,
 };
 use windows::Win32::System::Threading::{
     OpenProcess, QueryFullProcessImageNameW, TerminateProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
     PROCESS_TERMINATE,
 };
-use windows::Win32::UI::Shell::{IShellLinkW, SHGetFileInfoW, ShellExecuteW, ShellLink, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
+use windows::Win32::UI::Shell::{IVirtualDesktopManager, VirtualDesktopManager, IShellLinkW, SHGetFileInfoW, ShellExecuteW, ShellLink, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON};
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, EnumWindows, GetIconInfo, GetWindow, GetWindowLongPtrW, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW, SetForegroundWindow, ShowWindow, GWL_EXSTYLE,
     GW_OWNER, ICONINFO, SW_RESTORE, SW_SHOWNORMAL, WM_CLOSE, WS_EX_TOOLWINDOW,
 };
 
-fn wide(s: &str) -> Vec<u16> {
+pub(crate) fn wide(s: &str) -> Vec<u16> {
     std::ffi::OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
 }
 
@@ -62,7 +62,7 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
 }
 
 /// 바로가기(.lnk)가 가리키는 실제 파일
-fn lnk_target(path: &str) -> Option<String> {
+pub(crate) fn lnk_target(path: &str) -> Option<String> {
     unsafe {
         let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
         let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
@@ -183,7 +183,7 @@ pub fn open(path: &str) -> Result<(), String> {
 // MARK: 실행 중인 앱 (보이는 창 기준)
 
 struct Found {
-    windows: Vec<(HWND, u32, String)>,
+    windows: Vec<(HWND, u32, String, u32)>,
 }
 
 unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
@@ -203,9 +203,6 @@ unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
     }
     let mut cloaked: u32 = 0;
     let _ = DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &mut cloaked as *mut _ as *mut c_void, 4);
-    if cloaked != 0 {
-        return BOOL(1);
-    }
     let len = GetWindowTextLengthW(hwnd);
     if len <= 0 {
         return BOOL(1);
@@ -215,19 +212,54 @@ unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {
     let title = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
     let mut pid = 0u32;
     GetWindowThreadProcessId(hwnd, Some(&mut pid));
-    found.windows.push((hwnd, pid, title));
+    found.windows.push((hwnd, pid, title, cloaked));
     BOOL(1)
 }
 
-fn windows_list() -> Vec<(HWND, u32, String)> {
-    let mut f = Found { windows: Vec::new() };
-    unsafe {
-        let _ = EnumWindows(Some(enum_cb), LPARAM(&mut f as *mut _ as isize));
-    }
-    f.windows
+/// 보이는 창 하나 (작업 표시줄에 나올 만한 것)
+pub(crate) struct WinRec {
+    pub hwnd: HWND,
+    pub pid: u32,
+    pub title: String,
+    /// 지금 데스크탑에 있는지
+    pub on_current: bool,
+    /// 가상 데스크톱 id (모르면 빈칸)
+    pub desktop: String,
 }
 
-fn exe_of(pid: u32) -> Option<String> {
+/// 모든 데스크탑의 창. 가려진(cloaked) 창은 다른 데스크탑에 있는 것만 (숨은 UWP 창 등은 뺌)
+pub(crate) fn windows_list_all() -> Vec<WinRec> {
+    let mut f = Found { windows: Vec::new() };
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let _ = EnumWindows(Some(enum_cb), LPARAM(&mut f as *mut _ as isize));
+        let vdm: Option<IVirtualDesktopManager> = CoCreateInstance(&VirtualDesktopManager, None, CLSCTX_ALL).ok();
+        f.windows
+            .into_iter()
+            .filter_map(|(hwnd, pid, title, cloaked)| {
+                let (id, current) = match &vdm {
+                    Some(v) => {
+                        let id = v.GetWindowDesktopId(hwnd).unwrap_or_default();
+                        let cur = v.IsWindowOnCurrentVirtualDesktop(hwnd).map(|b| b.as_bool()).unwrap_or(cloaked == 0);
+                        (id, cur)
+                    }
+                    None => (GUID::zeroed(), cloaked == 0),
+                };
+                if cloaked != 0 && (current || id == GUID::zeroed()) {
+                    return None;
+                }
+                let desktop = if id == GUID::zeroed() { String::new() } else { crate::desk::guid_str(&id) };
+                Some(WinRec { hwnd, pid, title, on_current: current && cloaked == 0, desktop })
+            })
+            .collect()
+    }
+}
+
+fn windows_list() -> Vec<(HWND, u32, String)> {
+    windows_list_all().into_iter().map(|r| (r.hwnd, r.pid, r.title)).collect()
+}
+
+pub(crate) fn exe_of(pid: u32) -> Option<String> {
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
@@ -240,7 +272,7 @@ fn exe_of(pid: u32) -> Option<String> {
 }
 
 /// 실행 파일에 적힌 이름 (예: chrome.exe → "Google Chrome")
-fn file_description(exe: &str) -> Option<String> {
+pub(crate) fn file_description(exe: &str) -> Option<String> {
     unsafe {
         let w = wide(exe);
         let size = GetFileVersionInfoSizeW(PCWSTR(w.as_ptr()), None);

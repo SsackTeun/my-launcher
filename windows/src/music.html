@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>음악</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body class="detached decorated music">
+  <div id="app">
+    <!-- 제목 막대 대신: 잡고 끌어 옮기기 · 두 번 누르면 최대화 · 창 단추 -->
+    <header class="wbar" data-tauri-drag-region>
+      <span class="wbar-t" data-tauri-drag-region>🎵 음악</span>
+      <div class="caption">
+        <button data-win="min" title="최소화"><svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1"/></svg></button>
+        <button data-win="max" title="최대화"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/></svg></button>
+        <button data-win="close" class="close" title="닫기"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1"/></svg></button>
+      </div>
+    </header>
+    <div class="mz">
+      <!-- 왼쪽: 큰 앨범 · 곡 · 조작 -->
+      <aside class="mz-left">
+        <div class="mz-art"><img id="art" alt="" referrerpolicy="no-referrer" hidden></div>
+        <section id="player" class="player"></section>
+      </aside>
+      <!-- 오른쪽: 다음 트랙 · 가사 · 앨범 · 재생목록 · 랜덤 -->
+      <main class="mz-right">
+        <nav class="mz-tabs">
+          <div class="seg" id="mzTabs"></div>
+          <span class="mz-sp"></span>
+          <span class="mz-status" id="mzStatus"></span>
+        </nav>
+        <div class="mz-body" id="mzBody"></div>
+        <div class="mz-bar" id="mzBar" hidden></div>
+      </main>
+    </div>
+  </div>
+  <div id="menu" class="menu" hidden></div>
+  <div id="modal" class="modal" hidden></div>
+  <script src="common.js"></script>
+  <script src="pron.js"></script>
+  <script src="player.js"></script>
+  <script src="music.js"></script>
+</body>
+</html>

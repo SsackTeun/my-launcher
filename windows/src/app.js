@@ -1,11 +1,6 @@
-// 도구함 (Windows) 화면 — 앱 목록 · 카테고리 · 실행 중 · 개발자 앱 · 위젯 모드
+// 도구함 (Windows) 화면 — 앱 목록 · 카테고리 · 실행 중 · 개발자 앱 · 데스크탑 · 위젯 모드 · 플레이어 · 창 정리
+// (T · invoke · $ · esc · toast 는 common.js)
 "use strict";
-
-const T = window.__TAURI__;
-const invoke = (cmd, args) => (T ? T.core.invoke(cmd, args) : Promise.reject("Tauri 밖에서 열림"));
-const win = () => (T ? T.window.getCurrentWindow() : null);
-const $ = (s) => document.querySelector(s);
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 // 아이콘 (SVG)
 const I = {
@@ -22,6 +17,11 @@ const I = {
   download: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6.5" fill="currentColor"/><path d="M8 4.5v5M5.5 7.5L8 10l2.5-2.5" fill="none" stroke="#202024" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   plus: '<svg viewBox="0 0 16 16"><path d="M8 3v10M3 8h10" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
   x: '<svg viewBox="0 0 16 16" width="16" height="16"><circle cx="8" cy="8" r="7" fill="currentColor"/><path d="M5.5 5.5l5 5M10.5 5.5l-5 5" stroke="#202024" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  tidy: '<svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="9" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="5.5" y="6.5" width="9" height="7" rx="1.2" fill="currentColor"/></svg>',
+  video: '<svg viewBox="0 0 16 16"><rect x="1.5" y="3" width="13" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M6.5 5.8v4.4L10.3 8z" fill="currentColor"/></svg>',
+  gear: '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>',
+  handleL: '<svg viewBox="0 0 16 16"><path d="M10 3L5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  handleR: '<svg viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
 };
 
 // MARK: 상태
@@ -38,6 +38,33 @@ const DEFAULT = {
   locked: false,
   collapsed: false,
   crossCategory: true,   // 끝까지 스크롤하면 다음 카테고리로
+  // 플레이어 · 가사
+  showPlayer: true,
+  playerAppOnly: true,   // 미니 플레이어: 도구함 재생기(YouTube Music · YouTube · Netflix)만 (끄면 Windows 볼륨 창에 뜨는 모든 앱)
+  lyricsLine: true,
+  lyricsExpanded: false,
+  lyricsFont: 13,
+  transLang: "",         // 번역 언어 ("" 끔)
+  pron: "off",           // 발음: off · hangul · roman
+  detachPlayer: false,
+  detachLyrics: false,
+  // 청력 보호
+  hearing: false,
+  hearLimit: 0,          // dB, 0 끔
+  earMax: 100,
+  // 모양 · 동작
+  theme: "default",      // default · bear · light
+  themeImage: false,
+  fontScale: 1,
+  confirmQuit: true,
+  closeToTray: true,
+  hideTaskbar: false,    // 켜져 있는 동안 작업 표시줄 자동 숨기기
+  edgeDock: true,        // 위젯을 화면 끝에 붙이면 서랍처럼 접기
+  keepOnScreen: true,    // 창이 화면 밖으로 나가지 않게
+  docked: null,          // 접혀 있는 쪽 (left · right)
+  dockedW: 0,
+  // 자주 쓰는 앱 막대
+  bar: { on: false, edge: "left", reserve: false, size: 44, items: [] },
 };
 let S = structuredClone(DEFAULT);
 let installed = [];      // 시작 메뉴 앱
@@ -49,12 +76,25 @@ let devCatalog = [];     // 개발자 앱 목록 (apps.json 에서 windows 정�
 let devLatest = {};      // 폴더 → { version, url }
 let devStatus = {};      // 폴더 → "받는 중…"
 let expandedH = null;    // 접기 전 창 높이
+let desk = null;         // 데스크탑 탭: { current, list, apps }
+let mem = {};            // 실행 파일 → 메모리 (바이트)
+const pip = {};          // 영상 창 → PIP 켜짐
 const icons = new Map(); // 경로 → data URL
 
 let saveTimer = null;
 function save() {
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => invoke("write_config", { json: JSON.stringify(S) }).catch(() => {}), 250);
+  saveTimer = setTimeout(() => {
+    invoke("write_config", { json: JSON.stringify(S) }).catch(() => {});
+    syncTray();
+  }, 250);
+}
+/// 트레이 메뉴의 앱 목록 = 도구함 앱 모두
+let lastTray = "";
+function syncTray() {
+  const apps = S.cats.flatMap((c) => c.items).map((i) => ({ name: i.name, id: i.id }));
+  const sig = JSON.stringify(apps);
+  if (sig !== lastTray) { lastTray = sig; invoke("tray_apps", { apps }).catch(() => {}); }
 }
 
 // MARK: 도우미
@@ -74,13 +114,6 @@ function locate(id) {
     if (i >= 0) return [c, i];
   }
   return null;
-}
-function toast(msg) {
-  const t = document.createElement("div");
-  t.className = "toast";
-  t.textContent = msg;
-  document.body.appendChild(t);
-  setTimeout(() => t.remove(), 2200);
 }
 
 async function loadIcon(img) {
@@ -113,9 +146,32 @@ async function launchItem(item) {
   invoke("launch", { path: item.id }).catch((e) => toast(String(e)));
 }
 
-async function quitApp(r, force) {
+async function quitApp(r, force, ask = true) {
+  if (ask && S.confirmQuit && !(await confirmBox(`‘${r.name}’ 을 ${force ? "강제 " : ""}종료할까요?`, force ? "저장 안 한 내용은 사라져요." : "저장 안 한 문서가 있으면 앱이 저장할지 물어봐요."))) return;
   await invoke("quit_app", { pid: r.pid, force }).catch(() => {});
   setTimeout(pollRunning, 600);
+}
+/// 여러 앱 종료: 닫기를 부탁하고, 5초 뒤에도 남아 있으면 강제 종료를 권함
+async function quitMany(list) {
+  for (const r of list) await invoke("quit_app", { pid: r.pid, force: false }).catch(() => {});
+  setTimeout(async () => {
+    const left = [];
+    for (const r of list) if (await invoke("is_alive", { pid: r.pid }).catch(() => false)) left.push(r);
+    pollRunning();
+    if (left.length && (await confirmBox(`${left.length}개 앱이 아직 안 꺼졌어요`, left.map((r) => r.name).join(", ") + " — 강제 종료할까요? (저장 안 한 내용은 사라져요)"))) {
+      for (const r of left) await invoke("quit_app", { pid: r.pid, force: true }).catch(() => {});
+      setTimeout(pollRunning, 600);
+    }
+  }, 5000);
+}
+/// 앱 다시 시작: 끄고, 꺼지면 다시 실행
+async function restartApp(r, path) {
+  await invoke("quit_app", { pid: r.pid, force: false }).catch(() => {});
+  for (let k = 0; k < 20; k++) {
+    await new Promise((d) => setTimeout(d, 500));
+    if (!(await invoke("is_alive", { pid: r.pid }).catch(() => false))) { invoke("launch", { path }).catch((e) => toast(String(e))); return; }
+  }
+  toast(`‘${r.name}’ 이 꺼지지 않아서 다시 시작하지 못했어요`);
 }
 
 // MARK: 화면에 보여 줄 묶음
@@ -138,6 +194,14 @@ function sections() {
   if (S.tab === 2) {
     return [{ title: "GitHub 앱", cat: null, items: devCatalog.map((a) => ({ id: "dev:" + a.folder, name: a.name, dev: a })) }];
   }
+  if (S.tab === 3) {
+    if (!desk) return [{ title: "데스크탑", cat: null, items: [] }];
+    return desk.list.map((d) => ({
+      title: d.name + (d.id === desk.current ? " (지금)" : ""),
+      cat: null,
+      items: (desk.apps[d.id] || []).map((a) => ({ id: `desk:${d.id}:${a.exe}`, name: a.name, target: a.exe, other: true, hwnd: a.hwnd, pid: a.pid })),
+    }));
+  }
   return S.cats.map((c, i) => ({ title: c.name, cat: i, items: c.items }));
 }
 function dedupe(items) {
@@ -153,6 +217,7 @@ function render() {
   document.body.classList.toggle("collapsed", S.collapsed && !query);
   document.documentElement.style.setProperty("--icon", S.iconSize + "px");
   renderTop();
+  renderPlayerArea();
   renderTabs();
   const secs = sections();
   const searching = !!query.trim();
@@ -171,16 +236,21 @@ function renderTop() {
   $("#collapseBtn").innerHTML = S.collapsed ? I.down : I.up;
   $("#collapseBtn").title = S.collapsed ? "앱 목록 펼치기" : "앱 목록 접기";
   $("#explorerBtn").innerHTML = I.folder;
+  $("#tidyBtn").innerHTML = I.tidy;
+  // 위쪽 줄을 잡고 창 옮기기 (위치 고정한 위젯은 빼고)
+  $("#top").toggleAttribute("data-tauri-drag-region", !(S.widget && S.locked));
+  $("#gearBtn").innerHTML = I.gear;
   $("#grip").toggleAttribute("data-tauri-drag-region", S.widget && !S.locked);
   $("#grip").title = S.locked ? "위치 고정됨 — 🔒 를 눌러 풀 수 있어요" : "잡고 끌어서 옮기기";
 }
 
 function renderTabs() {
   const ups = devCatalog.filter((a) => hasUpdate(a)).length;
-  const labels = ["전체", `실행 중 ${running.length}`, ups ? `개발자 앱 ●${ups}` : "개발자 앱"];
+  const labels = ["전체", `실행 중 ${running.length}`, ups ? `개발자 앱 ●${ups}` : "개발자 앱", "데스크탑"];
   $("#seg").innerHTML = labels.map((l, i) => `<button data-tab="${i}" class="${i === S.tab ? "on" : ""}">${esc(l)}</button>`).join("");
   const tools = [];
   if (S.tab === 1) tools.push(`<button class="icon" data-tool="quitall" title="모두 종료 (도구함 제외)">${I.power}</button>`);
+  if (S.tab === 3) tools.push(`<button class="icon" data-tool="deskrefresh" title="새로 고침">${I.refresh}</button>`);
   if (S.tab === 2) {
     if (ups) tools.push(`<button class="icon on" style="color:var(--orange)" data-tool="updateall" title="모두 업데이트">${I.download}</button>`);
     tools.push(`<button class="icon" data-tool="devrefresh" title="새로 고침">${I.refresh}</button>`);
@@ -199,17 +269,20 @@ function renderSide(secs, sel) {
 
 function itemHTML(item, ctx) {
   const r = item.dev ? null : (item.other ? running.find((x) => norm(x.exe) === norm(item.target)) : runningOf(item));
-  const iconPath = item.dev ? (devPath(item.dev) || "") : (item.id || "");
+  const iconPath = item.dev ? (devPath(item.dev) || "") : item.other ? item.target : (item.id || "");
+  const m = S.tab === 1 && r && !query ? mem[norm(r.exe)] : null;
+  const memHTML = m ? `<span class="mem" title="메모리 (그 앱의 모든 프로세스 합)">${fmtBytes(m)}</span>` : "";
   const badge = item.dev ? devBadge(item.dev) : null;
   const focus = item.id === focusId ? " focus" : "";
   const missing = item.dev && !devPath(item.dev) ? " missing" : "";
-  const quit = S.tab === 1 && r && !query ? `<button class="quit" data-quit="${r.pid}" title="종료 · Shift 누르고 누르면 강제 종료">${I.x}</button>` : "";
+  const quit = S.tab === 1 && r && !query ? `<button class="quit" data-quit="${r.pid}" title="종료 · Shift(또는 Alt) 누르고 누르면 강제 종료">${I.x}</button>` : "";
   const attrs = `data-id="${esc(item.id)}" data-cat="${ctx.cat ?? ""}" ${ctx.cat != null ? 'draggable="true"' : ""}`;
   const img = `<img data-icon="${esc(iconPath)}" alt="">`;
   const badgeHTML = badge ? `<span class="badge ${badge === "업데이트" ? "update" : ""}">${esc(badge)}</span>` : "";
   const dot = r ? '<span class="dot"></span>' : "";
-  if (S.view === "list") return `<div class="row${focus}${missing}" ${attrs}>${img}<span class="name">${esc(item.name)}</span>${badgeHTML}${quit}${dot}</div>`;
-  return `<div class="tile${focus}${missing}" ${attrs}>${img}<span class="name">${esc(item.name)}</span>${badgeHTML}${quit}${dot}</div>`;
+  const tip = m ? ` title="${esc(item.name)} · 메모리 ${fmtBytes(m)}"` : "";
+  if (S.view === "list") return `<div class="row${focus}${missing}" ${attrs}>${img}<span class="name">${esc(item.name)}</span>${memHTML}${badgeHTML}${quit}${dot}</div>`;
+  return `<div class="tile${focus}${missing}" ${attrs}${tip}>${img}<span class="name">${esc(item.name)}</span>${badgeHTML}${quit}${dot}</div>`;
 }
 
 let visible = []; // 지금 보이는 앱 (스크롤 강조 이동용)
@@ -218,7 +291,7 @@ function renderList(secs, headers) {
   const html = secs.map((s) => {
     const body = s.items.length
       ? `<div class="${S.view === "list" ? "rows" : "grid"}" data-sec-cat="${s.cat ?? ""}">${s.items.map((i) => { visible.push({ item: i, installed: !!s.installed }); return itemHTML(i, s); }).join("")}</div>`
-      : `<div class="hint" data-sec-cat="${s.cat ?? ""}">${query ? `‘${esc(query)}’ 와 맞는 앱이 없어요` : S.tab === 1 ? `실행 중인 ${esc(s.title)}이 없어요` : S.tab === 2 ? "목록이 비어 있어요" : "비어 있음 — ＋ 로 앱을 추가하거나 다른 카테고리에서 끌어다 놓으세요"}</div>`;
+      : `<div class="hint" data-sec-cat="${s.cat ?? ""}">${query ? `‘${esc(query)}’ 와 맞는 앱이 없어요` : S.tab === 1 ? `실행 중인 ${esc(s.title)}이 없어요` : S.tab === 2 ? "목록이 비어 있어요" : S.tab === 3 ? (desk ? "창이 열린 앱이 없어요" : "읽는 중…") : "비어 있음 — ＋ 로 앱을 추가하거나 다른 카테고리에서 끌어다 놓으세요"}</div>`;
     return (headers ? `<div class="head" ${s.cat != null ? `data-cat="${s.cat}" draggable="true"` : ""}>${esc(s.title)} <span class="n">${s.items.length}</span></div>` : "") + body;
   }).join("");
   $("#list").innerHTML = html;
@@ -282,10 +355,20 @@ async function installDev(a) {
 // MARK: 실행 중 (2초마다)
 
 let lastRunSig = "";
+let memAt = 0;
 async function pollRunning() {
   try { running = await invoke("running_apps"); } catch { running = []; }
-  const sig = running.map((r) => r.pid + r.exe).join("|");
-  if (sig !== lastRunSig) { lastRunSig = sig; if (!menuOpen()) render(); }
+  let sig = running.map((r) => r.pid + r.exe).join("|");
+  if (S.tab === 1 && !S.collapsed && Date.now() - memAt > 5000) {
+    memAt = Date.now();
+    try { mem = await invoke("memory_usage"); } catch { /* 건너뜀 */ }
+    sig += JSON.stringify(Object.values(mem).map((b) => Math.round(b / (64 << 20))));
+  } else if (S.tab === 1) sig += JSON.stringify(Object.values(mem).map((b) => Math.round(b / (64 << 20))));
+  if (S.tab === 3) { await loadDesk(); sig += JSON.stringify(desk); }
+  if (sig !== lastRunSig) { lastRunSig = sig; if (!menuOpen() && !document.querySelector(".dragging")) render(); }
+}
+async function loadDesk() {
+  try { desk = await invoke("desktops"); } catch { desk = null; }
 }
 
 // MARK: 우클릭 메뉴
@@ -327,7 +410,7 @@ function addToMenu(app) {
   return S.cats.map((c, ci) => ({ label: c.name, action: () => { S.cats[ci].items.push({ id: app.id, name: app.name, target: app.target }); save(); render(); toast(`‘${app.name}’ 을 ${c.name} 에 넣었어요`); } }));
 }
 
-function itemMenu(item, installedOnly) {
+async function itemMenu(item, installedOnly) {
   if (item.dev) {
     const a = item.dev;
     return [
@@ -337,18 +420,36 @@ function itemMenu(item, installedOnly) {
       { label: "GitHub 에서 보기", action: () => invoke("launch", { path: `https://github.com/${a.repo}` }) },
     ].filter(Boolean);
   }
-  const r = item.other ? running.find((x) => norm(x.exe) === norm(item.target)) : runningOf(item);
+  const r = item.other ? running.find((x) => norm(x.exe) === norm(item.target)) || (item.pid ? { pid: item.pid, exe: item.target, name: item.name } : null) : runningOf(item);
   const mine = !!locate(item.id);
-  const out = [{ label: r ? "앞으로 가져오기" : "실행", action: () => (item.other ? invoke("focus_app", { pid: r.pid }) : launchItem(item)) }];
-  if (installedOnly || item.other) out.push({ label: "도구함에 넣기", children: addToMenu(item) });
+  const path = item.other ? item.target : item.id;
+  const out = [{ label: r ? "앞으로 가져오기" : "실행", action: () => (item.hwnd ? invoke("window_action", { hwnd: item.hwnd, action: "focus" }) : item.other ? invoke("focus_app", { pid: r.pid }) : launchItem(item)) }];
+  if (r) {
+    // Dock 처럼: 열린 창 목록 · 새 창 · 최소화
+    const wins = await invoke("app_windows", { pid: r.pid }).catch(() => []);
+    if (wins.length) {
+      out.push("-", { label: "열린 창", header: true });
+      for (const w of wins.slice(0, 12)) {
+        const t = (w.title || r.name).length > 46 ? (w.title || r.name).slice(0, 45) + "…" : (w.title || r.name);
+        const where = desk && w.desktop && w.desktop !== desk.current ? ` — ${desk.list.find((d) => d.id === w.desktop)?.name || "다른 데스크탑"}` : "";
+        out.push({ label: (w.minimized ? "◦ " : "") + t + where, action: () => invoke("window_action", { hwnd: w.hwnd, action: "focus" }) });
+      }
+      out.push("-",
+        { label: "새 창", action: () => invoke("launch", { path }).catch((e) => toast(String(e))) },
+        { label: "모든 창 최소화", action: () => wins.forEach((w) => invoke("window_action", { hwnd: w.hwnd, action: "minimize" })) },
+        { label: "모든 창 닫기", action: () => wins.forEach((w) => invoke("window_action", { hwnd: w.hwnd, action: "close" })) });
+    }
+  }
+  if (installedOnly || item.other) out.push("-", { label: "도구함에 넣기", children: addToMenu(item) });
+  out.push({ label: "자주 쓰는 앱 막대에 넣기", disabled: S.bar.items.some((b) => norm(b.target || b.id) === norm(item.target || item.id)), action: () => addToBar(item) });
   if (mine) {
     out.push("-", { label: "카테고리 옮기기", children: moveToMenu(item.id) });
     const [c, i] = locate(item.id);
     out.push({ label: "앞으로 옮기기", disabled: i === 0, action: () => moveItem(item.id, c, i - 1) });
     out.push({ label: "뒤로 옮기기", disabled: i === S.cats[c].items.length - 1, action: () => moveItem(item.id, c, i + 2) });
   }
-  out.push("-", { label: "파일 위치 열기", action: () => invoke("reveal", { path: item.id }) });
-  if (r) out.push("-", { label: "종료", action: () => quitApp(r, false) }, { label: "강제 종료", action: () => quitApp(r, true) });
+  out.push("-", { label: "파일 위치 열기", action: () => invoke("reveal", { path }) });
+  if (r) out.push("-", { label: "다시 시작", action: () => restartApp(r, path) }, { label: "종료", action: () => quitApp(r, false) }, { label: "강제 종료", action: () => quitApp(r, true) });
   if (mine) out.push("-", { label: "도구함에서 빼기", action: () => { const [c, i] = locate(item.id); S.cats[c].items.splice(i, 1); save(); render(); } });
   return out;
 }
@@ -369,6 +470,11 @@ function bgMenu() {
   return [
     { label: "앱 추가…", action: () => addDialog(S.sel[0] ?? 0) },
     { label: "새 카테고리…", action: async () => { const n = await ask("새 카테고리 이름"); if (n) { S.cats.push({ name: n, items: [] }); save(); render(); } } },
+    { label: "작업 표시줄 앱 가져오기", action: importTaskbar },
+    "-",
+    { label: "영상 창", children: videoMenu() },
+    { label: "자주 쓰는 앱 막대", checked: S.bar.on, action: () => { S.bar.on = !S.bar.on; save(); syncBar(); } },
+    { label: "플레이어", checked: S.showPlayer, action: () => { S.showPlayer = !S.showPlayer; save(); render(); } },
     "-",
     { label: S.widget ? "위젯 모드 끄기 (일반 창으로)" : "위젯 모드로 바꾸기", action: () => setWidget(!S.widget) },
     ...(S.widget ? [
@@ -380,7 +486,174 @@ function bgMenu() {
     "-",
     { label: "아이콘 크기", children: [24, 32, 40, 56, 72].map((n) => ({ label: `${n}px`, checked: S.iconSize === n, action: () => { S.iconSize = n; save(); render(); } })) },
     { label: "끝까지 스크롤하면 다음 카테고리로", checked: S.crossCategory, action: () => { S.crossCategory = !S.crossCategory; save(); } },
+    "-",
+    { label: "설정…  Ctrl+,", action: settingsDialog },
+    { label: "도구함 다시 시작  Ctrl+R", action: () => invoke("restart_self") },
   ];
+}
+
+// MARK: 창 정리 (맨 위 버튼)
+
+function tidyMenu() {
+  return [
+    { label: "열린 창 모두 닫기", action: async () => { if (await confirmBox("지금 데스크탑의 창을 모두 닫을까요?", "저장 안 한 문서가 있으면 앱이 저장할지 물어봐요.")) toast(`창 ${await invoke("tidy", { action: "close_all" })}개를 닫았어요`); } },
+    { label: "모두 최소화", action: async () => toast(`창 ${await invoke("tidy", { action: "minimize_all" })}개를 최소화했어요`) },
+    { label: "최소화한 창 모두 되살리기", action: async () => toast(`창 ${await invoke("tidy", { action: "restore_all" })}개를 되살렸어요`) },
+    "-",
+    { label: "앱 모두 종료 (도구함 · 탐색기 제외)", action: async () => {
+      const list = running.filter((r) => !/\\explorer\.exe$/i.test(r.exe));
+      if (list.length && (await confirmBox(`앱 ${list.length}개를 모두 종료할까요?`, list.map((r) => r.name).join(", ")))) quitMany(list);
+    } },
+    { label: "앱 골라서 종료…", action: pickQuitDialog },
+  ];
+}
+function pickQuitDialog() {
+  const list = running.filter((r) => !/\\explorer\.exe$/i.test(r.exe));
+  modal.innerHTML = `<div class="box"><h3>종료할 앱 고르기</h3><div class="pick" id="pick">${list.map((r, i) => `<label class="row"><input type="checkbox" data-k="${i}"><img data-icon="${esc(r.exe)}" alt=""><span class="name">${esc(r.name)}</span>${mem[norm(r.exe)] ? `<span class="mem">${fmtBytes(mem[norm(r.exe)])}</span>` : ""}</label>`).join("") || '<div class="hint">실행 중인 앱이 없어요</div>'}</div><div class="btns"><button data-r="all">모두 고르기</button><span style="flex:1"></span><button data-r="0">취소</button><button class="primary" data-r="1">종료</button></div></div>`;
+  modal.hidden = false;
+  modal.querySelectorAll("img[data-icon]").forEach(loadIcon);
+  modal.onclick = (e) => {
+    const b = e.target.closest("[data-r]");
+    if (!b && e.target !== modal) return;
+    if (b?.dataset.r === "all") { const boxes = [...modal.querySelectorAll("input[data-k]")]; const on = !boxes.every((x) => x.checked); boxes.forEach((x) => (x.checked = on)); return; }
+    const chosen = [...modal.querySelectorAll("input[data-k]:checked")].map((x) => list[+x.dataset.k]);
+    modal.hidden = true;
+    if (b?.dataset.r === "1" && chosen.length) quitMany(chosen);
+  };
+}
+
+// MARK: 작업 표시줄 · 영상 창 · 막대
+
+async function importTaskbar() {
+  const apps = await invoke("taskbar_pinned").catch(() => []);
+  if (!apps.length) { toast("작업 표시줄에 고정된 앱을 찾지 못했어요"); return; }
+  let ci = S.cats.findIndex((c) => c.name === "작업 표시줄");
+  if (ci < 0) { S.cats.push({ name: "작업 표시줄", items: [] }); ci = S.cats.length - 1; }
+  let n = 0;
+  for (const a of apps) if (!inLauncher(a.target || a.id)) { S.cats[ci].items.push({ id: a.id, name: a.name, target: a.target }); n++; }
+  save(); render();
+  toast(n ? `${n}개를 ‘작업 표시줄’ 카테고리에 넣었어요` : "새로 넣을 앱이 없어요");
+}
+
+const VIDEO = [["yt-video", "YouTube", "https://www.youtube.com"], ["netflix", "Netflix", "https://www.netflix.com"]];
+function videoMenu() {
+  const out = [];
+  for (const [label, name, url] of VIDEO) {
+    out.push({ label: `${name} 열기`, action: () => invoke("open_window", { label, url, title: name, width: 1100, height: 720 }).catch((e) => toast(String(e))) });
+    out.push({ label: `${name} PIP (항상 위 작은 창)`, checked: !!pip[label], action: async () => {
+      if (!(await invoke("window_exists", { label }))) { await invoke("open_window", { label, url, title: name, width: 1100, height: 720 }); toast("영상을 연 뒤 PIP 를 눌러 주세요"); return; }
+      pip[label] = await invoke("web_pip", { label, on: !pip[label] });
+    } });
+    if (openNow[label]) out.push({ label: `${name} 끄기`, action: () => invoke("close_window", { label }) });
+  }
+  out.push("-", { label: "YouTube Music 열기", action: () => Player.openYTMusic() },
+    { label: "YouTube Music 끄기 (노래 멈춤)", disabled: !ytOpenNow, action: () => invoke("close_window", { label: "ytmusic" }) });
+  return out;
+}
+
+function addToBar(item) {
+  S.bar.items.push({ id: item.other ? item.target : item.id, name: item.name, target: item.target || item.id });
+  if (!S.bar.on) S.bar.on = true;
+  save(); syncBar();
+  toast(`‘${item.name}’ 을 막대에 넣었어요`);
+}
+async function syncBar() {
+  if (S.bar.on) {
+    invoke("open_window", { label: "bar", url: "bar.html", title: "자주 쓰는 앱", width: 60, height: 300, frameless: true, onTop: true }).catch((e) => toast(String(e)));
+  } else if (await invoke("window_exists", { label: "bar" }).catch(() => false)) {
+    await invoke("appbar_release").catch(() => {});
+    invoke("close_window", { label: "bar" });
+  }
+}
+/// 떼어 낸 플레이어 · 가사 줄 창
+async function syncDetached() {
+  for (const [key, label, url, w, h] of [["detachPlayer", "player", "player.html", 340, 166], ["detachLyrics", "line", "line.html", 420, 90]]) {
+    const pos = S[label + "Pos"];
+    if (S[key]) invoke("open_window", { label, url, title: label === "player" ? "플레이어" : "가사 줄", width: w, height: h, x: pos?.[0], y: pos?.[1], frameless: true, onTop: true }).catch(() => {});
+    else if (await invoke("window_exists", { label }).catch(() => false)) invoke("close_window", { label });
+  }
+}
+
+// MARK: 설정
+
+function settingsDialog() {
+  const opt = (v, cur, t) => `<option value="${esc(v)}" ${String(v) === String(cur) ? "selected" : ""}>${esc(t)}</option>`;
+  const chk = (k, t, sub) => `<label class="set-ck"><input type="checkbox" data-k="${k}" ${S[k] ? "checked" : ""}><span>${t}${sub ? `<small>${sub}</small>` : ""}</span></label>`;
+  modal.innerHTML = `<div class="box wide"><h3>설정</h3><div class="settings">
+    <h4>모양</h4>
+    <label class="set-row">테마 <select data-k="theme">${opt("default", S.theme, "기본 (어두운 반투명)")}${opt("light", S.theme, "밝게")}${opt("bear", S.theme, "곰 (우유색 · 갈색 · 분홍)")}</select></label>
+    <label class="set-row">배경 그림 <span><button data-act="pickimg">고르기…</button> ${S.themeImage ? '<button data-act="clearimg">지우기</button>' : ""}</span></label>
+    <label class="set-row">글자 크기 <select data-k="fontScale">${[0.8, 0.9, 1, 1.1, 1.2, 1.3, 1.4].map((v) => opt(v, S.fontScale, Math.round(v * 100) + "%")).join("")}</select></label>
+    <label class="set-row">아이콘 크기 <select data-k="iconSize">${[24, 32, 40, 56, 72, 96, 128].map((v) => opt(v, S.iconSize, v + "px")).join("")}</select></label>
+    <h4>동작</h4>
+    ${chk("closeToTray", "창을 닫으면 트레이로 (알림 영역 🧰 에서 다시 열기)")}
+    ${chk("confirmQuit", "앱을 종료하기 전에 물어보기")}
+    ${chk("hideTaskbar", "도구함이 켜져 있는 동안 작업 표시줄 자동 숨기기", "끄면 · 도구함을 끝내면 원래대로")}
+    ${chk("edgeDock", "위젯을 화면 왼쪽 · 오른쪽 끝에 붙이면 서랍 손잡이로 접기")}
+    ${chk("keepOnScreen", "창이 화면 밖으로 나가지 않게")}
+    <label class="set-ck"><input type="checkbox" data-act="autostart" id="autoChk"><span>로그인 시 자동 실행</span></label>
+    <h4>플레이어 · 가사</h4>
+    ${chk("showPlayer", "미니 플레이어 보이기")}
+    ${chk("playerAppOnly", "도구함 재생기만 (YouTube Music · YouTube · Netflix)", "‹ › 로 넘기고, 새로 재생을 시작하면 그 재생기로 넘어가며 나머지는 일시정지. 끄면 Windows 볼륨 창에 곡이 뜨는 앱이면 무엇이든")}
+    ${chk("lyricsLine", "플레이어 아래 가사 줄")}
+    <label class="set-row">번역 <select data-k="transLang">${LANGS.map(([c, n]) => opt(c, S.transLang, n)).join("")}</select></label>
+    <label class="set-row">발음 <select data-k="pron">${opt("off", S.pron, "끔")}${opt("hangul", S.pron, "한글 발음 (일본어 · 중국어)")}${opt("roman", S.pron, "로마자 (라틴 문자가 아닌 가사)")}</select></label>
+    <p class="set-note">번역 · 발음을 켜면 가사 글자가 Google 번역으로 보내져요 (Mac 판은 기기 안 Apple 번역).</p>
+    <h4>청력 보호</h4>
+    ${chk("hearing", "귀에 들어가는 크기 · 오늘 들은 양 보이기", "85dB 로 8시간이 하루 허용량 (3dB 커질 때마다 절반)")}
+    <label class="set-row">이어폰 최대 크기 <select data-k="earMax">${[90, 95, 100, 105, 110].map((v) => opt(v, S.earMax, v + " dB")).join("")}</select></label>
+    <label class="set-row">크기 제한 <select data-k="hearLimit">${opt(0, S.hearLimit, "끔")}${[75, 80, 85, 90].map((v) => opt(v, S.hearLimit, v + " dB 넘으면 볼륨 낮춤")).join("")}</select></label>
+    <h4>자주 쓰는 앱 막대</h4>
+    <label class="set-ck"><input type="checkbox" data-bar="on" ${S.bar.on ? "checked" : ""}><span>막대 켜기</span></label>
+    <label class="set-row">위치 <select data-bar="edge">${opt("left", S.bar.edge, "왼쪽")}${opt("right", S.bar.edge, "오른쪽")}${opt("top", S.bar.edge, "위")}${opt("bottom", S.bar.edge, "아래")}</select></label>
+    <label class="set-ck"><input type="checkbox" data-bar="reserve" ${S.bar.reserve ? "checked" : ""}><span>막대 자리 비워 두기<small>다른 창이 막대 자리를 덮지 않게 (최대화한 창도 막대 옆까지)</small></span></label>
+    <label class="set-row">아이콘 크기 <select data-bar="size">${[32, 40, 44, 52, 64].map((v) => opt(v, S.bar.size, v + "px")).join("")}</select></label>
+  </div><div class="btns"><button class="primary" data-r="1">닫기</button></div></div>`;
+  modal.hidden = false;
+  invoke("autostart", {}).then((v) => ($("#autoChk").checked = v)).catch(() => {});
+  modal.onclick = async (e) => {
+    const act = e.target.closest("[data-act]")?.dataset.act;
+    if (act === "pickimg") { e.preventDefault(); pickImage(); return; }
+    if (act === "clearimg") { e.preventDefault(); await invoke("theme_image", { set: "" }); S.themeImage = false; save(); applySettings(); settingsDialog(); return; }
+    if (e.target.closest("[data-r]") || e.target === modal) modal.hidden = true;
+  };
+  modal.onchange = (e) => {
+    const t = e.target;
+    if (t.dataset.act === "autostart") { invoke("autostart", { on: t.checked }).then(() => syncTray()); return; }
+    if (t.dataset.bar) {
+      const k = t.dataset.bar;
+      S.bar = { ...S.bar, [k]: t.type === "checkbox" ? t.checked : k === "size" ? +t.value : t.value };
+      save(); syncBar(); return;
+    }
+    const k = t.dataset.k;
+    if (!k) return;
+    S[k] = t.type === "checkbox" ? t.checked : typeof DEFAULT[k] === "number" ? +t.value : t.value;
+    save(); render(); applySettings();
+  };
+}
+function pickImage() {
+  const inp = document.createElement("input");
+  inp.type = "file"; inp.accept = "image/*";
+  inp.onchange = () => {
+    const f = inp.files[0];
+    if (!f) return;
+    if (f.size > 8 << 20) { toast("8MB 보다 작은 그림을 골라 주세요"); return; }
+    const rd = new FileReader();
+    rd.onload = async () => { await invoke("theme_image", { set: rd.result }); S.themeImage = true; save(); applySettings(); settingsDialog(); };
+    rd.readAsDataURL(f);
+  };
+  inp.click();
+}
+let taskbarSet = null;
+function applySettings() {
+  invoke("set_close_to_tray", { on: !!S.closeToTray }).catch(() => {});
+  invoke("media_mode", { appOnly: S.playerAppOnly !== false }).catch(() => {});
+  if (taskbarSet !== S.hideTaskbar && (S.hideTaskbar || taskbarSet)) invoke("taskbar_autohide", { on: !!S.hideTaskbar }).catch(() => {});
+  taskbarSet = S.hideTaskbar;
+  invoke("hearing", { on: !!S.hearing, limit: +S.hearLimit || 0, earMax: +S.earMax || 100 }).catch(() => {});
+  applyTheme(S);
+  Player.setCfg(S);
+  syncDetached();
 }
 
 // MARK: 카테고리 · 순서
@@ -467,7 +740,7 @@ async function applyWindow() {
   const w = win();
   if (!w) return;
   try {
-    await w.setDecorations(!S.widget);
+    await w.setDecorations(false); // 제목 막대는 늘 숨기고, 일반 창일 때는 위쪽 줄에 창 버튼
     await w.setSkipTaskbar(S.widget);
     await w.setAlwaysOnTop(S.widget && S.level === "top");
     await w.setAlwaysOnBottom(S.widget && S.level === "bottom");
@@ -485,7 +758,7 @@ async function setCollapsed(on) {
     if (on) {
       expandedH = size.height;
       render();
-      const h = $("#app").querySelector("#grip").offsetHeight + $("#top").offsetHeight + 4;
+      const h = $("#app").querySelector("#grip").offsetHeight + $("#top").offsetHeight + $("#player").offsetHeight + $("#lyline").offsetHeight + 6;
       await w.setSize(new T.dpi.LogicalSize(size.width, h));
     } else {
       render();
@@ -513,6 +786,7 @@ $("#q").addEventListener("keydown", (e) => {
 function openVisible(v) {
   const it = v.item;
   if (it.dev) { it.dev.path ? invoke("launch", { path: it.dev.path }) : installDev(it.dev); return; }
+  if (it.hwnd) { invoke("window_action", { hwnd: it.hwnd, action: "focus" }); return; }
   if (it.other) { const r = running.find((x) => norm(x.exe) === norm(it.target)); if (r) invoke("focus_app", { pid: r.pid }); return; }
   launchItem(it);
 }
@@ -520,12 +794,25 @@ function openVisible(v) {
 $("#lockBtn").onclick = () => { S.locked = !S.locked; save(); render(); };
 $("#collapseBtn").onclick = () => setCollapsed(!S.collapsed);
 $("#explorerBtn").onclick = () => invoke("launch", { path: "explorer.exe" });
+$("#tidyBtn").onclick = (e) => { const r = e.currentTarget.getBoundingClientRect(); showMenu(r.left, r.bottom + 4, tidyMenu()); };
+$("#gearBtn").onclick = settingsDialog;
+let ytOpenNow = false;
+const openNow = {};
+async function refreshOpen() { for (const [l] of VIDEO) openNow[l] = await invoke("window_exists", { label: l }).catch(() => false); }
+// MARK: 재생기 단추 (맨 위 줄) — sites.js (떼어 낸 플레이어와 같이 씀)
+Sites.mount($("#sites"), showMenu);
+Sites.onChange(() => { Object.assign(pip, Sites.pip); Object.assign(openNow, Sites.open); ytOpenNow = !!Sites.open.ytmusic; });
+$("#minBtn").onclick = () => win()?.minimize();
+$("#maxBtn").onclick = () => win()?.toggleMaximize();
+$("#closeBtn").onclick = () => win()?.close();
 
 $("#seg").onclick = (e) => {
   const b = e.target.closest("[data-tab]");
   if (!b) return;
   S.tab = +b.dataset.tab; focusId = null; save(); render();
   if (S.tab === 2) loadDev(true);
+  if (S.tab === 1) { memAt = 0; pollRunning(); }
+  if (S.tab === 3) loadDesk().then(render);
 };
 $("#tools").onclick = async (e) => {
   const b = e.target.closest("[data-tool]");
@@ -536,13 +823,14 @@ $("#tools").onclick = async (e) => {
   if (t === "add") addDialog(S.sel[0] ?? 0);
   if (t === "devrefresh") loadDev(true);
   if (t === "updateall") devCatalog.filter(hasUpdate).forEach(installDev);
-  if (t === "quitall" && (await confirmBox(`실행 중인 앱 ${running.length}개를 모두 종료할까요?`, "저장 안 한 문서가 있으면 각 앱이 저장할지 물어봐요."))) running.forEach((r) => quitApp(r, false));
+  if (t === "quitall" && (await confirmBox(`실행 중인 앱 ${running.length}개를 모두 종료할까요?`, "저장 안 한 문서가 있으면 각 앱이 저장할지 물어봐요. 5초 안에 안 꺼지면 강제 종료를 물어봐요."))) quitMany(running);
+  if (t === "deskrefresh") { await loadDesk(); render(); }
 };
 
 // 클릭 · 우클릭
 $("#list").addEventListener("click", (e) => {
   const q = e.target.closest("[data-quit]");
-  if (q) { e.stopPropagation(); const r = running.find((x) => x.pid === +q.dataset.quit); if (r) quitApp(r, e.shiftKey); return; }
+  if (q) { e.stopPropagation(); const r = running.find((x) => x.pid === +q.dataset.quit); if (r) quitApp(r, e.shiftKey || e.altKey); return; }
   const el = e.target.closest("[data-id]");
   if (!el) return;
   const v = visible.find((x) => x.item.id === el.dataset.id);
@@ -553,10 +841,14 @@ $("#side").addEventListener("click", (e) => {
   if (!el) return;
   S.sel[S.tab] = +el.dataset.side; focusId = null; save(); render();
 });
-document.addEventListener("contextmenu", (e) => {
+document.addEventListener("contextmenu", async (e) => {
   e.preventDefault();
+  if (e.target.closest("#player, #lyline, #modal")) return;
+  for (const [l] of VIDEO) pip[l] = await invoke("web_pip_state", { label: l }).catch(() => false);
+  ytOpenNow = await invoke("window_exists", { label: "ytmusic" }).catch(() => false);
+  await refreshOpen();
   const item = e.target.closest("[data-id]");
-  if (item) { const v = visible.find((x) => x.item.id === item.dataset.id); if (v) showMenu(e.clientX, e.clientY, itemMenu(v.item, v.installed)); return; }
+  if (item) { const v = visible.find((x) => x.item.id === item.dataset.id); if (v) showMenu(e.clientX, e.clientY, await itemMenu(v.item, v.installed)); return; }
   const cat = e.target.closest("[data-cat]");
   if (cat && cat.dataset.cat !== "") { showMenu(e.clientX, e.clientY, catMenu(+cat.dataset.cat)); return; }
   showMenu(e.clientX, e.clientY, bgMenu());
@@ -621,13 +913,19 @@ $("#list").addEventListener("wheel", (e) => {
 // 끌어다 놓기: 앱 → 자리 · 카테고리, 카테고리 → 순서
 let drag = null;
 document.addEventListener("dragstart", (e) => {
-  const app = e.target.closest("[data-id][draggable]");
+  const app = e.target.closest("[data-id]");
+  if (app && !app.hasAttribute("draggable")) { // 실행 중 · 데스크탑 탭 앱: 막대로만 끌기
+    const v = visible.find((x) => x.item.id === app.dataset.id);
+    if (v) { e.dataTransfer.setData("text/plain", "mylauncher:" + JSON.stringify({ id: v.item.other ? v.item.target : v.item.id, name: v.item.name, target: v.item.target || v.item.id })); e.dataTransfer.effectAllowed = "copy"; }
+    return;
+  }
   const cat = e.target.closest("[data-cat][draggable]:not([data-id])");
   if (app) drag = { kind: "app", id: app.dataset.id };
   else if (cat) drag = { kind: "cat", cat: +cat.dataset.cat };
   else return;
-  e.dataTransfer.effectAllowed = "move";
-  e.dataTransfer.setData("text/plain", "x");
+  e.dataTransfer.effectAllowed = "copyMove";
+  const v = app && visible.find((x) => x.item.id === app.dataset.id);
+  e.dataTransfer.setData("text/plain", v ? "mylauncher:" + JSON.stringify({ id: v.item.other ? v.item.target : v.item.id, name: v.item.name, target: v.item.target || v.item.id }) : "x");
   (app || cat).classList.add("dragging");
 });
 document.addEventListener("dragend", () => {
@@ -691,10 +989,119 @@ $("#resize").addEventListener("mousedown", (e) => {
     if (raw) S = { ...structuredClone(DEFAULT), ...JSON.parse(raw) };
   } catch { /* 처음 */ }
   if (!S.cats.length) S.cats = structuredClone(DEFAULT.cats);
+  S.bar = { ...DEFAULT.bar, ...(S.bar || {}) };
+  if (S.docked && S.widget) {
+    document.body.classList.add("docked");
+    document.body.dataset.edge = S.docked;
+    $("#edgeHandle").innerHTML = S.docked === "left" ? I.handleR : I.handleL;
+    win()?.setMinSize(new T.dpi.LogicalSize(16, 100)).catch(() => {});
+  } else S.docked = null;
   render();
   applyWindow();
+  Player.start(S);
+  applySettings();
+  syncTray();
+  syncBar();
   pollRunning();
   setInterval(pollRunning, 2000);
   loadDev(false);
   loadInstalled();
+  // 다른 창(떼어 낸 플레이어 · 가사 · 막대)이 설정을 바꿔 달라고 할 때
+  T.event.listen("cfg-set", (e) => {
+    const { key, value } = e.payload || {};
+    if (!key) return;
+    S[key] = value;
+    save(); render(); applySettings();
+    if (key === "bar") syncBar();
+  });
+  // 위치 기억 · 화면 밖으로 안 나가게 · 화면 끝 서랍
+  const w = win();
+  let moveTimer = null;
+  w.onMoved(() => { clearTimeout(moveTimer); moveTimer = setTimeout(afterMove, 450); });
+  setTimeout(afterMove, 600);
 })();
+
+// MARK: 플레이어 · 가사 줄 (도구함 창 안)
+
+function renderPlayerArea() {
+  const showP = S.showPlayer && !S.detachPlayer;
+  const showL = showP && S.lyricsLine && !S.detachLyrics;
+  $("#player").hidden = !showP;
+  $("#lyline").hidden = !showL;
+  if (showP) Player.renderPlayer($("#player"), { lyricsOn: S.lyricsLine });
+  if (showL) Player.renderLine($("#lyline"));
+}
+Player.on((tick) => {
+  if (tick) { if (S.showPlayer && !S.detachPlayer) { Player.tickPlayer($("#player")); if (S.lyricsLine && !S.detachLyrics) Player.renderLine($("#lyline")); } return; }
+  renderPlayerArea();
+});
+Player.bindPlayer($("#player"), {
+  lyrics: () => { S.lyricsLine = !S.lyricsLine; save(); renderPlayerArea(); },
+  detach: () => { S.detachPlayer = true; save(); renderPlayerArea(); syncDetached(); },
+});
+Player.bindLine($("#lyline"), {
+  detach: () => { S.detachLyrics = true; save(); renderPlayerArea(); syncDetached(); },
+});
+
+// MARK: 단축키
+
+document.addEventListener("keydown", (e) => {
+  if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+    if (e.key === "f" || e.key === "F") { e.preventDefault(); $("#q").focus(); $("#q").select(); }
+    if (e.key === "r" || e.key === "R") { e.preventDefault(); invoke("restart_self"); }
+    if (e.key === ",") { e.preventDefault(); settingsDialog(); }
+  }
+  if (e.key === "Escape" && menuOpen()) closeMenu();
+});
+
+// MARK: 화면 끝 서랍 · 화면 안으로
+
+async function afterMove() {
+  const w = win();
+  if (!w || S.docked) return;
+  const p = await w.outerPosition(), sz = await w.outerSize();
+  const a = await invoke("work_area_at", { x: Math.round(p.x + sz.width / 2), y: Math.round(p.y + Math.min(40, sz.height / 2)) }).catch(() => null);
+  if (!a) return;
+  // 화면 밖으로 나갔으면 가장 가까운 화면 안으로 밀어 넣기
+  if (S.keepOnScreen) {
+    const nx = Math.max(a.x, Math.min(p.x, a.x + a.w - sz.width));
+    const ny = Math.max(a.y, Math.min(p.y, a.y + a.h - Math.min(sz.height, a.h)));
+    if (nx !== p.x || ny !== p.y) { await w.setPosition(new T.dpi.PhysicalPosition(nx, ny)); return; }
+  }
+  // 위젯이 왼쪽 · 오른쪽 끝에 붙어 있으면 서랍 손잡이
+  let side = "";
+  if (S.edgeDock && S.widget) {
+    if (Math.abs(p.x - a.x) <= 14) side = "left";
+    else if (Math.abs(p.x + sz.width - (a.x + a.w)) <= 14) side = "right";
+  }
+  document.body.dataset.edge = side;
+  $("#edgeHandle").innerHTML = side === "left" ? I.handleL : I.handleR;
+}
+async function setDocked(side) {
+  const w = win();
+  const f = await w.scaleFactor();
+  const p = await w.outerPosition(), sz = await w.outerSize();
+  const a = await invoke("work_area_at", { x: Math.round(p.x + sz.width / 2), y: Math.round(p.y + 20) });
+  if (side) {
+    S.dockedW = sz.width / f;
+    S.docked = side;
+    document.body.classList.add("docked");
+    $("#edgeHandle").innerHTML = side === "left" ? I.handleR : I.handleL;
+    await w.setMinSize(new T.dpi.LogicalSize(16, 100)).catch(() => {});
+    await w.setSize(new T.dpi.LogicalSize(18, sz.height / f));
+    await w.setPosition(new T.dpi.PhysicalPosition(side === "left" ? a.x : a.x + a.w - Math.round(18 * f), p.y));
+  } else {
+    const was = S.docked;
+    S.docked = null;
+    document.body.classList.remove("docked");
+    const wd = S.dockedW || 420;
+    await w.setSize(new T.dpi.LogicalSize(wd, sz.height / f));
+    await w.setPosition(new T.dpi.PhysicalPosition(was === "left" ? a.x : a.x + a.w - Math.round(wd * f), p.y));
+    await w.setMinSize(new T.dpi.LogicalSize(300, 200)).catch(() => {});
+    afterMove();
+  }
+  save();
+}
+$("#edgeHandle").addEventListener("click", () => setDocked(S.docked ? null : document.body.dataset.edge));
+$("#edgeHandle").addEventListener("dragenter", () => { if (S.docked) setDocked(null); });
+

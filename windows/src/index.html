@@ -11,7 +11,7 @@
     <!-- 위젯 모드: 잡고 끌어서 옮기는 손잡이 -->
     <div id="grip" title="잡고 끌어서 옮기기"><span></span></div>
 
-    <header id="top">
+    <header id="top" data-tauri-drag-region>
       <div class="search">
         <svg viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
         <input id="q" type="search" placeholder="앱 찾기" autocomplete="off" spellcheck="false" />
@@ -19,7 +19,21 @@
       <button class="icon" id="lockBtn" title="창 위치 고정"></button>
       <button class="icon" id="collapseBtn" title="앱 목록 접기"></button>
       <button class="icon" id="explorerBtn" title="파일 탐색기 열기"></button>
+      <!-- 재생기 단추: YouTube Music · YouTube · Netflix (누르기 열기 · Shift+누르기 PIP · 오른쪽 클릭 메뉴) -->
+      <div class="sites" id="sites"></div>
+      <button class="icon" id="tidyBtn" title="창 정리"></button>
+      <button class="icon" id="gearBtn" title="설정 (Ctrl+,)"></button>
+      <!-- 제목 막대 대신: 최소화 · 최대화 · 닫기 (위젯 모드에서는 숨김) -->
+      <div class="caption" id="caption">
+        <button id="minBtn" title="최소화"><svg viewBox="0 0 10 10"><path d="M1 5h8" stroke="currentColor" stroke-width="1"/></svg></button>
+        <button id="maxBtn" title="최대화"><svg viewBox="0 0 10 10"><rect x="1.5" y="1.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"/></svg></button>
+        <button id="closeBtn" class="close" title="닫기"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7" stroke="currentColor" stroke-width="1"/></svg></button>
+      </div>
     </header>
+
+    <!-- 미니 플레이어 · 가사 줄 (접어도 보임) -->
+    <section id="player" class="player" hidden></section>
+    <section id="lyline" class="lyline" hidden></section>
 
     <nav id="tabs">
       <div class="seg" id="seg"></div>
@@ -35,9 +49,16 @@
     <div id="resize" title="끌어서 크기 조절"><span></span></div>
   </div>
 
+  <!-- 화면 끝에 붙인 위젯의 서랍 손잡이 -->
+  <button id="edgeHandle" title="서랍처럼 접기 / 펼치기"></button>
+
   <div id="menu" class="menu" hidden></div>
   <div id="modal" class="modal" hidden></div>
 
+  <script src="common.js"></script>
+  <script src="pron.js"></script>
+  <script src="player.js"></script>
+  <script src="sites.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
