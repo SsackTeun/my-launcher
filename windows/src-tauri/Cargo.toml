@@ -1,6 +1,6 @@
 [package]
 name = "my-launcher"
-version = "0.3.1"
+version = "0.3.2"
 description = "도구함 (Windows) — 내 앱들을 카테고리별로 모아 실행하는 런처"
 edition = "2021"
 
@@ -16,6 +16,7 @@ tauri = { version = "2", features = ["tray-icon"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["sync"] }
+tauri-plugin-single-instance = "2"
 base64 = "0.22"
 png = "0.17"
 zip = { version = "2", default-features = false, features = ["deflate"] }

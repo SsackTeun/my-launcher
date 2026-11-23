@@ -328,17 +328,31 @@ async function loadQueue(quiet) {
   if (!quiet) status("읽는 중…");
   let q;
   try { q = await call("queue", {}, 15); } catch (e) { fail(e); return; }
+  q = Array.isArray(q) ? q : [];
   status("");
   if (tab !== 0) return;
   const sig = JSON.stringify(q.map((x) => [x.vid, x.cur]));
   if (quiet && sig === queueSig) return;
   queueSig = sig;
   if (!q.length) { body.innerHTML = `<div class="mz-empty">다음 트랙이 비어 있어요<br><small>YouTube Music 에서 곡이나 재생목록을 틀면 여기에 나와요</small></div>`; return; }
-  body.innerHTML = q.map((x) => `<div class="mz-row ${x.cur ? "cur" : ""} ${x.auto ? "auto" : ""}" data-i="${x.i}" data-vid="${esc(x.vid)}" data-aid="${esc(x.aid)}" data-artist="${esc(artistOf(x.artist))}">
-      <input type="checkbox" class="pick" ${picked.has(x.vid) ? "checked" : ""} title="골라서 재생목록에 넣기">
+  // 몇 곡 중 몇 번째 · 남은 시간 (위) / 전체 재생시간 (아래). 자동재생으로 붙은 곡은 따로 셈
+  const main = q.filter((x) => !x.auto);
+  const curK = q.findIndex((x) => x.cur);
+  const total = main.reduce((a, x) => a + secsOf(x.dur), 0);
+  const autoTotal = q.filter((x) => x.auto).reduce((a, x) => a + secsOf(x.dur), 0);
+  const st = Player.state();
+  const leftNow = curK >= 0 ? Math.max(0, secsOf(q[curK].dur) - (st.position || 0)) : 0;
+  const after = curK >= 0 ? main.filter((x, k) => q.indexOf(x) > curK).reduce((a, x) => a + secsOf(x.dur), 0) : total;
+  const head = curK >= 0 && !q[curK].auto
+    ? `<b>${main.length}곡 중 ${main.indexOf(q[curK]) + 1}번째</b> · 남은 시간 ${hms(leftNow + after)}`
+    : `<b>${main.length}곡</b>`;
+  body.innerHTML = `<div class="mz-qhead">${head}</div>` + q.map((x, k) => `<div class="mz-row ${x.cur ? "cur" : ""} ${x.auto ? "auto" : ""}" data-i="${x.i}" data-vid="${esc(x.vid)}" data-aid="${esc(x.aid)}" data-artist="${esc(artistOf(x.artist))}">
+      <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.vid) ? "checked" : ""} title="골라서 재생목록에 넣기"></span>
       ${x.th ? `<img src="${esc(x.th)}" alt="" referrerpolicy="no-referrer">` : '<span class="mz-noimg"></span>'}
       <span class="mz-t"><b>${esc(x.title)}</b><small>${esc(x.artist)}</small></span>
-      <span class="mz-d">${x.cur ? "▶ " : ""}${esc(x.dur)}</span></div>`).join("");
+      <span class="mz-d">${esc(x.dur)}</span></div>`).join("") +
+    `<div class="mz-qfoot">전체 ${main.length}곡 · ${hms(total)}${autoTotal ? ` <small>+ 자동재생 ${q.length - main.length}곡 · ${hms(autoTotal)}</small>` : ""}</div>`;
+  body.classList.toggle("picking", picked.size > 0);
   body.querySelector(".mz-row.cur")?.scrollIntoView({ block: "center" });
 }
 body.addEventListener("change", (e) => {
@@ -348,6 +362,7 @@ body.addEventListener("change", (e) => {
   const set = row.dataset.album ? pickedAlbums : picked;
   const k = row.dataset.album || row.dataset.vid;
   c.checked ? set.add(k) : set.delete(k);
+  body.classList.toggle("picking", picked.size + pickedAlbums.size > 0);
   drawBar();
 });
 body.addEventListener("click", async (e) => {
@@ -979,3 +994,8 @@ async function moreRec() {
     pick.map((a, i) => `<button class="pl-open ghost" data-rec="${i}" title="이 장르 재생목록에 ${a.n}번 나옴">＋ ${esc(a.name)}</button>`).join("") +
     `<button class="pl-open" data-rec="all">모두 넣기</button><button class="pl-open ghost" data-more="1" title="아직 안 보여 준 가수">다른 가수 보기 ↻</button>`;
 }
+
+/// '3:45' · '1:02:03' → 초
+function secsOf(t) { return String(t || "").split(":").reduce((a, x) => a * 60 + (parseInt(x, 10) || 0), 0); }
+/// 초 → '3:45' · '1:02:03'
+function hms(s) { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = String(s % 60).padStart(2, "0"); return h ? `${h}:${String(m).padStart(2, "0")}:${x}` : `${m}:${x}`; }

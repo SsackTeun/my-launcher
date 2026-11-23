@@ -575,6 +575,11 @@ fn dev_app_path(folder: String, exe: String) -> Option<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // 하나만 켜지게: 이미 켜져 있으면 새로 켜지 않고, 켜져 있던 도구함의 대표 창(플레이어 창 등)을 앞으로
+        // (맨 먼저 등록해야 두 번째 실행이 다른 일을 하기 전에 끝남)
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            show_main(app);
+        }))
         .manage(IconCache(Mutex::new(HashMap::new())))
         .manage(TrayApps(Mutex::new(Vec::new())))
         .setup(|app| {
