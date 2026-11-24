@@ -64,3 +64,30 @@ const fmtTime = (s) => {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 };
 const fmtBytes = (b) => (b >= 1 << 30 ? (b / (1 << 30)).toFixed(1) + " GB" : Math.round(b / (1 << 20)) + " MB");
+
+// MARK: 새 버전 알림 (도구함 · 플레이어 · 음악 창 위쪽 띠) — 누르면 받아서 바꿔 끼우고 다시 켬
+(() => {
+  if (!T || /\/(bar|lyrics)\.html/.test(location.pathname)) return;
+  const key = (v) => `updSkip:${v}`;
+  function show(u) {
+    if (!u || !u.version) return;
+    try { if (localStorage.getItem(key(u.version))) return; } catch { /* 없음 */ }
+    document.querySelector(".upd-bar")?.remove();
+    const b = document.createElement("div");
+    b.className = "upd-bar";
+    b.innerHTML = `<span>⬆ 도구함 새 버전 <b>${esc(u.version)}</b> <small>(지금 ${esc(u.current)})</small></span>
+      <button class="upd-go">업데이트</button><button class="upd-later" title="이 버전은 다시 알리지 않기 (트레이 메뉴에서는 계속 업데이트할 수 있어요)">나중에</button>`;
+    if (u.notes) b.title = u.notes;
+    b.querySelector(".upd-go").onclick = async (e) => {
+      e.target.disabled = true;
+      e.target.textContent = "받는 중…";
+      try { await invoke("self_update"); } catch (err) { e.target.disabled = false; e.target.textContent = "업데이트"; toast(`업데이트하지 못했어요: ${err}`); }
+    };
+    b.querySelector(".upd-later").onclick = () => { try { localStorage.setItem(key(u.version), "1"); } catch { /* 없음 */ } T.event.emit("update-hide", {}); };
+    document.body.appendChild(b);
+  }
+  T.event.listen("update-available", (e) => show(e.payload));
+  T.event.listen("update-hide", () => document.querySelector(".upd-bar")?.remove());
+  T.event.listen("update-none", (e) => { if (document.hasFocus()) toast(e.payload); });
+  invoke("update_info").then(show).catch(() => {});
+})();

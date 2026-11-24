@@ -1874,6 +1874,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ n: Notification) {
         YouTubeWindow.shared.onChange = { [unowned self] in buildStatusMenu() }
+        // 새 버전 확인: 있으면 🧰 옆에 점 · 메뉴 맨 위 · 빠른 막대에 ⬇︎
+        SelfUpdate.shared.onChange = { [unowned self] in
+            buildStatusMenu()
+            statusItem?.button?.title = SelfUpdate.shared.available != nil ? "🧰•" : "🧰"
+            statusItem?.button?.toolTip = SelfUpdate.shared.available.map { "도구함 새 버전 \($0.version) — 눌러서 업데이트" }
+        }
+        SelfUpdate.shared.start()
         VideoWindow.netflix.onChange = { [unowned self] in buildStatusMenu() }
         startMemoryWatch()
         OnScreen.start()
@@ -3312,6 +3319,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         ver.toolTip = "빌드 번호 = 커밋 수 · 괄호 = 커밋 ID\(AppVersion.date.isEmpty ? "" : " · 빌드한 때 \(AppVersion.date)")\(AppVersion.dirty ? "\n+수정: 커밋하지 않은 수정이 들어 있는 빌드" : "")\n누르면 GitHub 에서 그 커밋을 열어요"
         m.addItem(ver)
+        let up = SelfUpdate.shared
+        if let a = up.available {
+            let i = Item(up.status.isEmpty ? "⬆︎ 새 버전 \(a.version)으로 업데이트" : "⬆︎ \(up.status)") { up.install() }
+            i.isEnabled = up.status.isEmpty
+            i.toolTip = "받아서 바꿔 끼운 뒤 다시 켜요\(a.notes.isEmpty ? "" : "\n\n\(a.notes.prefix(300))")"
+            m.addItem(i)
+        } else {
+            m.addItem(Item("업데이트 확인…") { up.check(manual: true) })
+        }
         m.addItem(.separator())
         for cat in cats {
             if cats.count > 1 { m.addItem(headerItem(cat.name)) }
@@ -3851,7 +3867,10 @@ final class QuickBarVC: NSViewController {
             Cell(icon: sym("rectangle.stack.badge.minus"), text: nil, tint: nil, tip: "열린 창 모두 닫기 · 최소화 · 앱 모두 종료", badge: "", on: false) { [unowned self] v in
                 popUp(BulkWindows.menu(), under: v) },
             Cell(icon: sym("gearshape.fill"), text: nil, tint: nil, tip: "설정", badge: "", on: false) { [unowned self] _ in app.closeQuickBar(); app.openSettings() },
-        ]
+        ] + (SelfUpdate.shared.available.map { a in
+            [Cell(icon: sym("arrow.down.circle.fill"), text: nil, tint: .systemOrange, tip: "새 버전 \(a.version)으로 업데이트 (다시 켜져요)", badge: "", on: false) { [unowned self] _ in
+                app.closeQuickBar(); SelfUpdate.shared.install() }]
+        } ?? [])
     }
 
     private let row = NSView()

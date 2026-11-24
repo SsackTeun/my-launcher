@@ -529,3 +529,13 @@ body.host .settings { flex: 1; min-height: 0; }
 .mz-qhead b { color: var(--text); font-weight: 600; }
 .mz-qfoot { padding: 10px 8px 2px; font-size: 12px; color: var(--sub); border-top: 1px solid var(--line); margin-top: 6px; font-variant-numeric: tabular-nums; }
 .mz-qfoot small { color: var(--faint); }
+
+/* 새 버전 알림 띠 (모든 창 맨 아래 가운데) */
+.upd-bar { position: fixed; left: 50%; bottom: 12px; transform: translateX(-50%); z-index: 9999; display: flex; align-items: center; gap: 8px;
+  max-width: calc(100% - 24px); padding: 7px 8px 7px 12px; border-radius: 10px; font-size: 12px; white-space: nowrap;
+  background: var(--panel, #2b2b2b); color: var(--text, #fff); border: 1px solid var(--orange, #f0a030); box-shadow: 0 4px 16px rgba(0,0,0,.35); }
+.upd-bar span { overflow: hidden; text-overflow: ellipsis; }
+.upd-bar small { color: var(--sub, #aaa); }
+.upd-bar button { border: 0; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.upd-bar .upd-go { background: var(--orange, #f0a030); color: #fff; font-weight: 600; }
+.upd-bar .upd-later { background: transparent; color: var(--sub, #aaa); }

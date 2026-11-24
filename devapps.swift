@@ -86,7 +86,7 @@ final class DevApps {
     }
 
     /// "1.10" > "1.9" 처럼 숫자로 비교
-    static func isNewer(_ a: String, than b: String) -> Bool {
+    nonisolated static func isNewer(_ a: String, than b: String) -> Bool {
         let x = a.split(separator: ".").map { Int($0) ?? 0 }, y = b.split(separator: ".").map { Int($0) ?? 0 }
         for i in 0..<max(x.count, y.count) {
             let p = i < x.count ? x[i] : 0, q = i < y.count ? y[i] : 0

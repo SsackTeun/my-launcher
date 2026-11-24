@@ -17,13 +17,14 @@ mod desk;
 #[cfg(windows)]
 mod media;
 #[cfg(windows)]
+mod update;
 mod web;
 #[cfg(windows)]
 mod win;
 
 /// 콘솔 창 없이 실행 (curl 같은 명령줄 도구를 부를 때 검은 창이 번쩍이지 않게)
 #[cfg(windows)]
-fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
+pub(crate) fn quiet(cmd: &mut std::process::Command) -> &mut std::process::Command {
     use std::os::windows::process::CommandExt;
     cmd.creation_flags(0x0800_0000)
 }
@@ -449,6 +450,10 @@ fn show_main(app: &tauri::AppHandle) {
 fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let apps = app.state::<TrayApps>().0.lock().unwrap().clone();
     let menu = Menu::new(app)?;
+    if let Some(u) = app.state::<update::UpdateState>().0.lock().unwrap().clone() {
+        menu.append(&MenuItem::with_id(app, "update", format!("⬆ 새 버전 {} 으로 업데이트", u.version), true, None::<&str>)?)?;
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
+    }
     menu.append(&MenuItem::with_id(app, "open", "도구함 열기", true, None::<&str>)?)?;
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     if !apps.is_empty() {
@@ -466,6 +471,7 @@ fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
     menu.append(&CheckMenuItem::with_id(app, "autostart", "로그인 시 자동 실행", true, desk::autostart(None), None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "checkupdate", format!("업데이트 확인 (지금 {})", app.package_info().version), true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "restart", "도구함 다시 시작", true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "quit", "도구함 끝내기", true, None::<&str>)?)?;
     Ok(menu)
@@ -513,7 +519,7 @@ fn quit_self(app: tauri::AppHandle) {
 }
 
 /// 끝날 때: 예약한 화면 자리 돌려주기 · 작업 표시줄 원래대로
-fn cleanup() {
+pub(crate) fn cleanup() {
     desk::appbar_remove_all();
     if let Some(prev) = TASKBAR_RESTORE.lock().unwrap().take() {
         desk::taskbar_autohide(Some(prev));
@@ -582,6 +588,7 @@ pub fn run() {
         }))
         .manage(IconCache(Mutex::new(HashMap::new())))
         .manage(TrayApps(Mutex::new(Vec::new())))
+        .manage(update::UpdateState(Mutex::new(None)))
         .setup(|app| {
             if let Some(dir) = config_dir(app.handle()) {
                 media::start_hearing(dir);
@@ -602,6 +609,15 @@ pub fn run() {
                     let id = e.id().as_ref().to_string();
                     match id.as_str() {
                         "open" => show_main(app),
+                        "update" => {
+                            let h = app.clone();
+                            tauri::async_runtime::spawn(async move {
+                                if let Err(e) = update::self_update(h.clone()).await {
+                                    let _ = h.emit("update-none", format!("업데이트하지 못했어요: {e}"));
+                                }
+                            });
+                        }
+                        "checkupdate" => update::check(app, true),
                         "restart" => {
                             cleanup();
                             app.restart();
@@ -656,6 +672,7 @@ pub fn run() {
                 tb = tb.icon(icon.clone());
             }
             tb.build(app)?;
+            update::start(app.handle());
             Ok(())
         })
         .on_window_event(|w, e| {
@@ -687,6 +704,9 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            update::update_info,
+            update::check_update,
+            update::self_update,
             installed_apps,
             icon,
             launch,

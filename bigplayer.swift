@@ -575,15 +575,13 @@ final class BigPlayerView: NSView {
         for a in albumList {
             if a.section != sec { sec = a.section; albumDoc.addSubview(SectionHead(sec)) }
             var row: AlbumRow!
-            row = AlbumRow(a) { [weak self] in
+            row = AlbumRow(a) { [weak self] in self?.toggleExpand(a) }
+            // 고르기 모드: 자켓 위 동그라미를 눌러야 앨범 통째로 고름 (줄의 나머지는 펼치기 · 접기)
+            row.onCheck = { [weak self] in
                 guard let self else { return }
-                if self.selecting {
-                    if self.pickedAlbums.contains(a.id) { self.pickedAlbums.remove(a.id) } else { self.pickedAlbums.insert(a.id) }
-                    row.check = self.pickedAlbums.contains(a.id)
-                    self.syncBar()
-                    return
-                }
-                self.toggleExpand(a)
+                if self.pickedAlbums.contains(a.id) { self.pickedAlbums.remove(a.id) } else { self.pickedAlbums.insert(a.id) }
+                row.check = self.pickedAlbums.contains(a.id)
+                self.syncBar()
             }
             row.expanded = expanded.contains(a.id)
             row.onPlay = { [weak self] in self?.playAlbumEntry(a) }
@@ -1024,6 +1022,7 @@ final class AlbumRow: NSView {
     /// 펼침 표시 ▸ / ▾ 와 ▶ 재생 단추
     var onPlay: (() -> Void)?
     var onExpand: (() -> Void)?
+    var onCheck: (() -> Void)?
     var expanded = false { didSet { chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil) } }
     private let chevron = NSImageView()
     private lazy var playBtn: NSButton = {
@@ -1117,7 +1116,11 @@ final class AlbumRow: NSView {
     }
     override func mouseDown(with event: NSEvent) {}
     override func mouseUp(with event: NSEvent) {
-        if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick() }
+        let p = convert(event.locationInWindow, from: nil)
+        guard bounds.contains(p) else { return }
+        // 고르기 모드에서 자켓(동그라미) 쪽을 누르면 고르기, 나머지는 펼치기 · 접기
+        if check != nil, p.x < 60, let c = onCheck { c(); return }
+        onClick()
     }
 }
 
