@@ -52,4 +52,11 @@
     }, 500);
   });
   document.addEventListener("contextmenu", (e) => e.preventDefault());
+  // 스페이스: 지금 재생기 재생 / 멈춤 (Mac 판과 같음 · 글자 입력 칸 · 고르는 칸에서는 그대로)
+  document.addEventListener("keydown", (e) => {
+    if (e.key === " " && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && !e.target.closest("input, textarea, select, [contenteditable]")) {
+      e.preventDefault();
+      Player.control("toggle");
+    }
+  });
 })();

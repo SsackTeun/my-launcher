@@ -568,7 +568,7 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
     private func makeMini() -> NSPanel {
         let vf = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
         let size = NSSize(width: 480, height: 270)
-        let p = NSPanel(contentRect: NSRect(x: vf.maxX - size.width - 20, y: vf.minY + 20, width: size.width, height: size.height),
+        let p = MiniKeyPanel(contentRect: NSRect(x: vf.maxX - size.width - 20, y: vf.minY + 20, width: size.width, height: size.height),
                         styleMask: [.borderless, .nonactivatingPanel],     // 제목줄 없이 영상만 (크기 조절은 MiniOverlay 가 직접)
                         backing: .buffered, defer: false)
         p.isOpaque = false
@@ -601,6 +601,7 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
             webView?.pauseAllMediaPlayback()
             exitMini(showMain: false)
         }
+        p.onEscape = { [unowned self] in exitMini(showMain: true) }
         p.contentView!.addSubview(o)
         miniOverlay = o
         mini = p
@@ -1469,5 +1470,19 @@ final class ProgressCell: NSSliderCell {
     override func barRect(flipped: Bool) -> NSRect {
         guard let cv = controlView else { return super.barRect(flipped: flipped) }
         return cv.bounds.insetBy(dx: 7, dy: 0)
+    }
+}
+
+/// 작은 창(PIP): 다른 앱을 앞으로 둔 채(nonactivating) 키 입력만 받을 수 있게.
+/// 스페이스 = 지금 재생기 멈춤/재생 (다른 창과 같은 MediaHub 정책), Esc = 작은 창 끝내기 (Windows 판과 같음)
+final class MiniKeyPanel: NSPanel {
+    var onEscape: (() -> Void)?
+    override var canBecomeKey: Bool { true }
+    override func sendEvent(_ e: NSEvent) {
+        if e.type == .keyDown, e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty {
+            if e.keyCode == 49 { if !e.isARepeat { MainActor.assumeIsolated { MediaHub.shared.toggle() } }; return }
+            if e.keyCode == 53 { onEscape?(); return }
+        }
+        super.sendEvent(e)
     }
 }

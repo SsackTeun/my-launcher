@@ -1065,6 +1065,12 @@ document.addEventListener("keydown", (e) => {
     if (e.key === ",") { e.preventDefault(); settingsDialog(); }
   }
   if (e.key === "Escape" && menuOpen()) closeMenu();
+  // 스페이스: 플레이어가 도구함 창 안에 붙어 있으면 지금 재생기 재생 / 멈춤 (Mac 판과 같음 · 검색칸 등 글자 입력 중엔 띄어쓰기)
+  if (e.key === " " && !e.repeat && !e.ctrlKey && !e.altKey && !e.metaKey && S.showPlayer && !S.detachPlayer
+      && !e.target.closest("input, textarea, select, [contenteditable]")) {
+    e.preventDefault();
+    Player.control("toggle");
+  }
 });
 
 // MARK: 화면 끝 서랍 · 화면 안으로
