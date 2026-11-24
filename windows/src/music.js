@@ -1014,6 +1014,25 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
   $("#lockBtn").onclick = () => { cfg.playerLocked = !cfg.playerLocked; drawLock(); setConfig("playerLocked", cfg.playerLocked); };
   $("#bigBtn").onclick = () => setBig(!big);
   $("#gearBtn").onclick = () => T.event.emit("ui", { open: "settings" });
+  // 업데이트 단추: 새 버전이 있으면 주황색 점 · 누르면 바로 업데이트, 없으면 누르면 확인
+  let upd = null, ver = "";
+  T.app?.getVersion?.().then((v) => { ver = v; drawUpd(); }).catch(() => {});
+  function drawUpd() {
+    const b = $("#updBtn");
+    b.classList.toggle("has-upd", !!upd);
+    b.title = upd ? `새 버전 ${upd.version} 으로 업데이트 (지금 ${upd.current}) — 누르면 받아서 다시 켜요` : `업데이트 확인${ver ? ` (지금 ${ver})` : ""}`;
+  }
+  T.event.listen("update-available", (e) => { upd = e.payload; drawUpd(); });
+  invoke("update_info").then((u) => { upd = u || null; drawUpd(); }).catch(() => {});
+  $("#updBtn").onclick = async () => {
+    const b = $("#updBtn");
+    if (!upd) { toast("새 버전 확인 중…"); invoke("check_update").catch(() => {}); return; }
+    if (b.classList.contains("busy")) return;
+    b.classList.add("busy");
+    toast(`새 버전 ${upd.version} 받는 중… 다 받으면 도구함이 잠깐 꺼졌다가 다시 켜져요`);
+    try { await invoke("self_update"); } catch (err) { b.classList.remove("busy"); toast(`업데이트하지 못했어요: ${err}`); }
+  };
+  drawUpd();
   $("#tidyBtn").onclick = async () => {
     // 작게 볼 땐 창이 작아서 Windows 기본 메뉴로
     const M = T.menu;
