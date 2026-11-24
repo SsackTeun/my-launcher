@@ -1,4 +1,4 @@
-// 랜덤 재생목록 만들기: 가수를 고르고(비중 조절), 곡 수나 시간(분 · 시간)을 정하면 그 가수들의 인기곡에서 골라 새 재생목록으로 만들고 바로 재생
+// 랜덤 플레이리스트 만들기: 가수를 고르고(비중 조절), 곡 수나 시간(분 · 시간)을 정하면 그 가수들의 인기곡에서 골라 새 플레이리스트로 만들고 바로 재생
 // - 가수 곡 목록: 가수 페이지의 '인기곡' 모두 보기 (같은 곡 다른 버전 · 1분 안 되는 짧은 클립은 뺌)
 // - 비중: 가수마다 1 ~ 5. 곡을 하나 고를 때마다 비중만큼의 확률로 가수를 정하고, 그 가수 곡 중 아직 안 넣은 걸 고름
 import Cocoa
@@ -123,7 +123,7 @@ extension YTMusic {
         }
     }
 
-    /// 장르에서 가수 모으기: 그 장르의 대표 재생목록 중 아직 안 읽은 것 몇 개를 무작위로 열어, 많이 나오는 가수 (n = 나온 횟수)
+    /// 장르에서 가수 모으기: 그 장르의 대표 플레이리스트 중 아직 안 읽은 것 몇 개를 무작위로 열어, 많이 나오는 가수 (n = 나온 횟수)
     func genreArtists(_ g: Genre, skip: [String], lists: Int = 8, done: @escaping (_ artists: [(ArtistHit, Int)], _ used: [String]) -> Void) {
         runAPIPublic("""
         const r = await api('browse', {browseId: gid, params: gparams});
@@ -142,7 +142,7 @@ extension YTMusic {
           if (isArtist(e)) bump(e.browseEndpoint.browseId, ((i.title || {}).runs || [{}])[0].text || '', 2);
           for (const run of (i.subtitle && i.subtitle.runs) || []) if (isArtist(run.navigationEndpoint)) bump(run.navigationEndpoint.browseEndpoint.browseId, run.text, 1);
         }
-        // 안 읽은 재생목록을 섞어서 몇 개만 (누를 때마다 다른 재생목록에서 모음)
+        // 안 읽은 플레이리스트를 섞어서 몇 개만 (누를 때마다 다른 플레이리스트에서 모음)
         const sk = new Set(skip);
         const pool = lists.filter(x => !sk.has(x));
         for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
@@ -241,7 +241,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
     private let unit = NSPopUpButton()
     private let popular = NSButton(checkboxWithTitle: "인기곡 위주", target: nil, action: nil)
     private let name = NSTextField()
-    /// 어디에: 맨 위 '새 재생목록', 그 아래 내 재생목록들 (고르면 거기에 덧붙임)
+    /// 어디에: 맨 위 '새 플레이리스트', 그 아래 내 플레이리스트들 (고르면 거기에 덧붙임)
     private let target = NSPopUpButton()
     private var myLists: [PlaylistInfo] = []
     private let makeBtn = NSButton(title: "만들고 재생", target: nil, action: nil)
@@ -255,7 +255,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
     private let recScroll = NSScrollView()
     private let recDoc = FlippedView()
     private static var genreCache: [Genre] = []
-    /// 고른 장르에서 모은 가수 · 이미 보여 준 가수 · 이미 읽은 재생목록
+    /// 고른 장르에서 모은 가수 · 이미 보여 준 가수 · 이미 읽은 플레이리스트
     private struct Rec { let g: Genre; var pool: [(ArtistHit, Int)] = []; var shown = Set<String>(); var used: [String] = [] }
     private var rec: Rec?
     private var recHits: [ArtistHit] = []
@@ -273,7 +273,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
     private func build() {
         let W: CGFloat = 440, H: CGFloat = 616
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: W, height: H), styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
-        p.title = "랜덤 재생목록 만들기"
+        p.title = "랜덤 플레이리스트 만들기"
         p.isFloatingPanel = true
         p.hidesOnDeactivate = false
         p.delegate = self
@@ -300,7 +300,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         // 장르 추천 · 다음 트랙에서 · 모두 비우기
         genrePop.addItem(withTitle: "장르로 가수 추천")
         genrePop.target = self; genrePop.action = #selector(genrePicked)
-        genrePop.toolTip = "YouTube Music 의 장르별 대표 재생목록에서 많이 나오는 가수를 추천해요 (누를 때마다 다른 재생목록)"
+        genrePop.toolTip = "YouTube Music 의 장르별 대표 플레이리스트에서 많이 나오는 가수를 추천해요 (누를 때마다 다른 플레이리스트)"
         genrePop.frame = NSRect(x: 14, y: H - 96, width: 142, height: 26)
         v.addSubview(genrePop)
         // 다른 가수 보기 ↻ (장르를 고른 뒤에만)
@@ -357,7 +357,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         v.addSubview(target)
         let f = DateFormatter(); f.dateFormat = "M월 d일"
         name.stringValue = "랜덤 · \(f.string(from: Date()))"
-        name.placeholderString = "새 재생목록 이름"
+        name.placeholderString = "새 플레이리스트 이름"
         name.frame = NSRect(x: 190, y: 82, width: W - 206, height: 24)
         v.addSubview(name)
 
@@ -370,7 +370,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         makeBtn.target = self; makeBtn.action = #selector(make)
         makeBtn.frame = NSRect(x: W - 16 - 130, y: 14, width: 130, height: 30)
         v.addSubview(makeBtn)
-        let hint = NSTextField(labelWithString: "내 유튜브 뮤직 계정에 '나만 보기' 재생목록으로 만들어요")
+        let hint = NSTextField(labelWithString: "내 유튜브 뮤직 계정에 '나만 보기' 플레이리스트로 만들어요")
         hint.font = .systemFont(ofSize: 10); hint.textColor = .tertiaryLabelColor
         hint.frame = NSRect(x: 16, y: 22, width: W - 170, height: 14)
         v.addSubview(hint)
@@ -379,16 +379,16 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         relist()
     }
 
-    /// '어디에' 칸 채우기: 새 재생목록 + 내 재생목록들
+    /// '어디에' 칸 채우기: 새 플레이리스트 + 내 플레이리스트들
     private func loadTargets() {
         let keep = target.indexOfSelectedItem > 0 ? myLists[safe: target.indexOfSelectedItem - 2]?.id : nil
         target.removeAllItems()
-        target.addItem(withTitle: "새 재생목록 만들기")
+        target.addItem(withTitle: "새 플레이리스트 만들기")
         music?.myPlaylists { [weak self] ls in
             guard let self else { return }
             self.myLists = ls.filter { !PlaylistPane.recentlyDeleted.contains($0.id) }
             self.target.removeAllItems()
-            self.target.addItem(withTitle: "새 재생목록 만들기")
+            self.target.addItem(withTitle: "새 플레이리스트 만들기")
             if !self.myLists.isEmpty { self.target.menu?.addItem(.separator()) }
             for l in self.myLists { self.target.menu?.addItem(NSMenuItem(title: "‘\(l.title)’에 덧붙이기", action: nil, keyEquivalent: "")) }
             if let k = keep, let i = self.myLists.firstIndex(where: { $0.id == k }) { self.target.selectItem(at: i + 2) }
@@ -400,11 +400,11 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         name.isEnabled = new
         name.alphaValue = new ? 1 : 0.4
         makeBtn.title = new ? "만들고 재생" : "덧붙이고 재생"
-        // 기존 재생목록을 고르면 그 목록에 든 가수들을 비중(곡 수 비율)대로 불러옴
+        // 기존 플레이리스트를 고르면 그 목록에 든 가수들을 비중(곡 수 비율)대로 불러옴
         if !new, let pl = myLists[safe: target.indexOfSelectedItem - 2], pl.id != loadedFrom { loadArtists(of: pl) }
     }
 
-    /// 이미 불러온 재생목록 (같은 걸 다시 고르면 또 불러오지 않게)
+    /// 이미 불러온 플레이리스트 (같은 걸 다시 고르면 또 불러오지 않게)
     private var loadedFrom = ""
     private func loadArtists(of pl: PlaylistInfo) {
         loadedFrom = pl.id
@@ -483,19 +483,19 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         moreBtn.isEnabled = true
         moreRec()
     }
-    /// 아직 안 보여 준 가수 16명 (모자라면 안 읽은 재생목록을 더 읽음)
+    /// 아직 안 보여 준 가수 16명 (모자라면 안 읽은 플레이리스트를 더 읽음)
     private func moreRec() {
         guard let st = rec else { return }
         let fresh = { (r: Rec) in r.pool.filter { a in !r.shown.contains(a.0.id) && !self.picks.contains { $0.artist.id == a.0.id } } }
         if fresh(st).count < 8 {
-            drawRec(note: "‘\(st.g.title)’ 재생목록에서 가수 모으는 중…")
+            drawRec(note: "‘\(st.g.title)’ 플레이리스트에서 가수 모으는 중…")
             music?.genreArtists(st.g, skip: st.used) { [weak self] arts, used in
                 guard let self, var r = self.rec, r.g.id == st.g.id, r.g.params == st.g.params else { return }
                 r.used += used
                 for (a, n) in arts {
                     if let i = r.pool.firstIndex(where: { $0.0.id == a.id }) { r.pool[i].1 += n } else { r.pool.append((a, n)) }
                 }
-                // 장르 재생목록을 다 읽었는데 다 보여 줬으면 처음부터 다시
+                // 장르 플레이리스트를 다 읽었는데 다 보여 줬으면 처음부터 다시
                 if fresh(r).isEmpty && !r.pool.isEmpty && used.isEmpty { r.shown.removeAll(); r.used.removeAll() }
                 self.rec = r
                 self.showRec(fresh(r))
@@ -708,9 +708,9 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         let pools = picks.compactMap { p in p.songs.map { (songs: $0, weight: p.weight) } }
         let mix = RandomMix.make(pools, limit: limit, popular: popular.state == .on)
         guard !mix.isEmpty else { status.stringValue = "곡을 고르지 못했어요"; return }
-        let title = name.stringValue.trimmingCharacters(in: .whitespaces).isEmpty ? "랜덤 재생목록" : name.stringValue
+        let title = name.stringValue.trimmingCharacters(in: .whitespaces).isEmpty ? "랜덤 플레이리스트" : name.stringValue
         makeBtn.isEnabled = false
-        // 기존 재생목록에 덧붙이기
+        // 기존 플레이리스트에 덧붙이기
         if target.indexOfSelectedItem > 1, let pl = myLists[safe: target.indexOfSelectedItem - 2] {
             status.stringValue = "‘\(pl.title)’에 덧붙이는 중… (\(RandomMix.describe(mix)))"
             music?.addToPlaylist(pl.id, videoIds: mix.map(\.videoId)) { [weak self] ok in

@@ -22,8 +22,8 @@ final class BigPlayerView: NSView {
     /// 가사 탭에 넣을 가사 줄 (도구함이 쓰는 것과 같은 것)
     private let lyricsView: NSView
     private let art = NSImageView()
-    private let tabs = NSSegmentedControl(labels: ["다음 트랙", "가사", "앨범", "재생목록"], trackingMode: .selectOne, target: nil, action: nil)
-    private let scroll = NSScrollView()
+    private let tabs = NSSegmentedControl(labels: ["다음 트랙", "가사", "앨범", "플레이리스트"], trackingMode: .selectOne, target: nil, action: nil)
+    private let scroll = WheelScrollView()
     private let doc = FlippedView()
     private let status = NSTextField(labelWithString: "")
     private var timer: Timer?
@@ -147,9 +147,23 @@ final class BigPlayerView: NSView {
 
         selectBtn.image = NSImage(systemSymbolName: "checklist", accessibilityDescription: "고르기")
         selectBtn.isBordered = false
-        selectBtn.toolTip = "여러 곡 · 앨범을 골라 재생목록에 넣기"
+        selectBtn.toolTip = "여러 곡 · 앨범을 골라 플레이리스트에 넣기"
         selectBtn.target = self; selectBtn.action = #selector(toggleSelect)
         addSubview(selectBtn)
+        searchBtn.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: "검색해서 넣기")
+        searchBtn.isBordered = false
+        searchBtn.toolTip = "노래를 검색해서 지금 플레이리스트에 넣기 (다음 트랙에도 붙어요)"
+        searchBtn.target = self; searchBtn.action = #selector(openSearch)
+        searchBtn.isHidden = true
+        addSubview(searchBtn)
+        followBtn.isBordered = false
+        followBtn.target = self; followBtn.action = #selector(toggleFollow)
+        syncFollowBtn()
+        addSubview(followBtn)
+        headLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
+        headLabel.textColor = .secondaryLabelColor
+        headLabel.lineBreakMode = .byTruncatingTail
+        addSubview(headLabel)
         NotificationCenter.default.addObserver(forName: Notification.Name("openEQPopover"), object: nil, queue: .main) { [weak self] _ in
             MainActor.assumeIsolated { if let self, self.window != nil { self.showEQ(from: self.eqBtn) } }
         }
@@ -162,10 +176,16 @@ final class BigPlayerView: NSView {
             self?.pickedVids { vids in self?.playVideos(vids) }
         }
         actionBar.onCancel = { [weak self] in self?.setSelecting(false) }
+        actionBar.onRemove = { [weak self] in
+            guard let self, let link = self.linked else { return }
+            let sel = self.items.filter { !$0.auto && self.pickedQueue.contains($0.index) && !$0.setId.isEmpty }
+            self.setSelecting(false)
+            self.removeMany(sel, from: link)
+        }
         addSubview(actionBar)
     }
 
-    // MARK: 재생목록 · 고르기
+    // MARK: 플레이리스트 · 고르기
 
     private lazy var plPane = PlaylistPane(music: music)
     private let selectBtn = NSButton()
@@ -191,22 +211,23 @@ final class BigPlayerView: NSView {
         actionBar.isHidden = !selecting
         actionBar.text = n == 0 ? "곡 · 앨범을 눌러 고르세요" : [songs > 0 ? "\(songs)곡" : "", pickedAlbums.count > 0 ? "앨범 \(pickedAlbums.count)개" : ""].filter { !$0.isEmpty }.joined(separator: " · ") + " 골랐어요"
         actionBar.canAdd = n > 0
+        actionBar.canRemove = tab == 0 && linked != nil && !pickedQueue.isEmpty && pickedTracks.isEmpty && pickedAlbums.isEmpty
     }
     private func selectedVids() -> [String] { items.filter { pickedQueue.contains($0.index) }.map(\.videoId).filter { !$0.isEmpty } }
     private func selectedAlbums() -> [String] { Array(pickedAlbums) }
 
-    /// 재생목록 고르는 메뉴 (내 재생목록들 + 새 재생목록…)
+    /// 플레이리스트 고르는 메뉴 (내 플레이리스트들 + 새 플레이리스트…)
     private func addMenu(vids: [String], albums: [String]) -> NSMenu {
         let m = NSMenu()
         if plPane.playlists.isEmpty {
-            let i = NSMenuItem(title: "재생목록 불러오는 중…", action: nil, keyEquivalent: ""); i.isEnabled = false; m.addItem(i)
+            let i = NSMenuItem(title: "플레이리스트 불러오는 중…", action: nil, keyEquivalent: ""); i.isEnabled = false; m.addItem(i)
             plPane.reload()
         }
         for pl in plPane.playlists {
             m.addItem(MenuAction(pl.title) { [weak self] in self?.add(to: pl.id, title: pl.title, vids: vids, albums: albums) })
         }
         m.addItem(.separator())
-        m.addItem(MenuAction("새 재생목록…") { [weak self] in
+        m.addItem(MenuAction("새 플레이리스트…") { [weak self] in
             PlaylistPane.askName { name in
                 self?.music?.createPlaylist(name) { id in
                     guard let id else { self?.toast("만들지 못했어요"); return }
@@ -220,6 +241,15 @@ final class BigPlayerView: NSView {
         addMenu(vids: vids, albums: albums).popUp(positioning: nil, at: NSPoint(x: 0, y: b.bounds.height + 4), in: b)
     }
     private func add(to id: String, title: String, vids: [String], albums: [String], fresh: Bool = false) {
+        // 지금 듣는 내 플레이리스트면 다음 트랙 끝에도 붙임 (곡만 · 앨범은 플레이리스트에만)
+        if let link = linked, link.id == id, albums.isEmpty, !vids.isEmpty {
+            toast("‘\(title)’에 넣는 중…", stay: true)
+            addLinked(vids, link: link) { [weak self] n in
+                guard let self else { return }
+                if n >= 0, self.selecting { self.setSelecting(false) }
+            }
+            return
+        }
         toast("‘\(title)’에 넣는 중…", stay: true)
         music?.addToPlaylist(id, videoIds: vids, albumIds: albums) { [weak self] ok in
             guard let self else { return }
@@ -245,8 +275,17 @@ final class BigPlayerView: NSView {
         lastTitle = ""; lastQueueKey = ""
         showTab()
         tick()
-        plPane.reload()   // 재생목록 탭 · '재생목록에 넣기' 메뉴에 쓸 목록 미리
+        plPane.reload()   // 플레이리스트 탭 · '플레이리스트에 넣기' 메뉴에 쓸 목록 미리
+        // 스크롤하면 마우스 아래 줄이 바뀌므로 다시 맞춤
+        if scrollObs == nil {
+            scroll.onWheel = { [weak self] in self?.lastUserTouch = Date() }
+            scroll.contentView.postsBoundsChangedNotifications = true
+            scrollObs = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.syncQueueHover() }
+            }
+        }
     }
+    private var scrollObs: NSObjectProtocol?
 
     /// 재생 · 반복 · 음소거 모양을 지금 상태로
     private func syncControls() {
@@ -276,6 +315,7 @@ final class BigPlayerView: NSView {
         // 앨범 탭: 직접 고른 가수가 아니면 지금 곡의 가수를 따라감
         if tab == 2, st.title != lastTitle, !albumPinned { albumsForCurrent() }
         if tab == 3 { plPane.tickPlaying() }
+        if tab == 0 { syncQueueHover() }
         // 처음 켤 땐 페이지가 덜 떠서 목록을 못 받을 수 있어 몇 번 더
         if plPane.playlists.isEmpty, ticks % 3 == 0, ticks < 40 { plPane.reload() }
         lastTitle = st.title
@@ -298,6 +338,8 @@ final class BigPlayerView: NSView {
         if tab == 1 { if lyricsView.superview !== self { addSubview(lyricsView) } } else { lyricsView.removeFromSuperview() }
         plPane.isHidden = tab != 3
         selectBtn.isHidden = !(tab == 0 || tab == 2)
+        searchBtn.isHidden = tab != 0 || linked == nil
+        followBtn.isHidden = tab != 0
         if selecting && selectBtn.isHidden { setSelecting(false) }
         needsLayout = true
     }
@@ -332,11 +374,19 @@ final class BigPlayerView: NSView {
         tabs.sizeToFit()
         tabs.frame = NSRect(x: x, y: pad - 2, width: min(w - 28, max(tabs.frame.width, 160)), height: 24)
         selectBtn.frame = NSRect(x: x + w - 24, y: pad - 1, width: 24, height: 22)
+
         let full = NSRect(x: x - 6, y: tabs.frame.maxY + 6, width: w + 6, height: bounds.height - tabs.frame.maxY - 6 - 4)
-        // 고르는 중이면 아래에 '재생목록에 넣기' 줄
+        // 고르는 중이면 아래에 '플레이리스트에 넣기' 줄
         var body = full
         if selecting { body.size.height -= 36; actionBar.frame = NSRect(x: full.minX, y: body.maxY + 4, width: full.width, height: 30) }
-        scroll.frame = body
+        // 다음 트랙: 맨 위 고정 줄 + 그 아래 목록
+        let hb = NSRect(x: body.minX + 8, y: body.minY, width: body.width - 8, height: Self.headH)
+        searchBtn.frame = NSRect(x: hb.maxX - 24, y: hb.minY, width: 22, height: Self.headH)
+        followBtn.frame = NSRect(x: (searchBtn.isHidden ? hb.maxX : searchBtn.frame.minX) - 24, y: hb.minY, width: 22, height: Self.headH)
+        headLabel.frame = NSRect(x: hb.minX, y: hb.minY + 3, width: max(20, followBtn.frame.minX - hb.minX - 4), height: 16)
+        headLabel.isHidden = tab != 0
+        var qb = body; qb.origin.y += Self.headH; qb.size.height -= Self.headH
+        scroll.frame = qb
         albumScroll.frame = body
         plPane.frame = full
         status.frame = NSRect(x: body.minX, y: body.midY - 9, width: body.width, height: 18)
@@ -353,7 +403,8 @@ final class BigPlayerView: NSView {
     }
 
     private func show(_ items: [QueueItem]) {
-        let key = items.map { "\($0.title)|\($0.current)" }.joined(separator: "\n")
+        let link = linked
+        let key = items.map { "\($0.title)|\($0.current)|\($0.setId)" }.joined(separator: "\n") + "|\(link?.id ?? "")|\(undoInfo?.entries.count ?? 0)"
         guard key != lastQueueKey else { return }
         lastQueueKey = key
         self.items = items
@@ -361,6 +412,7 @@ final class BigPlayerView: NSView {
         var autoHead = false
         // 맨 위: 몇 곡 중 몇 번째 (자동재생으로 붙은 곡은 빼고 셈)
         let main = items.filter { !$0.auto }
+        headLabel.stringValue = ""
         if !main.isEmpty {
             let cur = main.firstIndex(where: { $0.current })
             // 남은 시간: 지금 곡의 남은 부분 + 그 뒤 곡들 (자동재생 곡은 빼고)
@@ -371,7 +423,7 @@ final class BigPlayerView: NSView {
                 left = " · 남은 시간 \(Self.hms(Int(rest)))"
             }
             let k = cur.map { " · 지금 \($0 + 1)번째\(left)" } ?? ""
-            // 재생목록 · 앨범이면 전체 곡 수도 (다음 트랙은 50곡씩만 불러오고, 나머지는 재생하며 이어서 불러옴)
+            // 플레이리스트 · 앨범이면 전체 곡 수도 (다음 트랙은 50곡씩만 불러오고, 나머지는 재생하며 이어서 불러옴)
             var head = cur != nil ? "\(main.count)곡 중 \(cur! + 1)번째\(left)" : "\(main.count)곡"
             if let l = music?.state?.listId, l.hasPrefix("PL") || l.hasPrefix("OLAK"),
                let total = PlaylistCount.get(l, music: music, changed: { [weak self] in self?.lastQueueKey = ""; self?.loadQueue() }),
@@ -379,8 +431,23 @@ final class BigPlayerView: NSView {
                 head = "전체 \(total)곡 중 \(main.count)곡 불러옴\(k) · 나머지는 재생하며 이어서 불러와요"
                 head = head.replacingOccurrences(of: " · 남은 시간", with: " · 불러온 곡 남은 시간")
             }
-            doc.addSubview(SectionHead(head))
+            headLabel.stringValue = head
+            headLabel.toolTip = head
+            partial = head.hasPrefix("전체 ")
+            if let link {
+                // 내 플레이리스트와 연결: 여기서 고치면 플레이리스트에도 반영
+                if let u = undoInfo {
+                    let what = u.entries.count == 1 ? "‘\(u.entries[0].item.title.prefix(16))’을" : "\(u.entries.count)곡을"
+                    let h = SectionHead("\(what) ‘\(link.title)’에서 뺐어요")
+                    h.action = ("되돌리기", { [weak self] in self?.undoRemove() })
+                    doc.addSubview(h)
+                } else {
+                    doc.addSubview(SectionHead("‘\(link.title)’과 연결됨 · ⊖ 빼기 · 끌어서 옮기기 · 🔍 검색해서 넣기 — 플레이리스트에도 반영돼요"))
+                }
+            }
         }
+        searchBtn.isHidden = tab != 0 || link == nil
+        needsLayout = true
         var no = 0
         for item in items {
             if item.auto && !autoHead {
@@ -403,7 +470,12 @@ final class BigPlayerView: NSView {
             if !item.auto { no += 1; r.number = no }
             if selecting { r.check = pickedQueue.contains(item.index) }
             r.translatesAutoresizingMaskIntoConstraints = true
+            r.hoverByParent = true
             r.makeMenu = { [weak self] in self?.albumMenu(item) ?? NSMenu() }
+            if let link, !item.auto, !item.setId.isEmpty, !selecting {
+                r.onRemove = { [weak self] in self?.removeMany([item], from: link) }
+                r.onDrag = { [weak self] row, y, done in self?.draggingQueue(row, item: item, y: y, done: done, link: link) }
+            }
             if item.auto { r.alphaValue = 0.6 }
             doc.addSubview(r)
         }
@@ -417,8 +489,13 @@ final class BigPlayerView: NSView {
         status.stringValue = items.isEmpty ? "다음 트랙을 찾지 못했어요\n곡을 재생하면 여기에 보여요" : ""
         status.isHidden = tab != 0 || !items.isEmpty
         layoutRows()
-        // 지금 곡이 보이게 (위에 한 곡 남기고)
-        if let r = doc.subviews.first(where: { ($0 as? QueueRow)?.isCurrent == true }) {
+        // 지금 곡이 보이게 (위에 한 곡 남기고) — 곡이 바뀌었을 때만 (고치는 중엔 보던 자리 그대로)
+        let curTitle = items.first(where: { $0.current })?.title ?? ""
+        // 따라가기를 끈 경우, 또는 방금(8초 안) 직접 고치거나 스크롤했으면 그대로 둠
+        let quiet = !Self.followCurrent || Date().timeIntervalSince(lastUserTouch) < 8
+        if curTitle != scrolledFor, quiet, !scrolledFor.isEmpty { scrolledFor = curTitle }
+        if curTitle != scrolledFor, let r = doc.subviews.first(where: { ($0 as? QueueRow)?.isCurrent == true }) {
+            scrolledFor = curTitle
             scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, r.frame.minY - QueueRow.rowH)))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
@@ -430,6 +507,269 @@ final class BigPlayerView: NSView {
     static func hms(_ s: Int) -> String {
         let h = s / 3600, m = s % 3600 / 60, x = s % 60
         return h > 0 ? String(format: "%d:%02d:%02d", h, m, x) : String(format: "%d:%02d", m, x)
+    }
+
+    // MARK: 내 플레이리스트와 연결된 다음 트랙 (빼기 · 옮기기 · 넣기 · 검색)
+
+    private let searchBtn = NSButton()
+    private var scrolledFor = ""
+    /// 곡이 바뀌면 지금 곡 자리로 목록을 저절로 옮길지 (취향 · 기본 켬)
+    static var followCurrent: Bool {
+        get { UserDefaults.standard.object(forKey: "queueFollow") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "queueFollow") }
+    }
+    private let followBtn = NSButton()
+    /// 다음 트랙 맨 위 고정 줄: 몇 곡 중 몇 번째 · 남은 시간 (오른쪽에 따라가기 · 검색)
+    private let headLabel = NSTextField(labelWithString: "")
+    private static let headH: CGFloat = 22
+    /// 마지막으로 직접 고치거나 스크롤한 때
+    private var lastUserTouch = Date.distantPast
+    private func syncFollowBtn() {
+        followBtn.image = NSImage(systemSymbolName: Self.followCurrent ? "scope" : "scope", accessibilityDescription: "지금 곡 따라가기")
+        followBtn.contentTintColor = Self.followCurrent ? .launcherAccent : .tertiaryLabelColor
+        followBtn.toolTip = Self.followCurrent ? "지금 곡 따라가기: 켬 — 곡이 바뀌면 목록이 지금 곡 자리로 (누르면 끔)" : "지금 곡 따라가기: 끔 — 목록이 저절로 움직이지 않아요 (누르면 켬)"
+    }
+    @objc private func toggleFollow() {
+        Self.followCurrent.toggle()
+        syncFollowBtn()
+        toast(Self.followCurrent ? "곡이 바뀌면 지금 곡으로 따라가요" : "목록이 저절로 움직이지 않아요")
+        if Self.followCurrent { scrolledFor = ""; lastUserTouch = .distantPast; lastQueueKey = ""; loadQueue() }
+    }
+    /// 불러온 다음 트랙이 플레이리스트의 일부뿐인지 (긴 플레이리스트)
+    private var partial = false
+    /// 방금 뺀 곡 (되돌리기: 그 곡 · 원래 다음 곡 자리 ID · 대기열 자리)
+    private var undoInfo: (entries: [(item: QueueItem, after: String?)], list: String)?
+
+    /// 지금 듣는 플레이리스트가 내 플레이리스트(고칠 수 있는 것)이면 그것
+    private var linked: PlaylistInfo? {
+        guard let l = music?.state?.listId, l.hasPrefix("PL") else { return nil }
+        if let p = plPane.playlists.first(where: { $0.id == l }) { return p }
+        // 방금 만든 플레이리스트일 수 있어서 목록을 한 번 다시 받음 (플레이리스트마다 한 번만)
+        if !plPane.playlists.isEmpty, linkChecked != l {
+            linkChecked = l
+            plPane.reload()
+            refreshQueue(after: 2.5)
+        }
+        return nil
+    }
+    private var linkChecked = ""
+
+    private func refreshQueue(after t: Double = 0.4) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.lastQueueKey = ""; self?.loadQueue() }
+    }
+
+    /// 화면 목록을 바로 바꿈 (다음 트랙 줄 순서 · 번호), 서버 일은 뒤에서
+    private func applyLocal(_ newMain: [QueueItem]) {
+        let autos = items.filter { $0.auto }
+        let all = (newMain + autos).enumerated().map { $0.element.with(index: $0.offset) }
+        lastQueueKey = ""
+        show(all)
+    }
+    private var queueRows: [QueueRow] { doc.subviews.compactMap { $0 as? QueueRow } }
+
+    // 마우스가 올라간 다음 트랙 줄: 목록 전체가 마우스 위치를 보고 그 아래 한 줄만 켬 (줄마다 감지하면 빨리 지나갈 때 자국이 남았음)
+    private var hoverArea: NSTrackingArea?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let a = hoverArea { removeTrackingArea(a) }
+        let a = NSTrackingArea(rect: .zero, options: [.mouseMoved, .mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self)
+        addTrackingArea(a); hoverArea = a
+    }
+    override func mouseMoved(with event: NSEvent) { super.mouseMoved(with: event); syncQueueHover() }
+    override func mouseExited(with event: NSEvent) { super.mouseExited(with: event); syncQueueHover() }
+    override func scrollWheel(with event: NSEvent) { super.scrollWheel(with: event); syncQueueHover() }
+    private func syncQueueHover() {
+        guard let w = window else { return }
+        let inWin = w.convertPoint(fromScreen: NSEvent.mouseLocation)
+        let inScroll = !scroll.isHidden && scroll.bounds.contains(scroll.convert(inWin, from: nil)) && w.frame.contains(NSEvent.mouseLocation)
+        let p = doc.convert(inWin, from: nil)
+        let under = (inScroll && dragRow == nil) ? queueRows.first(where: { $0.frame.contains(p) }) : nil
+        for r in queueRows { r.setHover(r === under) }
+    }
+
+    /// 고른 곡들(하나도 됨)을 다음 트랙 · 플레이리스트에서 빼기 — 화면은 바로, 서버는 뒤에서. 지금 곡을 빼면 다음 곡으로 넘어감
+    private func removeMany(_ sel: [QueueItem], from link: PlaylistInfo) {
+        lastUserTouch = Date()
+        let main = items.filter { !$0.auto }
+        let gone = Set(sel.map(\.index))
+        guard !gone.isEmpty else { return }
+        // 되돌리기용: 각 곡 바로 뒤에 남는 곡 (같이 빠지는 곡은 건너뜀 · 되돌릴 때 그 곡도 돌아오므로 원래 바로 뒤 곡)
+        let entries: [(item: QueueItem, after: String?)] = main.enumerated().compactMap { k, it in
+            guard gone.contains(it.index) else { return nil }
+            return (it, k + 1 < main.count ? main[k + 1].setId : nil)
+        }
+        let keep = main.filter { !gone.contains($0.index) }
+        // 1) 화면: 빠지는 줄은 흐려지고 남은 줄은 제자리로 미끄러짐
+        let rows = queueRows
+        let h = QueueRow.rowH
+        if let base = rows.first?.frame.minY, rows.count >= main.count {
+            var y = base
+            NSAnimationContext.runAnimationGroup({ c in
+                c.duration = 0.18
+                for (k, it) in main.enumerated() {
+                    if gone.contains(it.index) { rows[k].animator().alphaValue = 0; continue }
+                    rows[k].animator().setFrameOrigin(NSPoint(x: rows[k].frame.minX, y: y)); y += h
+                }
+                let shift = CGFloat(main.count - keep.count) * h
+                let lastMain = rows[main.count - 1].frame.maxY
+                for v in doc.subviews where v.frame.minY >= lastMain { v.animator().setFrameOrigin(NSPoint(x: v.frame.minX, y: v.frame.minY - shift)) }
+            }, completionHandler: { [weak self] in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    self.undoInfo = (entries, link.id)
+                    self.applyLocal(keep)
+                }
+            })
+        } else { undoInfo = (entries, link.id); applyLocal(keep) }
+        // 2) 뒤에서: 다음 트랙(뒤 곡부터 빼야 번호가 안 밀림) · 플레이리스트(한 번에)
+        for it in sel.sorted(by: { $0.index > $1.index }) { music?.queueRemove(index: it.index, setId: it.setId) { _ in } }
+        music?.removeManyFromPlaylist(link.id, sel.map { ($0.setId, $0.ownVideoId) }) { [weak self] ok in
+            PlaylistCount.cache[link.id] = nil
+            if !ok { self?.undoInfo = nil; self?.toast("플레이리스트에서 빼지 못했어요"); self?.refreshQueue() }
+            else { self?.refreshQueue(after: 1) }
+        }
+    }
+
+    private func undoRemove() {
+        lastUserTouch = Date()
+        guard let u = undoInfo else { return }
+        undoInfo = nil
+        // 화면엔 바로 원래 자리에 다시 (앞 곡부터)
+        var main = items.filter { !$0.auto }
+        let back = u.entries.sorted { $0.item.index < $1.item.index }
+        for e in back { main.insert(e.item, at: min(e.item.index, main.count)) }
+        applyLocal(main)
+        // 다음 트랙: 앞 곡부터 원래 자리에
+        @MainActor func insertQ(_ i: Int) {
+            guard i < back.count else { return }
+            let it = back[i].item
+            music?.queueInsert([it.ownVideoId], setIds: [it.setId], at: it.index) { _ in insertQ(i + 1) }
+        }
+        insertQ(0)
+        // 플레이리스트: 다시 넣으면 맨 끝에 붙어서, 뒤 곡부터 원래 자리(뒤에 있던 곡 앞)로
+        let vids = back.map(\.item.ownVideoId)
+        music?.addToPlaylistIds(u.list, videoIds: vids) { [weak self] m in
+            guard let self else { return }
+            guard let m, !m.isEmpty else { self.toast("되돌리지 못했어요"); self.refreshQueue(); return }
+            var newSid: [String: String] = [:]   // 옛 자리 ID → 새 자리 ID
+            for e in back { if let s = m[e.item.ownVideoId] { newSid[e.item.setId] = s; self.music?.queueSetSid(e.item.ownVideoId, sid: s) } }
+            let order = back.reversed().map { $0 }
+            @MainActor func move(_ i: Int) {
+                guard i < order.count else { PlaylistCount.cache[u.list] = nil; self.refreshQueue(after: 0.3); return }
+                let e = order[i]
+                guard let sid = newSid[e.item.setId] else { move(i + 1); return }
+                let before = e.after.map { newSid[$0] ?? $0 }
+                self.music?.moveInPlaylist(u.list, setId: sid, before: before) { _ in move(i + 1) }
+            }
+            move(0)
+        }
+    }
+
+    /// 곡들을 지금 플레이리스트 끝 + 다음 트랙 끝에 (넣은 곡 수, 실패면 -1) — 다음 트랙엔 먼저 붙이고 플레이리스트는 뒤에서
+    private func addLinked(_ vids: [String], link: PlaylistInfo, done: @escaping (Int) -> Void) {
+        lastUserTouch = Date()
+        // 이미 있는 곡은 빼고 (불러온 다음 트랙 기준)
+        let have = Set(items.filter { !$0.auto }.flatMap { [$0.videoId, $0.ownVideoId] })
+        let fresh = vids.filter { !have.contains($0) }
+        if fresh.isEmpty { toast("이미 ‘\(link.title)’에 있어요"); done(0); return }
+        // 긴 플레이리스트를 일부만 불러온 중이면 다음 트랙엔 안 붙임 (나머지를 불러올 때 같이 와서 두 번 나오지 않게)
+        if !partial { music?.queueInsert(fresh) { [weak self] _ in self?.refreshQueue(after: 0.2) } }
+        done(fresh.count)
+        music?.addToPlaylistIds(link.id, videoIds: fresh) { [weak self] m in
+            guard let self else { return }
+            guard let m else { self.toast("‘\(link.title)’에 넣지 못했어요"); return }
+            for (v, sid) in m where !sid.isEmpty { self.music?.queueSetSid(v, sid: sid) }
+            PlaylistCount.cache[link.id] = nil
+            if self.partial { self.toast("‘\(link.title)’ 끝에 넣었어요 (다음 트랙엔 나머지를 불러올 때 보여요)") }
+            self.refreshQueue(after: 0.3)
+        }
+    }
+    private func addToLinked(_ t: PlaylistTrack, link: PlaylistInfo, done: @escaping (Bool) -> Void) {
+        addLinked([t.videoId], link: link) { n in done(n > 0) }
+    }
+
+    private var searchPop: NSPopover?
+    @objc private func openSearch() {
+        guard let link = linked else { return }
+        if let p = searchPop, p.isShown { p.close(); return }
+        let vc = SongSearchVC(music: music, target: link.title)
+        vc.onAdd = { [weak self] t, done in
+            guard let self, let l = self.linked, l.id == link.id else { done(false); return }
+            self.addToLinked(t, link: l, done: done)
+        }
+        let p = NSPopover()
+        p.contentViewController = vc
+        p.behavior = .transient
+        p.appearance = window?.appearance
+        p.show(relativeTo: searchBtn.bounds, of: searchBtn, preferredEdge: .maxY)
+        searchPop = p
+    }
+
+    // 끌어서 옮기기: 잡은 줄이 마우스를 따라오고 다른 줄들이 비켜 줌, 놓으면 화면은 바로 · 플레이리스트 · 다음 트랙은 뒤에서
+    private var dragBase: CGFloat = 0
+    private var dragFrom = -1
+    private var dragTo = -1
+    private weak var dragRow: QueueRow?
+    private func draggingQueue(_ row: QueueRow, item: QueueItem, y: CGFloat, done: Bool, link: PlaylistInfo) {
+        lastUserTouch = Date()
+        let p = doc.convert(NSPoint(x: 0, y: y), from: nil)
+        let main = items.filter { !$0.auto }
+        let mainRows = Array(queueRows.prefix(main.count))
+        let h = QueueRow.rowH
+        if dragRow !== row {
+            guard let k = mainRows.firstIndex(where: { $0 === row }) else { return }
+            dragRow = row; dragFrom = k; dragTo = k
+            dragBase = mainRows[0].frame.minY
+            row.wantsLayer = true
+            row.layer?.zPosition = 10
+            row.layer?.shadowOpacity = 0.25; row.layer?.shadowRadius = 6; row.layer?.shadowOffset = .zero
+        }
+        let n = mainRows.count
+        let to = max(0, min(n - 1, Int(((p.y - dragBase) / h).rounded(.down))))
+        if !done {
+            row.setFrameOrigin(NSPoint(x: row.frame.minX, y: max(dragBase, min(dragBase + CGFloat(n - 1) * h, p.y - h / 2))))
+            if to != dragTo {
+                dragTo = to
+                let others = mainRows.filter { $0 !== row }
+                NSAnimationContext.runAnimationGroup { c in
+                    c.duration = 0.12
+                    for (i, r) in others.enumerated() {
+                        let slot = i < to ? i : i + 1
+                        r.animator().setFrameOrigin(NSPoint(x: r.frame.minX, y: dragBase + CGFloat(slot) * h))
+                    }
+                }
+            }
+            let vis = scroll.contentView.bounds
+            if p.y < vis.minY + 20 { scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, vis.minY - 12))) }
+            if p.y > vis.maxY - 20 { scroll.contentView.scroll(to: NSPoint(x: 0, y: min(max(0, doc.frame.height - vis.height), vis.minY + 12))) }
+            return
+        }
+        // 놓음
+        let from = dragFrom
+        dragRow = nil
+        row.layer?.zPosition = 0; row.layer?.shadowOpacity = 0
+        let revert = { [weak self] (msg: String) in self?.toast(msg); self?.applyLocal(main) }
+        guard from >= 0, to != from else { applyLocal(main); return }
+        if to == n - 1 && partial { revert("긴 플레이리스트는 불러온 곡 맨 끝으로는 못 옮겨요"); return }
+        var m = main
+        let moved = m.remove(at: from)
+        m.insert(moved, at: to)
+        NSAnimationContext.runAnimationGroup({ c in
+            c.duration = 0.12
+            row.animator().setFrameOrigin(NSPoint(x: row.frame.minX, y: dragBase + CGFloat(to) * h))
+        }, completionHandler: { [weak self] in MainActor.assumeIsolated { self?.applyLocal(m) } })
+        let before = to + 1 < m.count ? m[to + 1].setId : nil
+        // 대기열은 '그 곡 앞에 꽂기' 자리로 (원래 순서 기준)
+        let insertAt = to > from ? to + 1 : to
+        music?.queueShuffled { [weak self] shuffled in
+            guard let self else { return }
+            // 섞어 듣는 중이면 다음 트랙 순서가 플레이리스트 순서와 달라서 못 옮김
+            if shuffled { revert("섞어 듣기 중엔 순서를 바꿀 수 없어요"); return }
+            self.music?.queueMove(from: item.index, to: insertAt, setId: item.setId) { _ in }
+            self.music?.moveInPlaylist(link.id, setId: item.setId, before: before) { ok in
+                if !ok { self.toast("플레이리스트 순서를 바꾸지 못했어요"); self.refreshQueue() }
+            }
+        }
     }
 
     // MARK: 이 곡의 앨범 재생
@@ -448,15 +788,21 @@ final class BigPlayerView: NSView {
         }
         let who = RandomPlaylistWindow.mainArtist(item.artist)
         if !who.isEmpty {
-            m.addItem(MenuAction("‘\(who)’를 랜덤 재생목록 가수에 넣기") { [weak self] in
+            m.addItem(MenuAction("‘\(who)’를 랜덤 플레이리스트 가수에 넣기") { [weak self] in
                 let w = RandomPlaylistWindow.shared
                 w.show(music: self?.music)
                 w.addArtists([(item.artistId, who)])
             })
         }
+        if !item.videoId.isEmpty, let link = linked, item.auto || item.setId.isEmpty {
+            m.addItem(.separator())
+            m.addItem(MenuAction("‘\(link.title)’에 넣기 (지금 플레이리스트 · 다음 트랙 끝에)") { [weak self] in
+                self?.addToLinked(PlaylistTrack(title: item.title, artist: item.artist, duration: item.duration, videoId: item.videoId, setId: "", thumb: ""), link: link) { _ in }
+            })
+        }
         if !item.videoId.isEmpty {
             m.addItem(.separator())
-            let add = NSMenuItem(title: "재생목록에 넣기", action: nil, keyEquivalent: "")
+            let add = NSMenuItem(title: "플레이리스트에 넣기", action: nil, keyEquivalent: "")
             add.submenu = addMenu(vids: [item.videoId], albums: [])
             m.addItem(add)
         }
@@ -595,7 +941,7 @@ final class BigPlayerView: NSView {
                 let m = NSMenu()
                 m.addItem(MenuAction("처음부터 재생") { self?.playAlbumEntry(a) })
                 m.addItem(MenuAction(self?.expanded.contains(a.id) == true ? "수록곡 접기" : "수록곡 보기") { self?.toggleExpand(a) })
-                let add = NSMenuItem(title: "재생목록에 앨범 넣기", action: nil, keyEquivalent: "")
+                let add = NSMenuItem(title: "플레이리스트에 앨범 넣기", action: nil, keyEquivalent: "")
                 add.submenu = self?.addMenu(vids: [], albums: [a.id])
                 m.addItem(add)
                 return m
@@ -627,7 +973,7 @@ final class BigPlayerView: NSView {
                     let m = NSMenu()
                     m.addItem(MenuAction("이 곡만 재생") { self?.playVideos([t.videoId], title: t.title) })
                     if let l = got.list { m.addItem(MenuAction("이 곡부터 앨범 재생") { self?.music?.playList(l, from: t.videoId) }) }
-                    let add = NSMenuItem(title: "재생목록에 넣기", action: nil, keyEquivalent: "")
+                    let add = NSMenuItem(title: "플레이리스트에 넣기", action: nil, keyEquivalent: "")
                     add.submenu = self?.addMenu(vids: [t.videoId], albums: [])
                     m.addItem(add)
                     return m
@@ -652,7 +998,7 @@ final class BigPlayerView: NSView {
         }
     }
 
-    /// 고른 곡만 재생: '고른 곡 (도구함)' 재생목록 하나를 새로 만들어 틀고, 전에 만든 건 지움
+    /// 고른 곡만 재생: '고른 곡 (도구함)' 플레이리스트 하나를 새로 만들어 틀고, 전에 만든 건 지움
     /// (YouTube Music 은 곡 몇 개만으로 바로 재생 목록을 만드는 주소가 없어서)
     private func playVideos(_ vids: [String], title: String? = nil) {
         var seen = Set<String>()
@@ -1071,7 +1417,7 @@ final class AlbumRow: NSView {
         s.textColor = .secondaryLabelColor
         s.lineBreakMode = .byTruncatingTail
         addSubview(s)
-        toolTip = "눌러서 수록곡 보기 · ▶ 처음부터 재생 · 오른쪽 클릭: 재생목록에 넣기"
+        toolTip = "눌러서 수록곡 보기 · ▶ 처음부터 재생 · 오른쪽 클릭: 플레이리스트에 넣기"
         chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
         chevron.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
         chevron.contentTintColor = .tertiaryLabelColor
@@ -1130,13 +1476,17 @@ final class AlbumRow: NSView {
 }
 
 
-/// 고르는 중일 때 목록 아래 줄: "3곡 골랐어요  [재생목록에 넣기 ▾] [취소]"
+/// 고르는 중일 때 목록 아래 줄: "3곡 골랐어요  [플레이리스트에 넣기 ▾] [취소]"
 @MainActor
 final class SelectBar: NSView {
     private let label = NSTextField(labelWithString: "")
-    private let addBtn = NSButton(title: "재생목록에 넣기 ▾", target: nil, action: nil)
+    private let addBtn = NSButton(title: "플레이리스트에 넣기 ▾", target: nil, action: nil)
     private let cancelBtn = NSButton(title: "취소", target: nil, action: nil)
     private let playBtn = NSButton(title: "▶ 재생", target: nil, action: nil)
+    private let removeBtn = NSButton(title: "빼기", target: nil, action: nil)
+    /// 내 플레이리스트와 연결된 다음 트랙에서 고른 곡 빼기 (nil 이면 버튼 없음)
+    var onRemove: (() -> Void)?
+    var canRemove = false { didSet { removeBtn.isHidden = !canRemove; needsLayout = true } }
     var onPlay: (() -> Void)?
     var onAdd: ((NSView) -> Void)?
     var onCancel: (() -> Void)?
@@ -1152,7 +1502,11 @@ final class SelectBar: NSView {
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
-        for b in [playBtn, addBtn, cancelBtn] { b.controlSize = .small; b.bezelStyle = .rounded; b.target = self; addSubview(b) }
+        for b in [removeBtn, playBtn, addBtn, cancelBtn] { b.controlSize = .small; b.bezelStyle = .rounded; b.target = self; addSubview(b) }
+        removeBtn.action = #selector(removeTapped)
+        removeBtn.contentTintColor = .systemRed
+        removeBtn.toolTip = "고른 곡을 지금 플레이리스트와 다음 트랙에서 빼기"
+        removeBtn.isHidden = true
         addBtn.action = #selector(addTapped); cancelBtn.action = #selector(cancelTapped); playBtn.action = #selector(playTapped)
         playBtn.toolTip = "고른 곡만 바로 재생 (앨범을 고르면 그 앨범의 모든 곡)"
         addBtn.keyEquivalent = "\r"
@@ -1161,12 +1515,21 @@ final class SelectBar: NSView {
     @objc private func addTapped() { onAdd?(addBtn) }
     @objc private func cancelTapped() { onCancel?() }
     @objc private func playTapped() { onPlay?() }
+    @objc private func removeTapped() { onRemove?() }
     override func layout() {
         super.layout()
-        cancelBtn.sizeToFit(); addBtn.sizeToFit(); playBtn.sizeToFit()
+        cancelBtn.sizeToFit(); addBtn.sizeToFit(); playBtn.sizeToFit(); removeBtn.sizeToFit()
         cancelBtn.frame = NSRect(x: bounds.width - cancelBtn.frame.width - 6, y: (bounds.height - 22) / 2, width: cancelBtn.frame.width, height: 22)
         addBtn.frame = NSRect(x: cancelBtn.frame.minX - addBtn.frame.width - 4, y: (bounds.height - 22) / 2, width: addBtn.frame.width, height: 22)
         playBtn.frame = NSRect(x: addBtn.frame.minX - playBtn.frame.width - 4, y: (bounds.height - 22) / 2, width: playBtn.frame.width, height: 22)
-        label.frame = NSRect(x: 10, y: (bounds.height - 16) / 2, width: max(20, playBtn.frame.minX - 14), height: 16)
+        removeBtn.frame = NSRect(x: playBtn.frame.minX - (removeBtn.isHidden ? 0 : removeBtn.frame.width + 4), y: (bounds.height - 22) / 2, width: removeBtn.frame.width, height: 22)
+        let left = removeBtn.isHidden ? playBtn.frame.minX : removeBtn.frame.minX
+        label.frame = NSRect(x: 10, y: (bounds.height - 16) / 2, width: max(20, left - 14), height: 16)
     }
+}
+
+/// 손으로 스크롤한 걸 알려 주는 스크롤 칸 (그동안엔 목록을 저절로 옮기지 않게)
+final class WheelScrollView: NSScrollView {
+    var onWheel: (() -> Void)?
+    override func scrollWheel(with event: NSEvent) { onWheel?(); super.scrollWheel(with: event) }
 }

@@ -1,4 +1,4 @@
-// 재생목록 편집: 로그인된 YouTube Music 계정의 재생목록을 도구함에서 바로 고침 (휴대폰 앱에도 그대로 보임)
+// 플레이리스트 편집: 로그인된 YouTube Music 계정의 플레이리스트를 도구함에서 바로 고침 (휴대폰 앱에도 그대로 보임)
 // 숨은 페이지 안에서 로그인 쿠키로 서명한 요청(SAPISIDHASH)을 보냄 — 쿠키 · 서명은 페이지 밖으로 안 나감
 import Cocoa
 import WebKit
@@ -14,13 +14,13 @@ struct PlaylistTrack: Equatable {
     let artist: String
     let duration: String
     let videoId: String
-    let setId: String   // 재생목록 안 자리 ID (빼기 · 옮기기에 씀)
+    let setId: String   // 플레이리스트 안 자리 ID (빼기 · 옮기기에 씀)
     let thumb: String
     /// 가수 페이지 ID (UC…) — 가수 링크가 있을 때만
     var artistId = ""
 }
 
-/// 재생목록 전체 곡 수 (다음 트랙이 50곡씩만 불러와서, 전체가 몇 곡인지 보여 줄 때 씀)
+/// 플레이리스트 전체 곡 수 (다음 트랙이 50곡씩만 불러와서, 전체가 몇 곡인지 보여 줄 때 씀)
 @MainActor enum PlaylistCount {
     static var cache: [String: (n: Int, at: Date)] = [:]
     static var loading = Set<String>()
@@ -74,7 +74,7 @@ extension YTMusic {
         return try? JSONSerialization.jsonObject(with: d)
     }
 
-    /// 내 재생목록 (좋아요 표시한 음악 등 자동 목록은 뺌 — 고칠 수 없어서)
+    /// 내 플레이리스트 (좋아요 표시한 음악 등 자동 목록은 뺌 — 고칠 수 없어서)
     func myPlaylists(_ done: @escaping ([PlaylistInfo]) -> Void) {
         runAPI("""
         const j = await api('browse', {browseId: 'FEmusic_liked_playlists'});
@@ -88,7 +88,7 @@ extension YTMusic {
         }
     }
 
-    /// 재생목록 곡 전부 (100곡 넘으면 다음 쪽까지)
+    /// 플레이리스트 곡 전부 (100곡 넘으면 다음 쪽까지)
     func playlistTracks(_ id: String, done: @escaping ([PlaylistTrack]?) -> Void) {
         runAPI("""
         let j = await api('browse', {browseId: 'VL' + pid});
@@ -121,7 +121,7 @@ extension YTMusic {
         }
     }
 
-    /// 새 재생목록 (비공개). 곡을 같이 넣을 수 있음
+    /// 새 플레이리스트 (비공개). 곡을 같이 넣을 수 있음
     func createPlaylist(_ title: String, videoIds: [String] = [], done: @escaping (String?) -> Void) {
         runAPI("""
         const j = await api('playlist/create', {title: name, description: '', privacyStatus: 'PRIVATE', videoIds: vids});
@@ -129,7 +129,15 @@ extension YTMusic {
         """, ["name": title, "vids": videoIds]) { v in done(v as? String) }
     }
 
-    /// 재생목록 통째로 지우기 (유튜브 뮤직 계정에서도 지워짐 · 되돌릴 수 없음)
+    /// 플레이리스트 이름 바꾸기
+    func renamePlaylist(_ id: String, _ name: String, done: @escaping (Bool) -> Void) {
+        runAPI("""
+        const j = await api('browse/edit_playlist', {playlistId: pid, actions: [{action: 'ACTION_SET_PLAYLIST_NAME', playlistName: name}]});
+        return j.status === 'STATUS_SUCCEEDED';
+        """, ["pid": id, "name": name]) { v in done(v as? Bool ?? false) }
+    }
+
+    /// 플레이리스트 통째로 지우기 (유튜브 뮤직 계정에서도 지워짐 · 되돌릴 수 없음)
     func deletePlaylist(_ id: String, done: @escaping (Bool) -> Void) {
         runAPI("""
         const j = await api('playlist/delete', {playlistId: pid});
@@ -166,7 +174,7 @@ extension YTMusic {
     }
 }
 
-// MARK: - 재생목록 탭: 고르기 · 재생 · 끌어서 순서 바꾸기 · ⊖ 빼기 · 되돌리기 · 새 재생목록
+// MARK: - 플레이리스트 탭: 고르기 · 재생 · 끌어서 순서 바꾸기 · ⊖ 빼기 · 되돌리기 · 새 플레이리스트
 
 @MainActor
 final class PlaylistPane: NSView {
@@ -174,6 +182,7 @@ final class PlaylistPane: NSView {
     private let picker = NSPopUpButton()
     private let playBtn = NSButton()
     private let newBtn = NSButton()
+    private let renameBtn = NSButton()
     private let delBtn = NSButton()
     private let randBtn = NSButton()
     private let undoBtn = NSButton(title: "되돌리기", target: nil, action: nil)
@@ -201,10 +210,11 @@ final class PlaylistPane: NSView {
         picker.controlSize = .small
         picker.target = self; picker.action = #selector(picked)
         addSubview(picker)
-        for (b, sym, tip, act) in [(playBtn, "play.circle.fill", "이 재생목록 재생", #selector(playAll)),
-                                   (newBtn, "plus.circle", "새 재생목록", #selector(newList)),
-                                   (delBtn, "trash", "재생목록 지우기 (여러 개 골라서)", #selector(deleteList)),
-                                   (randBtn, "dice", "랜덤 재생목록 만들기 (가수 · 비중 · 곡 수 · 시간)", #selector(openRandom))] {
+        for (b, sym, tip, act) in [(playBtn, "play.circle.fill", "이 플레이리스트 재생", #selector(playAll)),
+                                   (newBtn, "plus.circle", "새 플레이리스트", #selector(newList)),
+                                   (renameBtn, "pencil", "이 플레이리스트 이름 바꾸기", #selector(renameList)),
+                                   (delBtn, "trash", "플레이리스트 지우기 (여러 개 골라서)", #selector(deleteList)),
+                                   (randBtn, "dice", "랜덤 플레이리스트 만들기 (가수 · 비중 · 곡 수 · 시간)", #selector(openRandom))] {
             b.image = NSImage(systemSymbolName: sym, accessibilityDescription: tip)
             b.isBordered = false; b.toolTip = tip; b.target = self; b.action = act
             b.symbolConfiguration = .init(pointSize: 16, weight: .regular)
@@ -233,7 +243,8 @@ final class PlaylistPane: NSView {
         undoBtn.sizeToFit()
         let uw = undoBtn.isHidden ? 0 : undoBtn.frame.width + 6
         delBtn.frame = NSRect(x: w - 26, y: 2, width: 24, height: 24)
-        newBtn.frame = NSRect(x: delBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        renameBtn.frame = NSRect(x: delBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        newBtn.frame = NSRect(x: renameBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         randBtn.frame = NSRect(x: newBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         playBtn.frame = NSRect(x: randBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         undoBtn.frame = NSRect(x: playBtn.frame.minX - uw, y: 5, width: uw - 6, height: 18)
@@ -246,7 +257,7 @@ final class PlaylistPane: NSView {
     // MARK: 불러오기
 
     private var loading = false
-    /// 방금 지운 재생목록 (서버 목록에 잠깐 남아 있어도 숨김)
+    /// 방금 지운 플레이리스트 (서버 목록에 잠깐 남아 있어도 숨김)
     static var recentlyDeleted = Set<String>()
 
     /// 고르기 칸 · 곡 목록을 이 목록으로
@@ -256,10 +267,10 @@ final class PlaylistPane: NSView {
         for l in ls { picker.menu?.addItem(NSMenuItem(title: l.title, action: nil, keyEquivalent: "")) }
         if !ls.contains(where: { $0.id == Self.selectedId }) { Self.selectedId = ls.first?.id ?? "" }
         if let i = ls.firstIndex(where: { $0.id == Self.selectedId }) { picker.selectItem(at: i) }
-        if ls.isEmpty { status.stringValue = "재생목록이 없어요 · ⊕ 로 새로 만들어요"; status.isHidden = false }
+        if ls.isEmpty { status.stringValue = "플레이리스트가 없어요 · ⊕ 로 새로 만들어요"; status.isHidden = false }
         loadTracks()
     }
-    /// 재생목록 탭을 열 때: 내 재생목록 중 하나를 듣는 중이면 그 목록을 보여 줌 (보는 목록과 나오는 곡이 달라 헷갈리지 않게)
+    /// 플레이리스트 탭을 열 때: 내 플레이리스트 중 하나를 듣는 중이면 그 목록을 보여 줌 (보는 목록과 나오는 곡이 달라 헷갈리지 않게)
     func followPlaying() {
         guard let l = music?.state?.listId, l.hasPrefix("PL"), l != Self.selectedId, lists.contains(where: { $0.id == l }) else { return }
         Self.selectedId = l
@@ -279,22 +290,25 @@ final class PlaylistPane: NSView {
         if again || lists.isEmpty {
             guard !loading else { return }
             loading = true
-            if tracks.isEmpty { status.stringValue = "재생목록 불러오는 중…"; status.isHidden = false }
+            if tracks.isEmpty { status.stringValue = "플레이리스트 불러오는 중…"; status.isHidden = false }
             music?.myPlaylists { [weak self] all in
                 guard let self else { return }
-                let ls = all.filter { !Self.recentlyDeleted.contains($0.id) }
+                // 방금 지운 건 숨기고, 방금 바꾼 이름은 서버 목록이 늦게 바뀌어도 새 이름으로
+                let ls = all.filter { !Self.recentlyDeleted.contains($0.id) }.map { p in
+                    Self.renamed[p.id].map { PlaylistInfo(id: p.id, title: $0, sub: p.sub) } ?? p
+                }
                 self.loading = false
                 // 실패(페이지가 아직 덜 떠서 빈 응답)면 고른 목록을 지우지 않고 다음 시도를 기다림
                 if ls.isEmpty { return }
                 self.lists = ls
-                // 이름이 같은 재생목록이 있어도 하나로 합쳐지지 않게 한 줄씩 (addItems 는 같은 이름을 합쳐 순서가 밀렸음)
+                // 이름이 같은 플레이리스트가 있어도 하나로 합쳐지지 않게 한 줄씩 (addItems 는 같은 이름을 합쳐 순서가 밀렸음)
                 self.picker.removeAllItems()
                 for l in ls { self.picker.menu?.addItem(NSMenuItem(title: l.title, action: nil, keyEquivalent: "")) }
                 if !ls.contains(where: { $0.id == Self.selectedId }) { Self.selectedId = ls.first?.id ?? "" }
-                // 내 재생목록 중 하나를 듣는 중이면 그 목록부터
+                // 내 플레이리스트 중 하나를 듣는 중이면 그 목록부터
                 if let l = self.music?.state?.listId, ls.contains(where: { $0.id == l }) { Self.selectedId = l }
                 if let i = ls.firstIndex(where: { $0.id == Self.selectedId }) { self.picker.selectItem(at: i) }
-                if ls.isEmpty { self.status.stringValue = "재생목록이 없어요 · ⊕ 로 새로 만들어요" }
+                if ls.isEmpty { self.status.stringValue = "플레이리스트가 없어요 · ⊕ 로 새로 만들어요" }
                 self.loadTracks()
             }
         } else { loadTracks() }
@@ -323,7 +337,7 @@ final class PlaylistPane: NSView {
             r.onDrag = { [weak self] row, y, done in self?.dragging(row, y: y, done: done) }
             doc.addSubview(r)
         }
-        status.stringValue = ts.isEmpty ? "빈 재생목록이에요\n다음 트랙 · 앨범에서 곡을 넣어 보세요" : ""
+        status.stringValue = ts.isEmpty ? "빈 플레이리스트예요\n다음 트랙 · 앨범에서 곡을 넣어 보세요" : ""
         status.isHidden = !ts.isEmpty
         stack()
     }
@@ -350,22 +364,40 @@ final class PlaylistPane: NSView {
     @objc private func playAll() {
         guard !Self.selectedId.isEmpty else { return }
         music?.playList(Self.selectedId)
-        toast?("‘\(current?.title ?? "재생목록")’ 재생")
+        toast?("‘\(current?.title ?? "플레이리스트")’ 재생")
     }
     private func play(from t: PlaylistTrack) { music?.playList(Self.selectedId, from: t.videoId) }
+
+    /// 방금 바꾼 이름 (서버 목록에 잠깐 옛 이름이 남아 있어도 새 이름으로)
+    static var renamed: [String: String] = [:]
+
+    @objc private func renameList() {
+        guard let cur = current else { return }
+        Self.askName(title: "플레이리스트 이름 바꾸기", initial: cur.title, button: "바꾸기") { [weak self] name in
+            guard let self, name != cur.title else { return }
+            self.music?.renamePlaylist(cur.id, name) { ok in
+                guard ok else { self.toast?("이름을 바꾸지 못했어요"); return }
+                Self.renamed[cur.id] = name
+                self.lists = self.lists.map { $0.id == cur.id ? PlaylistInfo(id: $0.id, title: name, sub: $0.sub) : $0 }
+                if let i = self.lists.firstIndex(where: { $0.id == cur.id }) { self.picker.item(at: i)?.title = name; self.picker.selectItem(at: i) }
+                self.toast?("‘\(name)’으로 바꿨어요")
+                NotificationCenter.default.post(name: Notification.Name("playlistRenamed"), object: nil)
+            }
+        }
+    }
 
     @objc private func newList() {
         Self.askName { [weak self] name in
             self?.music?.createPlaylist(name) { id in
                 guard let self, let id else { self?.toast?("만들지 못했어요"); return }
                 Self.selectedId = id
-                self.toast?("‘\(name)’ 재생목록을 만들었어요")
+                self.toast?("‘\(name)’ 플레이리스트를 만들었어요")
                 self.reload()
             }
         }
     }
 
-    /// 🎲 랜덤 재생목록 창 (지금 곡의 가수를 먼저 넣어 둠)
+    /// 🎲 랜덤 플레이리스트 창 (지금 곡의 가수를 먼저 넣어 둠)
     @objc private func openRandom() {
         let w = RandomPlaylistWindow.shared
         // 만들거나 덧붙인 뒤: 서버 목록이 늦게 바뀌어서 바로 · 3초 · 8초 뒤에 다시 받음
@@ -379,8 +411,8 @@ final class PlaylistPane: NSView {
         }
     }
 
-    /// 지금 고른 재생목록을 통째로 지우기 (한 번 물어봄)
-    /// 재생목록 지우기: 체크해서 여러 개 한 번에 (지금 보고 있는 목록은 미리 체크)
+    /// 지금 고른 플레이리스트를 통째로 지우기 (한 번 물어봄)
+    /// 플레이리스트 지우기: 체크해서 여러 개 한 번에 (지금 보고 있는 목록은 미리 체크)
     @objc private func deleteList() {
         guard !lists.isEmpty else { return }
         // 1) 고르기: 체크 목록 (+ 모두 선택 · 모두 해제)
@@ -397,7 +429,7 @@ final class PlaylistPane: NSView {
         let sc = NSScrollView(frame: NSRect(x: 0, y: 0, width: w, height: min(300, CGFloat(lists.count) * rowH)))
         sc.documentView = doc; sc.hasVerticalScroller = true; sc.borderType = .bezelBorder
         let pick = NSAlert()
-        pick.messageText = "지울 재생목록을 골라 주세요"
+        pick.messageText = "지울 플레이리스트를 골라 주세요"
         pick.informativeText = "여러 개를 체크하면 한 번에 지워요"
         pick.accessoryView = sc
         pick.addButton(withTitle: "고른 것 지우기…")
@@ -409,7 +441,7 @@ final class PlaylistPane: NSView {
         // 2) 한 번 더 확인 (되돌릴 수 없어서)
         let a = NSAlert()
         a.alertStyle = .warning
-        a.messageText = chosen.count == 1 ? "‘\(chosen[0].title)’ 재생목록을 지울까요?" : "재생목록 \(chosen.count)개를 지울까요?"
+        a.messageText = chosen.count == 1 ? "‘\(chosen[0].title)’ 플레이리스트를 지울까요?" : "플레이리스트 \(chosen.count)개를 지울까요?"
         let names = chosen.prefix(8).map { "· \($0.title)" }.joined(separator: "\n") + (chosen.count > 8 ? "\n… 외 \(chosen.count - 8)개" : "")
         a.informativeText = names + "\n\n유튜브 뮤직 계정에서도 지워져요 (휴대폰 앱 포함). 되돌릴 수 없어요."
         a.addButton(withTitle: chosen.count == 1 ? "지우기" : "\(chosen.count)개 지우기")
@@ -420,7 +452,7 @@ final class PlaylistPane: NSView {
         var left = chosen, okCount = 0
         func next() {
             guard let pl = left.first else {
-                toast?(okCount == chosen.count ? "재생목록 \(okCount)개를 지웠어요" : "\(chosen.count)개 중 \(okCount)개를 지웠어요")
+                toast?(okCount == chosen.count ? "플레이리스트 \(okCount)개를 지웠어요" : "\(chosen.count)개 중 \(okCount)개를 지웠어요")
                 let gone = Set(chosen.map(\.id))
                 // 유튜브 뮤직 목록이 몇 초 늦게 바뀌어서, 지운 건 바로 빼고(1분 동안 다시 받아도 숨김) 조금 뒤 새로 받음
                 Self.recentlyDeleted.formUnion(gone)
@@ -437,20 +469,22 @@ final class PlaylistPane: NSView {
         next()
     }
 
-    /// 새 재생목록 이름 묻기
-    static func askName(_ done: @escaping (String) -> Void) {
+    /// 새 플레이리스트 이름 묻기
+    static func askName(title: String = "새 플레이리스트", initial: String = "", button: String = "만들기", _ done: @escaping (String) -> Void) {
         let a = NSAlert()
-        a.messageText = "새 재생목록"
-        a.informativeText = "이름을 정해 주세요 (나만 보기로 만들어요)"
+        a.messageText = title
+        a.informativeText = initial.isEmpty ? "이름을 정해 주세요 (나만 보기로 만들어요)" : "새 이름을 적어 주세요 (휴대폰 앱에도 바뀌어 보여요)"
         let f = NSTextField(frame: NSRect(x: 0, y: 0, width: 240, height: 24))
-        f.placeholderString = "재생목록 이름"
+        f.placeholderString = "플레이리스트 이름"
+        f.stringValue = initial
         a.accessoryView = f
-        a.addButton(withTitle: "만들기"); a.addButton(withTitle: "취소")
+        a.addButton(withTitle: button); a.addButton(withTitle: "취소")
         a.window.initialFirstResponder = f
         NSApp.activate(ignoringOtherApps: true)
         guard a.runModal() == .alertFirstButtonReturn else { return }
         let name = f.stringValue.trimmingCharacters(in: .whitespaces)
-        done(name.isEmpty ? "새 재생목록" : name)
+        if name.isEmpty { if initial.isEmpty { done("새 플레이리스트") }; return }
+        done(name)
     }
 
     private func remove(_ t: PlaylistTrack) {
@@ -525,7 +559,7 @@ final class PlaylistPane: NSView {
     }
 }
 
-/// 재생목록 한 줄: 번호 · 제목 · 가수 · 시간, 마우스를 올리면 ⊖. 누르면 여기부터 재생, 끌면 순서 바꾸기
+/// 플레이리스트 한 줄: 번호 · 제목 · 가수 · 시간, 마우스를 올리면 ⊖. 누르면 여기부터 재생, 끌면 순서 바꾸기
 @MainActor
 final class PlaylistRow: NSView {
     static let rowH: CGFloat = 44
@@ -567,7 +601,7 @@ final class PlaylistRow: NSView {
         minus.image = NSImage(systemSymbolName: "minus.circle.fill", accessibilityDescription: "빼기")
         minus.contentTintColor = .systemRed
         minus.isBordered = false
-        minus.toolTip = "재생목록에서 빼기"
+        minus.toolTip = "플레이리스트에서 빼기"
         minus.target = self; minus.action = #selector(removeTapped)
         minus.isHidden = true
         addSubview(minus)

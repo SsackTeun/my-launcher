@@ -18,7 +18,7 @@ struct PlayerState {
     var pageOpen = false
     var artURL = ""
     var limited = false
-    /// 지금 틀고 있는 재생목록 ID (주소의 list=…) · 곡 ID (v=…)
+    /// 지금 틀고 있는 플레이리스트 ID (주소의 list=…) · 곡 ID (v=…)
     var listId = ""
     var videoId = ""
     var has: Set<String> = ["prev", "playPause", "next", "like", "dislike", "shuffle", "repeat", "mute", "progress", "volume"]
@@ -32,12 +32,16 @@ struct QueueItem {
     let duration: String
     let current: Bool
     let index: Int
-    /// 자동재생(재생목록이 끝난 뒤 YouTube Music 이 붙이는 곡)
+    /// 자동재생(플레이리스트가 끝난 뒤 YouTube Music 이 붙이는 곡)
     var auto = false
     /// 가수 페이지 ID (UC…), 링크가 있을 때만
     var artistId = ""
-    /// 재생목록에 넣을 곡 ID (노래 버전이 있으면 그것)
+    /// 플레이리스트에 넣을 곡 ID (노래 버전이 있으면 그것)
     var videoId = ""
+    /// 플레이리스트에서 재생 중일 때 그 플레이리스트 안 자리 ID (빼기 · 옮기기에 씀)
+    var setId = ""
+    /// 대기열에 실제로 들어 있는 곡 ID (플레이리스트에 들어 있는 그 버전)
+    var ownVideoId = ""
 }
 
 /// 가수의 앨범 · 싱글 한 줄
@@ -245,7 +249,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         }
         autoSuggestTick()
         auto31Tick()
-        // 내 재생목록 · 앨범을 듣는 중이면 자동재생을 계속 꺼 둠 (목록이 끝난 뒤 다른 가수 곡이 이어지지 않게)
+        // 내 플레이리스트 · 앨범을 듣는 중이면 자동재생을 계속 꺼 둠 (목록이 끝난 뒤 다른 가수 곡이 이어지지 않게)
         //   — 처음 틀 때 한 번만 껐더니, 중간에 다시 켜지면 목록 뒤에 섞인 곡이 붙었음. 믹스(RD…)는 원래 이어지는 거라 그대로
         if eqTick % 5 == 0, let l = state?.listId, l.hasPrefix("PL") || l.hasPrefix("OLAK") { setAutoplay(false) }
         // 진단: 소리 보정 팝업 열기
@@ -260,7 +264,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                 try? "ok=\(ok) gains=\(Self.auto31Gains)".write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-analyze.txt", atomically: true, encoding: .utf8)
             }
         }
-        // 진단: 랜덤 재생목록 고르기만 (만들지는 않음) — ytmRandomTest 에 가수 이름
+        // 진단: 랜덤 플레이리스트 고르기만 (만들지는 않음) — ytmRandomTest 에 가수 이름
         if let q = UserDefaults.standard.string(forKey: "ytmRandomTest"), !q.isEmpty {
             UserDefaults.standard.removeObject(forKey: "ytmRandomTest")
             searchArtists(q) { [weak self] hs in
@@ -283,7 +287,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                 }
             }
         }
-        // 진단: 랜덤 재생목록 창 열고 n번째 장르 고르기 (ytmOpenRandom = 장르 번호, 0 이면 열기만)
+        // 진단: 랜덤 플레이리스트 창 열고 n번째 장르 고르기 (ytmOpenRandom = 장르 번호, 0 이면 열기만)
         if UserDefaults.standard.object(forKey: "ytmOpenRandom") != nil {
             let n = UserDefaults.standard.integer(forKey: "ytmOpenRandom")
             UserDefaults.standard.removeObject(forKey: "ytmOpenRandom")
@@ -335,7 +339,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                     st.muted = o["muted"] as? Bool ?? false
                     st.pageOpen = o["page"] as? Bool ?? false
                     st.artURL = o["art"] as? String ?? ""
-                    // 도구함을 다시 켜면 주소에 list= 가 없이 이어 재생돼서, 마지막으로 튼 재생목록으로 봄
+                    // 도구함을 다시 켜면 주소에 list= 가 없이 이어 재생돼서, 마지막으로 튼 플레이리스트로 봄
                     let l = o["list"] as? String ?? ""
                     st.listId = l.isEmpty ? (UserDefaults.standard.string(forKey: "ytmLastList") ?? "") : l
                     if !l.isEmpty { UserDefaults.standard.set(l, forKey: "ytmLastList") }
@@ -527,6 +531,8 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         vid: (() => { const w = it.closest('ytmusic-playlist-panel-video-wrapper-renderer');
           const cp = w && w.querySelector('#counterpart-renderer ytmusic-player-queue-item');
           return (cp && cp.data && cp.data.videoId) || (it.data && it.data.videoId) || ''; })(),
+        sid: (it.data && it.data.playlistSetVideoId) || '',
+        pvid: (it.data && it.data.videoId) || '',
         aid: ((it.data && it.data.longBylineText && it.data.longBylineText.runs || []).map(r => r.navigationEndpoint && r.navigationEndpoint.browseEndpoint && r.navigationEndpoint.browseEndpoint.browseId).find(x => x && x.startsWith('UC'))) || ''
       })).filter(x => autoOn || !x.auto));
     })()
@@ -544,7 +550,8 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                     return QueueItem(title: t, artist: o["artist"] as? String ?? "", duration: o["dur"] as? String ?? "",
                                      current: o["cur"] as? Bool ?? false, index: i,
                                      auto: o["auto"] as? Bool ?? false, artistId: o["aid"] as? String ?? "",
-                                     videoId: o["vid"] as? String ?? "")
+                                     videoId: o["vid"] as? String ?? "",
+                                     setId: o["sid"] as? String ?? "", ownVideoId: o["pvid"] as? String ?? "")
                 })
             }
         }
@@ -847,7 +854,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
     private var eqTick = 0
 
     // MARK: 이 곡의 앨범 재생 (섞인 다음 트랙에서 마음에 드는 곡 → 그 앨범으로)
-    // 다음 트랙 곡엔 앨범 정보가 없어서: 그 곡의 '노래' 버전 → YouTube Music 이 주는 앨범 → 앨범 재생목록(OLAK…) 순서로 찾음
+    // 다음 트랙 곡엔 앨범 정보가 없어서: 그 곡의 '노래' 버전 → YouTube Music 이 주는 앨범 → 앨범 플레이리스트(OLAK…) 순서로 찾음
 
     struct AlbumInfo { let videoId: String; let albumId: String; let name: String; let playlist: String }
 
@@ -889,7 +896,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         playList(a.playlist, from: fromSong ? a.videoId : nil)
     }
 
-    /// 재생목록(OLAK…) 재생 + 자동재생 끄기 (앨범이 끝나면 섞인 곡이 이어 붙지 않게)
+    /// 플레이리스트(OLAK…) 재생 + 자동재생 끄기 (앨범이 끝나면 섞인 곡이 이어 붙지 않게)
     func playList(_ list: String, from video: String? = nil) {
         guard let wv = webView else { return }
         var c = URLComponents(string: "https://music.youtube.com/watch")!
@@ -933,7 +940,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         }
     }
 
-    /// 앨범 수록곡 (앨범 페이지 ID MPREb… → 재생목록 OLAK… · 곡들)
+    /// 앨범 수록곡 (앨범 페이지 ID MPREb… → 플레이리스트 OLAK… · 곡들)
     func albumTracks(id: String, done: @escaping (_ list: String?, _ tracks: [QueueItem]) -> Void) {
         guard let wv = webView else { done(nil, []); return }
         wv.callAsyncJavaScript("""

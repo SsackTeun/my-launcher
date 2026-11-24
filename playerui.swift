@@ -565,7 +565,7 @@ final class QueueRow: NSView {
     private let current: Bool
     var isCurrent: Bool { current }
     private let icon = NSImageView()
-    /// 곡 번호 (앨범 · 재생목록에서 몇 번째인지), 0 이면 음표
+    /// 곡 번호 (앨범 · 플레이리스트에서 몇 번째인지), 0 이면 음표
     private let numLabel = NSTextField(labelWithString: "")
     var number = 0 { didSet { syncIcon() } }
     /// 고르기 모드: nil = 보통, true/false = 체크 표시
@@ -600,6 +600,21 @@ final class QueueRow: NSView {
         addSubview(b)
         return b
     }()
+    /// 내 플레이리스트와 연결된 다음 트랙: ⊖ 빼기 · 끌어서 옮기기 (nil 이면 없음)
+    var onRemove: (() -> Void)? { didSet { needsLayout = true } }
+    var onDrag: ((QueueRow, CGFloat, Bool) -> Void)?
+    private lazy var minus: NSButton = {
+        let b = NSButton(image: NSImage(systemSymbolName: "minus.circle.fill", accessibilityDescription: "빼기")!, target: self, action: #selector(removeTapped))
+        b.isBordered = false
+        b.contentTintColor = .systemRed
+        b.toolTip = "플레이리스트에서 빼기 (다음 트랙에서도 빠져요)"
+        b.isHidden = true
+        addSubview(b)
+        return b
+    }()
+    @objc private func removeTapped() { onRemove?() }
+    private var downY: CGFloat?
+    private var moved = false
     @objc private func showMore() {
         guard let m = makeMenu?() else { return }
         m.popUp(positioning: nil, at: NSPoint(x: more.frame.minX, y: more.frame.minY), in: self)
@@ -649,6 +664,7 @@ final class QueueRow: NSView {
         numLabel.frame = NSRect(x: 4, y: 14, width: 30, height: 15)
         d.frame = NSRect(x: w - 54, y: 14, width: 42, height: 15)
         if makeMenu != nil { more.frame = NSRect(x: w - 30, y: 12, width: 20, height: 20) }
+        if onRemove != nil { minus.frame = NSRect(x: w - 54, y: 12, width: 20, height: 20) }
         let tw = max(40, d.frame.minX - 36 - 6)
         t.frame = NSRect(x: 36, y: 22, width: tw, height: 18)
         a.frame = NSRect(x: 36, y: 5, width: tw, height: 16)
@@ -657,11 +673,38 @@ final class QueueRow: NSView {
 
     override func updateTrackingAreas() {
         trackingAreas.forEach(removeTrackingArea)
-        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+        if hoverByParent { return }
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
     // 마우스를 올리면 재생 시간 자리에 ⋯ 버튼
-    override func mouseEntered(with event: NSEvent) { hovering = true; if makeMenu != nil { more.isHidden = false; d.isHidden = true } }
-    override func mouseExited(with event: NSEvent) { hovering = false; if makeMenu != nil { more.isHidden = true; d.isHidden = false } }
+    /// 줄이 움직이거나 다시 그려져 '나감'을 못 받았으면 마우스 위치로 다시 맞춤 (⋯ 가 남아 있지 않게)
+    func syncHover() {
+        guard hovering, let w = window else { return }
+        let p = convert(w.convertPoint(fromScreen: NSEvent.mouseLocation), from: nil)
+        if !visibleRect.contains(p) { clearHover() }
+    }
+    /// 마우스가 올라간 줄은 한 번에 하나만
+    private static weak var hovered: QueueRow?
+    private func clearHover() {
+        hovering = false
+        if makeMenu != nil { more.isHidden = true; d.isHidden = false }
+        if onRemove != nil { minus.isHidden = true }
+        if Self.hovered === self { Self.hovered = nil }
+    }
+    /// true 면 줄이 마우스를 직접 감지하지 않고, 목록(부모)이 마우스 위치를 보고 setHover 로 켜고 끔 (자국 없이 한 줄만)
+    var hoverByParent = false { didSet { updateTrackingAreas() } }
+    func setHover(_ on: Bool) {
+        if on { if !hovering { enterHover() } } else if hovering { clearHover() }
+    }
+    override func mouseEntered(with event: NSEvent) { enterHover() }
+    private func enterHover() {
+        if let h = Self.hovered, h !== self { h.clearHover() }
+        Self.hovered = self
+        hovering = true
+        if makeMenu != nil { more.isHidden = false; d.isHidden = true }
+        if onRemove != nil { minus.isHidden = false }
+    }
+    override func mouseExited(with event: NSEvent) { clearHover() }
     override func draw(_ dirtyRect: NSRect) {
         if current {
             NSColor.systemRed.withAlphaComponent(0.10).setFill()
@@ -671,8 +714,17 @@ final class QueueRow: NSView {
             NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 2), xRadius: 6, yRadius: 6).fill()
         }
     }
-    override func mouseDown(with event: NSEvent) {}
+    override func mouseDown(with event: NSEvent) { downY = event.locationInWindow.y; moved = false }
+    override func mouseDragged(with event: NSEvent) {
+        guard onDrag != nil, let y0 = downY else { return }
+        if !moved && abs(event.locationInWindow.y - y0) < 4 { return }
+        moved = true
+        NSCursor.closedHand.set()
+        onDrag?(self, event.locationInWindow.y, false)
+    }
     override func mouseUp(with event: NSEvent) {
+        defer { downY = nil; moved = false }
+        if moved { NSCursor.arrow.set(); onDrag?(self, event.locationInWindow.y, true); return }
         if bounds.contains(convert(event.locationInWindow, from: nil)) { onClick() }
     }
 }
