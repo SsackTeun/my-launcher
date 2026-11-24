@@ -360,9 +360,18 @@ const Player = (() => {
     const fs = cfg.lyricsFont || 15;
     el.style.setProperty("--lfs", Math.max(fs, 14) + "px");
     if (!st.has) { el.innerHTML = `<div class="hint">재생 중인 곡이 없어요</div>`; el.dataset.key = ""; return; }
-    if (el.dataset.key !== lyr.key + "|" + lyr.trans.length + lyr.pron.length + (cfg.pron || "") + lyr.lines.length + lyr.status) {
-      el.dataset.key = lyr.key + "|" + lyr.trans.length + lyr.pron.length + (cfg.pron || "") + lyr.lines.length + lyr.status;
-      el.innerHTML = `<div class="lf-head"><b>${esc(st.title)}</b><span>${esc(st.artist)}</span></div>` +
+    const tools = el.dataset.tools === "1";
+    const sig = lyr.key + "|" + lyr.trans.length + lyr.pron.length + (cfg.pron || "") + (cfg.transLang || "") + lyr.lines.length + lyr.status;
+    if (el.dataset.key !== sig) {
+      el.dataset.key = sig;
+      // 플레이어 창 가사 탭: 제목 옆에 글자 크기 · 번역 · 발음 바로 바꾸기 (가사 창은 위 줄에 따로 있음)
+      const head = tools
+        ? `<div class="lf-head has-tools"><div class="lf-ttl"><b>${esc(st.title)}</b><span>${esc(st.artist)}</span></div><div class="dt-tools lf-tools">
+            <button class="icon sm" data-lf="smaller" title="글자 작게">A−</button><button class="icon sm" data-lf="bigger" title="글자 크게">A+</button>
+            <select data-lf="trans" title="번역 (가사 글자가 Google 번역으로 보내져요)">${LANGS.map(([c, n]) => `<option value="${c}" ${c === (cfg.transLang || "") ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
+            <select data-lf="pron" title="발음 (가사 글자가 Google 번역으로 보내져요)">${[["off", "발음 끔"], ["hangul", "한글 발음"], ["roman", "로마자"]].map(([c, n]) => `<option value="${c}" ${c === (cfg.pron || "off") ? "selected" : ""}>${n}</option>`).join("")}</select></div></div>`
+        : `<div class="lf-head"><b>${esc(st.title)}</b><span>${esc(st.artist)}</span></div>`;
+      el.innerHTML = head +
         (lyr.lines.length ? lyr.lines.map((l, k) => {
           const sub = [pronOf(k), lyr.trans[k]].filter(Boolean).map((x) => `<div class="ly-sub">${esc(x)}</div>`).join("");
           return `<div class="lf-line" data-t="${l.t}" data-k="${k}">${esc(l.text) || "&nbsp;"}${sub}</div>`;
@@ -379,7 +388,14 @@ const Player = (() => {
     }
   }
   function bindFull(el) {
+    el.addEventListener("change", (e) => {
+      const a = e.target.dataset?.lf;
+      if (a === "trans") setConfig("transLang", e.target.value);
+      if (a === "pron") setConfig("pron", e.target.value);
+    });
     el.addEventListener("click", (e) => {
+      const a = e.target.closest("[data-lf]")?.dataset.lf;
+      if (a === "smaller" || a === "bigger") { setConfig("lyricsFont", Math.max(10, Math.min(32, (cfg.lyricsFont || 15) + (a === "bigger" ? 1 : -1)))); return; }
       const l = e.target.closest(".lf-line");
       if (l && lyr.synced && +l.dataset.t >= 0) seek(+l.dataset.t);
     });

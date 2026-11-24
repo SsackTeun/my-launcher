@@ -924,6 +924,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
       if (tab === 3 && plSel) body.querySelectorAll(".mz-pl-tracks .mz-row").forEach((r) => r.classList.toggle("cur", plTracks[+r.dataset.k]?.t === t));
     }
   });
+  body.dataset.tools = "1"; // 가사 탭 제목 옆에 번역 · 발음 고르기
   Player.bindFull(body);
 
   // MARK: 작게 ↔ 크게

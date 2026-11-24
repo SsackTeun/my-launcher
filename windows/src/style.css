@@ -235,6 +235,11 @@ html.has-bgimg #app { background: linear-gradient(var(--bg), var(--bg)), var(--b
 .lyfull { flex: 1; overflow-y: auto; padding: 16px 18px 40vh; --lfs: 15px; }
 .lf-head { display: flex; flex-direction: column; margin-bottom: 14px; }
 .lf-head span { color: var(--sub); }
+.lf-head.has-tools { flex-direction: row; align-items: flex-start; gap: 8px; }
+.lf-ttl { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.lf-ttl b, .lf-ttl span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.lf-tools { flex-wrap: wrap; justify-content: flex-end; font-size: 11px; opacity: .55; transition: opacity .15s; }
+.lf-head:hover .lf-tools, .lf-tools:focus-within { opacity: 1; }
 .lf-line { font-size: var(--lfs); color: var(--faint); padding: 5px 8px; border-radius: 8px; cursor: pointer; transition: color .2s; }
 .lf-line:hover { background: var(--hover); }
 .lf-line.on { color: var(--text); font-weight: 600; }
