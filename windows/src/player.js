@@ -87,10 +87,12 @@ const Player = (() => {
     if (/ - /.test(title) && (!artist || /topic|vevo|official/i.test(artist))) { const [a, ...t] = title.split(" - "); artist = a; title = t.join(" - "); }
     const q = (o) => Object.entries(o).filter(([, v]) => v).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
     let hit = await lrclib("get?" + q({ track_name: clean(title), artist_name: clean(artist), album_name: s.album, duration: s.duration ? Math.round(s.duration) : "" }));
-    if (!hit || (!hit.syncedLyrics && !hit.plainLyrics)) {
-      const list = (await lrclib("search?" + q({ track_name: clean(title), artist_name: clean(artist) }))) || (await lrclib("search?" + q({ q: `${clean(artist)} ${clean(title)}` }))) || [];
+    // 'get' 이 시간 없는 가사만 든 기록을 줄 때가 있어서(같은 곡의 시간 맞춤 가사가 따로 있어도), 그럴 땐 더 찾아봄
+    if (!hit || !hit.syncedLyrics) {
+      let list = (await lrclib("search?" + q({ track_name: clean(title), artist_name: clean(artist) }))) || [];
+      if (!list.some((x) => x.syncedLyrics)) list = list.concat((await lrclib("search?" + q({ q: `${clean(artist)} ${clean(title)}` }))) || []);
       const near = (x) => !s.duration || !x.duration || Math.abs(x.duration - s.duration) < 8;
-      hit = list.find((x) => x.syncedLyrics && near(x)) || list.find((x) => x.syncedLyrics) || list.find((x) => x.plainLyrics);
+      hit = list.find((x) => x.syncedLyrics && near(x)) || list.find((x) => x.syncedLyrics) || (hit && hit.plainLyrics ? hit : null) || list.find((x) => x.plainLyrics);
     }
     if (key !== trackKey) return;
     if (hit?.syncedLyrics) { lyr.lines = parseLRC(hit.syncedLyrics); lyr.synced = true; }
@@ -148,6 +150,9 @@ const Player = (() => {
     if (p === "roman") return /^[\x00-ɏ\s]*$/.test(lyr.lines[i]?.text || "") ? "" : lyr.roman[i] || "";
     return "";
   }
+
+  /// 지금 재생 위치 (초) — 마지막으로 받은 뒤 흐른 시간까지
+  function position() { return pos(); }
 
   function currentIndex() {
     if (!lyr.synced || !lyr.lines.length) return -1;
@@ -400,7 +405,7 @@ const Player = (() => {
   }
 
   return {
-    start, setCfg, poll, control, seek, openYTMusic, openLyricsWindow, openBig,
+    start, setCfg, poll, control, seek, position, openYTMusic, openLyricsWindow, openBig,
     /// 보는 재생기 바꾸기 (플레이어 창: 크게 = "ytmusic" 전용, 작게 = null 로 ‹ › 재생기)
     setSite: (s) => { if (fixedSite === (s || null)) return; fixedSite = s || null; trackKey = ""; thumb = ""; poll(); },
     /// 지금 곡 사진 (Windows 미디어 정보 사진 · 없으면 페이지가 알려 준 주소)

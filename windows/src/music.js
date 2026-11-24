@@ -346,6 +346,17 @@ function drawBar() {
 // MARK: 다음 트랙
 
 let queueSig = "";
+let qLeft = null; // { dur: 지금 곡 길이, after: 그 뒤 곡들 합, title }
+function queueLeft() {
+  if (!qLeft) return 0;
+  const st = Player.state();
+  const p = Player.position ? Player.position() : st.position || 0;
+  return Math.max(0, qLeft.dur - p) + qLeft.after;
+}
+function queueLeftTick() {
+  const el = document.getElementById("qLeft");
+  if (el && qLeft) el.textContent = hms(queueLeft());
+}
 async function loadQueue(quiet) {
   if (!quiet) status("읽는 중…");
   let q;
@@ -363,10 +374,11 @@ async function loadQueue(quiet) {
   const total = main.reduce((a, x) => a + secsOf(x.dur), 0);
   const autoTotal = q.filter((x) => x.auto).reduce((a, x) => a + secsOf(x.dur), 0);
   const st = Player.state();
-  const leftNow = curK >= 0 ? Math.max(0, secsOf(q[curK].dur) - (st.position || 0)) : 0;
   const after = curK >= 0 ? main.filter((x, k) => q.indexOf(x) > curK).reduce((a, x) => a + secsOf(x.dur), 0) : total;
-  const head = curK >= 0 && !q[curK].auto
-    ? `<b>${main.length}곡 중 ${main.indexOf(q[curK]) + 1}번째</b> · 남은 시간 ${hms(leftNow + after)}`
+  // 남은 시간 = 지금 곡의 남은 부분 + 그 뒤 곡들 (재생 위치를 따라 1초마다 줄어듦 — queueLeftTick)
+  qLeft = curK >= 0 && !q[curK].auto ? { dur: secsOf(q[curK].dur), after, title: q[curK].title } : null;
+  const head = qLeft
+    ? `<b>${main.length}곡 중 ${main.indexOf(q[curK]) + 1}번째</b> · 남은 시간 <span id="qLeft">${hms(queueLeft())}</span>`
     : `<b>${main.length}곡</b>`;
   body.innerHTML = `<div class="mz-qhead">${head}</div>` + q.map((x, k) => `<div class="mz-row ${x.cur ? "cur" : ""} ${x.auto ? "auto" : ""}" data-i="${x.i}" data-vid="${esc(x.vid)}" data-aid="${esc(x.aid)}" data-artist="${esc(artistOf(x.artist))}">
       <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.vid) ? "checked" : ""} title="골라서 재생목록에 넣기"></span>
@@ -887,6 +899,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
       Player.tickPlayer(el);
       if (showLine()) Player.renderLine(line, { detached: true });
       if (big && tab === 1) Player.renderFull(body);
+      if (big && tab === 0) queueLeftTick();
       return;
     }
     Player.renderPlayer(el, { detached: true, noBig: true, lyricsOn: big ? tab === 1 : showLine() });
