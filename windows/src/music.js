@@ -965,6 +965,19 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
   new ResizeObserver(fit).observe(line);
   // 크게: 오른쪽 아래 모서리를 끌어 크기 조절 (제목 막대가 없는 창)
   $("#mzResize").addEventListener("mousedown", (e) => { if (e.button === 0 && big) w.startResizeDragging("SouthEast").catch(() => {}); });
+  // 아래 가장자리: 높이만 (위 끝은 그대로) · 더블클릭하면 기본 높이
+  $("#mzResizeS").addEventListener("mousedown", (e) => { if (e.button === 0 && e.detail === 1 && big) w.startResizeDragging("South").catch(() => {}); });
+  $("#mzResizeS").addEventListener("dblclick", async () => {
+    if (!big) return;
+    try {
+      const f = await w.scaleFactor();
+      const s = (await w.innerSize()).toLogical(f);
+      await w.setSize(new T.dpi.LogicalSize(s.width, 640));
+    } catch (e) { console.warn(e); }
+  });
+  // 크게 볼 때 바꾼 크기는 바로 기억 (다시 켜도 그대로)
+  let sizeT = null;
+  w.onResized(() => { if (!big) return; clearTimeout(sizeT); sizeT = setTimeout(rememberSize, 500); });
 
   // MARK: 위쪽 줄 — 재생기 아이콘 · 위치 고정 · 창 정리 · 크게 보기 · 설정 · 숨기기
   Sites.mount($("#sites"));

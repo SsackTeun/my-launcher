@@ -475,7 +475,7 @@ body.music .mz { min-height: 0; }
 
 /* 작게: 큰 앨범 · 탭 숨기고, 플레이어(작은 앨범 사진) + 가사 줄 */
 body.music.compact .mz { flex: 0 0 auto; height: auto; }
-body.music.compact .mz-art, body.music.compact .mz-right, body.music.compact .mz-resize { display: none; }
+body.music.compact .mz-art, body.music.compact .mz-right, body.music.compact .mz-resize, body.music.compact .mz-resize-s { display: none; }
 body.music.compact .mz-left { width: 100%; padding: 0 10px 8px; gap: 4px; border: 0; }
 body.music.compact .mz-left .pl-art { display: block; }
 body.music.compact .mz-left .pl-title { font-size: inherit; }
@@ -486,6 +486,8 @@ body.music.compact .ptool { border-bottom: 0; }
 body.music:not(.compact) .ptool { border-bottom: 1px solid var(--line); }
 .mz-resize { position: absolute; right: 0; bottom: 0; width: 16px; height: 16px; cursor: nwse-resize; z-index: 5;
   background: linear-gradient(135deg, transparent 55%, var(--faint) 55%, var(--faint) 62%, transparent 62%, transparent 72%, var(--faint) 72%, var(--faint) 79%, transparent 79%); }
+
+.mz-resize-s { position: absolute; left: 16px; right: 16px; bottom: 0; height: 5px; cursor: ns-resize; z-index: 5; }
 
 /* 플레이어 창: 플레이어 · 가사 줄은 줄어들지 않게 (창 높이를 이 높이에 맞춤) */
 body.music .mz-left .player, body.music .mz-left .lyline { flex: 0 0 auto; overflow: visible; }
