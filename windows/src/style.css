@@ -379,6 +379,14 @@ body.music #app { height: 100vh; }
 .mz-album b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mz-album small { font-size: 10px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mz-album input.pick { position: absolute; top: 10px; left: 10px; }
+/* 앨범 ▶ (마우스를 올리면) · 펼친 앨범 표시 · 수록곡 칸 (줄 전체 폭) */
+.mz-aplay { position: absolute; right: 12px; top: 12px; width: 32px; height: 32px; border-radius: 50%; border: 0;
+  background: var(--accent); color: #fff; font-size: 13px; cursor: pointer; opacity: 0; transition: opacity .12s; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
+.mz-album:hover .mz-aplay { opacity: 1; }
+.mz-album.open { background: var(--select); }
+.mz-tracks { grid-column: 1 / -1; background: var(--hover); border-radius: 10px; padding: 6px; display: flex; flex-direction: column; gap: 1px; }
+.mz-tracks .mz-note { padding: 4px 8px 6px; font-size: 12px; color: var(--sub); }
+.mz-tracks .mz-note small { color: var(--faint); }
 
 /* 재생목록 */
 .mz-pl { display: flex; height: 100%; gap: 10px; }

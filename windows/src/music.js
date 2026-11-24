@@ -60,6 +60,20 @@ const JS = {
     }
     return { name, aid, out };`,
   albumList: `return await albumList(args.id);`,
+  // 앨범 수록곡 (앨범 페이지 MPREb… → 재생목록 OLAK… · 곡들). 앨범 페이지엔 곡마다 가수가 없어서 a 는 비는 경우가 많음
+  albumTracks: `
+    const j = await api('browse', { browseId: args.id });
+    const b = JSON.stringify(j);
+    const list = (b.match(/"urlCanonical":"[^"]*list=(OLAK[^"&\\\\]+)/) || b.match(/"playlistId":"(OLAK[^"]+)"/) || [])[1] || null;
+    const txt = (c) => ((c && c.musicResponsiveListItemFlexColumnRenderer && c.musicResponsiveListItemFlexColumnRenderer.text.runs) || []).map((x) => x.text).join('');
+    const out = [];
+    for (const v of collect(j, 'musicResponsiveListItemRenderer')) {
+      const vid = v.playlistItemData && v.playlistItemData.videoId;
+      if (!vid) continue;
+      const fx = v.fixedColumns && v.fixedColumns[0] && v.fixedColumns[0].musicResponsiveListItemFixedColumnRenderer;
+      out.push({ t: txt((v.flexColumns || [])[0]), a: txt((v.flexColumns || [])[1]), d: fx && fx.text && fx.text.runs ? fx.text.runs[0].text : '', v: vid });
+    }
+    return { list, out };`,
   // 재생목록 (Mac 판 playlists.swift)
   myPlaylists: `
     const j = await api('browse', { browseId: 'FEmusic_liked_playlists' });
@@ -315,8 +329,16 @@ function drawBar() {
   const n = picked.size + pickedAlbums.size;
   const bar = $("#mzBar");
   bar.hidden = !n || (tab !== 0 && tab !== 2);
-  bar.innerHTML = n ? `<span>${n}개 고름</span><span class="mz-sp"></span><button class="pl-open" id="barAdd">재생목록에 넣기 ▾</button><button class="pl-open ghost" id="barClear">고르기 취소</button>` : "";
+  const label = [picked.size ? `${picked.size}곡` : "", pickedAlbums.size ? `앨범 ${pickedAlbums.size}개` : ""].filter(Boolean).join(" · ");
+  bar.innerHTML = n ? `<span>${label} 고름</span><span class="mz-sp"></span><button class="pl-open" id="barPlay" title="고른 곡만 바로 재생 (앨범을 고르면 그 앨범의 모든 곡)">▶ 재생</button><button class="pl-open" id="barAdd">재생목록에 넣기 ▾</button><button class="pl-open ghost" id="barClear">고르기 취소</button>` : "";
   if (!n) return;
+  $("#barPlay").onclick = async () => {
+    const vids = [...picked];
+    for (const id of pickedAlbums) {
+      try { const r = albumTrackCache.get(id) || await call("albumTracks", { id }, 30); albumTrackCache.set(id, r); vids.push(...r.out.map((x) => x.v)); } catch (e) { /* 건너뜀 */ }
+    }
+    await playVideos(vids);
+  };
   $("#barAdd").onclick = (e) => { const r = e.target.getBoundingClientRect(); addMenu(r.left, r.top - 8 - 200, [...picked], [...pickedAlbums]); };
   $("#barClear").onclick = () => { picked.clear(); pickedAlbums.clear(); drawBar(); body.querySelectorAll("input.pick").forEach((x) => (x.checked = false)); };
 }
@@ -371,6 +393,16 @@ body.addEventListener("click", async (e) => {
     const row = e.target.closest(".mz-row[data-i]");
     if (row) { await call("playQueue", { i: +row.dataset.i }).catch(fail); setTimeout(() => loadQueue(true), 800); }
   }
+  if (tab === 2) {
+    const card = e.target.closest(".mz-album[data-album]");
+    if (card && e.target.closest(".mz-aplay")) { playAlbum(card.dataset.album, card.dataset.title); return; }
+    if (card) { toggleAlbum(card.dataset.album); return; }
+    const tr = e.target.closest(".mz-tracks .mz-row[data-vid]");
+    if (tr) {
+      if (tr.dataset.list) { await playList(tr.dataset.list, tr.dataset.vid); toast(`‘${tr.dataset.title}’부터 앨범 재생`); }
+      else playVideos([tr.dataset.vid]);
+    }
+  }
 });
 body.addEventListener("contextmenu", (e) => {
   const row = e.target.closest(".mz-row");
@@ -384,6 +416,13 @@ body.addEventListener("contextmenu", (e) => {
     ]);
   }
   if (tab === 2 && row.dataset.album) albumMenu(e.clientX, e.clientY, row.dataset.album, row.dataset.title);
+  if (tab === 2 && !row.dataset.album && row.dataset.vid) {
+    showMenu(e.clientX, e.clientY, [
+      { label: "이 곡만 재생", action: () => playVideos([row.dataset.vid]) },
+      { label: "이 곡부터 앨범 재생", disabled: !row.dataset.list, action: () => playList(row.dataset.list, row.dataset.vid) },
+      { label: "재생목록에 넣기…", action: () => addMenu(e.clientX, e.clientY, [row.dataset.vid], []) },
+    ]);
+  }
   if (tab === 3 && row.dataset.sid) trackMenu(e.clientX, e.clientY, row);
 });
 
@@ -404,13 +443,77 @@ async function loadAlbums(force) {
   for (const a of r.out) (groups[a.sec] = groups[a.sec] || []).push(a);
   body.innerHTML = `<div class="mz-albums"><div class="mz-h">${esc(r.name)}</div>` + Object.entries(groups).map(([sec, list]) =>
     `<div class="mz-sec">${esc(sec)}</div><div class="mz-grid">${list.map((a) => `<div class="mz-album mz-row" data-album="${esc(a.id)}" data-title="${esc(a.t)}">
-      <input type="checkbox" class="pick" ${pickedAlbums.has(a.id) ? "checked" : ""} title="골라서 재생목록에 넣기">
+      <input type="checkbox" class="pick" ${pickedAlbums.has(a.id) ? "checked" : ""} title="앨범 통째로 고르기">
+      <button class="mz-aplay" title="처음부터 재생">▶</button>
       <img src="${esc(a.th)}" alt="" referrerpolicy="no-referrer"><b>${esc(a.t)}</b><small>${esc(a.sub)}</small></div>`).join("")}</div>`).join("") + "</div>";
+  for (const id of [...openAlbums]) if (body.querySelector(`[data-album="${CSS.escape(id)}"]`)) { openAlbums.delete(id); toggleAlbum(id); } else openAlbums.delete(id);
 }
-body.addEventListener("dblclick", (e) => {
-  const a = e.target.closest("[data-album]");
-  if (a && tab === 2) playAlbum(a.dataset.album, a.dataset.title);
-});
+
+// MARK: 앨범 수록곡 펼치기 — 누르면 그 줄 아래에 수록곡, 곡을 누르면 그 곡부터 앨범 재생
+
+const albumTrackCache = new Map(); // 앨범 id → { list, out }
+const openAlbums = new Set();
+async function toggleAlbum(id) {
+  const card = body.querySelector(`.mz-album[data-album="${CSS.escape(id)}"]`);
+  if (!card) return;
+  const old = body.querySelector(`.mz-tracks[data-for="${CSS.escape(id)}"]`);
+  if (old) { old.remove(); card.classList.remove("open"); openAlbums.delete(id); return; }
+  openAlbums.add(id);
+  card.classList.add("open");
+  // 그 카드가 있는 줄의 마지막 카드 뒤에 (줄 전체 폭으로)
+  let last = card;
+  for (let n = card.nextElementSibling; n; n = n.nextElementSibling) {
+    if (!n.classList.contains("mz-album")) { if (n.classList.contains("mz-tracks")) break; continue; }
+    if (n.offsetTop !== card.offsetTop) break;
+    last = n;
+  }
+  while (last.nextElementSibling && last.nextElementSibling.classList.contains("mz-tracks")) last = last.nextElementSibling;
+  const panel = document.createElement("div");
+  panel.className = "mz-tracks";
+  panel.dataset.for = id;
+  panel.innerHTML = `<div class="mz-note">‘${esc(card.dataset.title)}’ 수록곡 읽는 중…</div>`;
+  last.after(panel);
+  let r = albumTrackCache.get(id);
+  if (!r) {
+    try { r = await call("albumTracks", { id }, 30); albumTrackCache.set(id, r); } catch (e) { panel.innerHTML = `<div class="mz-note">수록곡을 읽지 못했어요</div>`; return; }
+  }
+  if (!panel.isConnected) return;
+  if (!r.out.length) { panel.innerHTML = `<div class="mz-note">수록곡을 찾지 못했어요</div>`; return; }
+  const total = r.out.reduce((a, x) => a + secsOf(x.d), 0);
+  panel.innerHTML = `<div class="mz-note"><b>${esc(card.dataset.title)}</b> · ${r.out.length}곡 · ${hms(total)} <small>— 곡을 누르면 그 곡부터 재생, 체크해서 골라 재생 · 재생목록에 넣기</small></div>` +
+    r.out.map((x, k) => `<div class="mz-row" data-vid="${esc(x.v)}" data-list="${esc(r.list || "")}" data-title="${esc(x.t)}">
+      <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.v) ? "checked" : ""} title="골라서 재생 · 재생목록에 넣기"></span>
+      <span class="mz-t"><b>${esc(x.t)}</b>${x.a ? `<small>${esc(x.a)}</small>` : ""}</span>
+      <span class="mz-d">${esc(x.d)}</span></div>`).join("");
+}
+
+/// 고른 곡만 재생: 한 곡이면 그 곡만, 여러 곡이면 '고른 곡 (도구함)' 재생목록을 새로 만들어 틀고 전에 만든 건 지움
+/// (YouTube Music 은 곡 몇 개로 바로 재생 목록을 만드는 주소가 없어서)
+async function playVideos(vids) {
+  vids = [...new Set(vids.filter(Boolean))];
+  if (!vids.length) { toast("재생할 곡을 골라 주세요"); return; }
+  if (vids.length === 1) {
+    await invoke("web_eval", { label: "ytmusic", js: `location.href = ${JSON.stringify("https://music.youtube.com/watch?v=" + encodeURIComponent(vids[0]))}` });
+    for (const t of [4000, 8000, 12000]) setTimeout(() => call("autoplay", { on: false }).catch(() => {}), t);
+    toast("고른 곡을 재생해요");
+    return;
+  }
+  status(`고른 ${vids.length}곡 준비 중…`);
+  try {
+    let old = null;
+    try { old = localStorage.getItem("mzPickedList"); } catch { /* 없음 */ }
+    if (old) call("del", { pid: old }).catch(() => {});
+    const id = await call("create", { name: "고른 곡 (도구함)", vids }, 60);
+    if (!id) throw "만들지 못했어요 (로그인 확인)";
+    try { localStorage.setItem("mzPickedList", id); } catch { /* 없음 */ }
+    myLists = null;
+    picked.clear(); pickedAlbums.clear(); drawBar();
+    body.querySelectorAll("input.pick").forEach((x) => (x.checked = false));
+    body.classList.remove("picking");
+    // 서버에 반영되기 전에 틀면 곡이 빠진 채로 시작해서 조금 기다렸다가
+    setTimeout(async () => { await playList(id); status(""); toast(`고른 ${vids.length}곡을 재생해요`); }, 2000);
+  } catch (e) { fail(e); }
+}
 async function playAlbum(id, title) {
   status("앨범 여는 중…");
   try {
@@ -423,7 +526,8 @@ async function playAlbum(id, title) {
 }
 function albumMenu(x, y, id, title) {
   showMenu(x, y, [
-    { label: "앨범 재생 (두 번 누르기)", action: () => playAlbum(id, title) },
+    { label: "처음부터 재생", action: () => playAlbum(id, title) },
+    { label: openAlbums.has(id) ? "수록곡 접기" : "수록곡 보기", action: () => toggleAlbum(id) },
     { label: "재생목록에 넣기…", action: () => addMenu(x, y, [], [id]) },
   ]);
 }
