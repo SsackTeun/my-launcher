@@ -290,6 +290,13 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
             RandomPlaylistWindow.shared.show(music: self)
             if n > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 10) { RandomPlaylistWindow.shared.debugPickGenre(n) } }
         }
+        // 진단: 재생기 상태 (mediaHubTest = 1 이면 상태만, 2 면 스페이스처럼 토글 후 상태)
+        if UserDefaults.standard.object(forKey: "mediaHubTest") != nil {
+            let n = UserDefaults.standard.integer(forKey: "mediaHubTest")
+            UserDefaults.standard.removeObject(forKey: "mediaHubTest")
+            if n == 2 { MediaHub.shared.toggle(); DispatchQueue.main.asyncAfter(deadline: .now() + 2) { MediaHub.shared.debugDump() } }
+            else { MediaHub.shared.debugDump() }
+        }
         // 진단: 정밀 EQ 창 열기
         if UserDefaults.standard.bool(forKey: "ytmOpenPEQ") {
             UserDefaults.standard.set(false, forKey: "ytmOpenPEQ")

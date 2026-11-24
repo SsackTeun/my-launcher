@@ -1654,14 +1654,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if part == .player {
             playerPanel = p
-            // 플레이어 창에서 스페이스 = 재생 / 일시정지 (글자를 쓰는 칸에 있을 땐 그대로 띄어쓰기)
-            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak p] e in
-                guard let self, let p, e.window === p, e.keyCode == 49,
-                      e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
-                      !(p.firstResponder is NSText) else { return e }
-                self.music.press("playPause")
-                return nil
-            }
             // 떼어 낸 플레이어도 화면 끝에 붙이고 접을 수 있게
             EdgeDock.player.present = { $0.orderFrontRegardless() }
             EdgeDock.player.attach(p)
@@ -1881,6 +1873,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             statusItem?.button?.toolTip = SelfUpdate.shared.available.map { "도구함 새 버전 \($0.version) — 눌러서 업데이트" }
         }
         SelfUpdate.shared.start()
+        // 새로 재생한 재생기만 남기고 나머지는 일시정지 (Windows 판과 같게)
+        MediaHub.shared.start(music: music)
+        // 플레이어 창에서 스페이스 = 지금 재생기 재생 / 일시정지 (글자를 쓰는 칸에 있을 땐 그대로 띄어쓰기)
+        // (떼어 낸 플레이어 · 가사 줄, 플레이어가 붙어 있는 도구함 창)
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, e.keyCode == 49,
+                  e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty else { return e }
+            let w = e.window ?? NSApp.keyWindow
+            let ours = (w != nil && w === self.playerPanel) || (w != nil && w === self.lyricsPanel) || (w != nil && w === self.window && self.showPlayer && !self.playerDetached)
+            if UserDefaults.standard.bool(forKey: "spaceLog") {
+                let line = "\(Date()) win=\(w.map { "\(type(of: $0)) \($0.title)" } ?? "nil") ours=\(ours) fr=\(w?.firstResponder.map { "\(type(of: $0))" } ?? "nil")\n"
+                if let h = FileHandle(forWritingAtPath: NSHomeDirectory() + "/MyLauncher/space-log.txt") { h.seekToEndOfFile(); h.write(line.data(using: .utf8)!); h.closeFile() }
+                else { try? line.write(toFile: NSHomeDirectory() + "/MyLauncher/space-log.txt", atomically: true, encoding: .utf8) }
+            }
+            guard ours, !(w?.firstResponder is NSText) else { return e }
+            MediaHub.shared.toggle()   // 지금 재생기(YouTube Music · YouTube · Netflix) 재생 / 멈춤
+            return nil
+        }
+
         VideoWindow.netflix.onChange = { [unowned self] in buildStatusMenu() }
         startMemoryWatch()
         OnScreen.start()

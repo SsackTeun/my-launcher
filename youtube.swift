@@ -939,6 +939,27 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
     /// Netflix 플레이어 (영상 위치를 직접 바꾸면 Netflix 가 오류를 내서, 재생 · 이동 · 볼륨은 이걸로)
     private static let nfPlayer = "(() => { try { const vp = netflix.appContext.state.playerApp.getAPI().videoPlayer; const ids = vp.getAllPlayerSessionIds(); return ids.length ? vp.getVideoPlayerBySessionId(ids[ids.length - 1]) : null; } catch (e) { return null; } })()"
 
+    // MARK: 재생기 사이 정책 (MediaHub) — 재생 중인지 · 재생 / 멈춤
+
+    /// 영상이 재생 중인지 (창이 없거나 영상이 없으면 nil)
+    func queryPlaying(_ done: @escaping (Bool?) -> Void) {
+        guard let wv = webView else { done(nil); return }
+        wv.evaluateJavaScript(timeJS) { r, _ in
+            MainActor.assumeIsolated {
+                guard let a = r as? [NSNumber], a.count == 7 else { done(nil); return }
+                done(!a[3].boolValue)
+            }
+        }
+    }
+    /// 재생(true) · 멈춤(false)
+    func setPlaying(_ on: Bool) {
+        if site == .netflix {
+            webView?.evaluateJavaScript("(() => { const p = \(Self.nfPlayer); if (p && p.play) { \(on ? "p.play()" : "p.pause()"); } else { const v = \(Self.nfVideo); if (v) \(on ? "v.play()" : "v.pause()"); } })()")
+        } else {
+            webView?.evaluateJavaScript(Self.mediaJS(on ? "v.play()" : "v.pause()"))
+        }
+    }
+
     private func playPause() {
         if site == .netflix {
             webView?.evaluateJavaScript("(() => { const p = \(Self.nfPlayer); if (p && p.isPaused) { p.isPaused() ? p.play() : p.pause(); } else { const v = \(Self.nfVideo); if (v) v.paused ? v.play() : v.pause(); } })()")
