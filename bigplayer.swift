@@ -350,13 +350,22 @@ final class BigPlayerView: NSView {
         // 맨 위: 몇 곡 중 몇 번째 (자동재생으로 붙은 곡은 빼고 셈)
         let main = items.filter { !$0.auto }
         if !main.isEmpty {
-            let k = main.firstIndex(where: { $0.current }).map { " · 지금 \($0 + 1)번째" } ?? ""
+            let cur = main.firstIndex(where: { $0.current })
+            // 남은 시간: 지금 곡의 남은 부분 + 그 뒤 곡들 (자동재생 곡은 빼고)
+            var left = ""
+            if let c = cur {
+                let pos = music?.state?.position ?? 0
+                let rest = max(0, Double(Self.secs(main[c].duration)) - pos) + Double(main[(c + 1)...].reduce(0) { $0 + Self.secs($1.duration) })
+                left = " · 남은 시간 \(Self.hms(Int(rest)))"
+            }
+            let k = cur.map { " · 지금 \($0 + 1)번째\(left)" } ?? ""
             // 재생목록 · 앨범이면 전체 곡 수도 (다음 트랙은 50곡씩만 불러오고, 나머지는 재생하며 이어서 불러옴)
-            var head = "\(main.count)곡\(k)"
+            var head = cur != nil ? "\(main.count)곡 중 \(cur! + 1)번째\(left)" : "\(main.count)곡"
             if let l = music?.state?.listId, l.hasPrefix("PL") || l.hasPrefix("OLAK"),
                let total = PlaylistCount.get(l, music: music, changed: { [weak self] in self?.lastQueueKey = ""; self?.loadQueue() }),
                total > main.count {
                 head = "전체 \(total)곡 중 \(main.count)곡 불러옴\(k) · 나머지는 재생하며 이어서 불러와요"
+                head = head.replacingOccurrences(of: " · 남은 시간", with: " · 불러온 곡 남은 시간")
             }
             doc.addSubview(SectionHead(head))
         }
@@ -386,6 +395,13 @@ final class BigPlayerView: NSView {
             if item.auto { r.alphaValue = 0.6 }
             doc.addSubview(r)
         }
+        // 맨 아래: 전체 곡 수 · 재생시간 (자동재생 곡은 따로)
+        if !main.isEmpty {
+            let autos = items.filter { $0.auto }
+            var foot = "전체 \(main.count)곡 · \(Self.hms(main.reduce(0) { $0 + Self.secs($1.duration) }))"
+            if !autos.isEmpty { foot += "  |  자동재생 \(autos.count)곡 · \(Self.hms(autos.reduce(0) { $0 + Self.secs($1.duration) }))" }
+            doc.addSubview(SectionHead(foot))
+        }
         status.stringValue = items.isEmpty ? "다음 트랙을 찾지 못했어요\n곡을 재생하면 여기에 보여요" : ""
         status.isHidden = tab != 0 || !items.isEmpty
         layoutRows()
@@ -394,6 +410,14 @@ final class BigPlayerView: NSView {
             scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, r.frame.minY - QueueRow.rowH)))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
+    }
+
+    /// '3:45' · '1:02:03' → 초
+    static func secs(_ t: String) -> Int { t.split(separator: ":").reduce(0) { $0 * 60 + (Int($1.trimmingCharacters(in: .whitespaces)) ?? 0) } }
+    /// 초 → '3:45' · '1:02:03'
+    static func hms(_ s: Int) -> String {
+        let h = s / 3600, m = s % 3600 / 60, x = s % 60
+        return h > 0 ? String(format: "%d:%02d:%02d", h, m, x) : String(format: "%d:%02d", m, x)
     }
 
     // MARK: 이 곡의 앨범 재생
@@ -409,6 +433,14 @@ final class BigPlayerView: NSView {
         if !item.artistId.isEmpty {
             m.addItem(.separator())
             m.addItem(MenuAction("‘\(item.artist)’ 앨범 모두 보기") { [weak self] in self?.showAlbums(artistId: item.artistId) })
+        }
+        let who = RandomPlaylistWindow.mainArtist(item.artist)
+        if !who.isEmpty {
+            m.addItem(MenuAction("‘\(who)’를 랜덤 재생목록 가수에 넣기") { [weak self] in
+                let w = RandomPlaylistWindow.shared
+                w.show(music: self?.music)
+                w.addArtists([(item.artistId, who)])
+            })
         }
         if !item.videoId.isEmpty {
             m.addItem(.separator())
@@ -567,12 +599,19 @@ final class BigPlayerView: NSView {
     private func loadArt(_ url: String) {
         guard url != artURL else { return }
         artURL = url
-        let big = url.replacingOccurrences(of: #"=w\d+-h\d+"#, with: "=w600-h600", options: .regularExpression)
+        let big = url.replacingOccurrences(of: #"=w\d+-h\d+"#, with: "=w1200-h1200", options: .regularExpression)
         guard !url.isEmpty, let u = URL(string: big) else {
             art.image = NSImage(systemSymbolName: "music.note", accessibilityDescription: nil); return
         }
+        fetchArt(u, fallback: URL(string: url), for: url)
+    }
+    /// 큰 사진(1200px)을 받고, 안 되면 원래 사진으로
+    private func fetchArt(_ u: URL, fallback: URL?, for url: String) {
         URLSession.shared.dataTask(with: u) { data, _, _ in
-            guard let data, let img = NSImage(data: data) else { return }
+            guard let data, let img = NSImage(data: data) else {
+                if let f = fallback, f != u { DispatchQueue.main.async { MainActor.assumeIsolated { self.fetchArt(f, fallback: nil, for: url) } } }
+                return
+            }
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard self.artURL == url else { return }

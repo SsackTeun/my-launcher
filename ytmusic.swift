@@ -272,6 +272,24 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                 }
             }
         }
+        // 진단: 장르 목록 · 첫 장르(또는 이름이 맞는 장르)의 추천 가수 — ytmGenreTest 에 장르 이름(빈칸이면 첫 장르)
+        if let q = UserDefaults.standard.string(forKey: "ytmGenreTest") {
+            UserDefaults.standard.removeObject(forKey: "ytmGenreTest")
+            genres { [weak self] gs in
+                guard let g = gs.first(where: { $0.title == q }) ?? gs.first else { try? "no genres".write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-analyze.txt", atomically: true, encoding: .utf8); return }
+                self?.genreArtists(g, skip: []) { arts, used in
+                    let out = "genres=\(gs.count) \(gs.prefix(30).map { "[\($0.section)]\($0.title)" })\npicked=\(g.title) lists=\(used.count)\nartists=\(arts.count)\n" + arts.prefix(20).map { "\($0.0.name) \($0.1)" }.joined(separator: "\n")
+                    try? out.write(toFile: NSHomeDirectory() + "/MyLauncher/ytm-analyze.txt", atomically: true, encoding: .utf8)
+                }
+            }
+        }
+        // 진단: 랜덤 재생목록 창 열고 n번째 장르 고르기 (ytmOpenRandom = 장르 번호, 0 이면 열기만)
+        if UserDefaults.standard.object(forKey: "ytmOpenRandom") != nil {
+            let n = UserDefaults.standard.integer(forKey: "ytmOpenRandom")
+            UserDefaults.standard.removeObject(forKey: "ytmOpenRandom")
+            RandomPlaylistWindow.shared.show(music: self)
+            if n > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 10) { RandomPlaylistWindow.shared.debugPickGenre(n) } }
+        }
         // 진단: 정밀 EQ 창 열기
         if UserDefaults.standard.bool(forKey: "ytmOpenPEQ") {
             UserDefaults.standard.set(false, forKey: "ytmOpenPEQ")

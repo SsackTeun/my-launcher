@@ -1654,6 +1654,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         if part == .player {
             playerPanel = p
+            // 플레이어 창에서 스페이스 = 재생 / 일시정지 (글자를 쓰는 칸에 있을 땐 그대로 띄어쓰기)
+            NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak p] e in
+                guard let self, let p, e.window === p, e.keyCode == 49,
+                      e.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                      !(p.firstResponder is NSText) else { return e }
+                self.music.press("playPause")
+                return nil
+            }
             // 떼어 낸 플레이어도 화면 끝에 붙이고 접을 수 있게
             EdgeDock.player.present = { $0.orderFrontRegardless() }
             EdgeDock.player.attach(p)
