@@ -372,20 +372,21 @@ body.music #app { height: 100vh; }
 .mz-row:hover .mz-x, .mz-pick .mz-x { visibility: visible; }
 .mz-x:hover { color: var(--red); background: var(--hover); }
 
-/* 앨범 격자 */
-.mz-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
-.mz-album { flex-direction: column; align-items: stretch; gap: 4px; padding: 6px; }
-.mz-album img { width: 100%; height: auto; aspect-ratio: 1; }
-.mz-album b { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mz-album small { font-size: 10px; color: var(--sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.mz-album input.pick { position: absolute; top: 10px; left: 10px; }
-/* 앨범 ▶ (마우스를 올리면) · 펼친 앨범 표시 · 수록곡 칸 (줄 전체 폭) */
-.mz-aplay { position: absolute; right: 12px; top: 12px; width: 32px; height: 32px; border-radius: 50%; border: 0;
-  background: var(--accent); color: #fff; font-size: 13px; cursor: pointer; opacity: 0; transition: opacity .12s; box-shadow: 0 2px 8px rgba(0,0,0,.35); }
-.mz-album:hover .mz-aplay { opacity: 1; }
+/* 앨범 목록 (Mac 판처럼 세로 줄: 자켓 · 제목 · 종류/연도 · › · ▶) */
+.mz-album { min-height: 46px; }
+.mz-acover { position: relative; flex: 0 0 auto; width: 44px; height: 44px; }
+.mz-album .mz-acover img { width: 44px; height: 44px; }
+.mz-album input.pick { position: absolute; top: 3px; left: 3px; margin: 0; opacity: 0; }
+.mz-album:hover input.pick, .mz-body.picking .mz-album input.pick, .mz-album input.pick:checked { opacity: 1; }
+.mz-chev { color: var(--faint); font-size: 16px; line-height: 1; width: 12px; text-align: center; transition: transform .12s; }
+.mz-album.open .mz-chev { transform: rotate(90deg); }
+.mz-aplay { flex: 0 0 auto; width: 28px; height: 28px; border-radius: 50%; border: 0; padding: 0;
+  background: transparent; color: var(--sub); font-size: 12px; cursor: pointer; }
+.mz-aplay:hover { background: var(--accent); color: #fff; }
 .mz-album.open { background: var(--select); }
-.mz-tracks { grid-column: 1 / -1; background: var(--hover); border-radius: 10px; padding: 6px; display: flex; flex-direction: column; gap: 1px; }
-.mz-tracks .mz-note { padding: 4px 8px 6px; font-size: 12px; color: var(--sub); }
+/* 펼친 수록곡: 앨범 줄 바로 아래, 조금 들여서 */
+.mz-tracks { margin: 2px 0 8px 18px; padding-left: 8px; border-left: 2px solid var(--line, rgba(127,127,127,.25)); display: flex; flex-direction: column; gap: 1px; }
+.mz-tracks .mz-note { padding: 2px 8px 4px; font-size: 11px; color: var(--sub); }
 .mz-tracks .mz-note small { color: var(--faint); }
 
 /* 재생목록 */
@@ -513,11 +514,40 @@ body.host .settings { flex: 1; min-height: 0; }
 .settings, .mz-body, .mz-pl-list, .mz-pl-tracks, .box .pick, #list, .lyfull { overflow-x: hidden; }
 
 /* 장르로 가수 추천 */
-.mz-genre { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-.mz-chips { width: 100%; max-height: 200px; overflow-y: auto; overflow-x: hidden; padding: 2px; border-radius: 8px; background: var(--panel); }
-.mz-chips .mz-sec { margin: 6px 4px 4px; }
-.mz-chipline { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 4px 4px; }
-.mz-chipline .pl-open.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mz-genre { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+/* 장르 단추: 고르면 '장르 J팝 ▾' */
+.mz-gbtn { align-self: flex-start; display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--text); border-radius: 8px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
+.mz-gbtn:hover { border-color: var(--accent); }
+.mz-gbtn b { font-weight: 600; color: var(--accent); }
+.mz-gk { color: var(--sub); font-size: 11px; }
+.mz-gv { color: var(--faint); font-size: 10px; }
+/* 장르 펼침 칸: 위 묶음 탭 · 아래 작은 단추들 */
+.mz-gpanel { border: 1px solid var(--line); background: var(--panel); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 8px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.25); }
+.mz-gtabs { align-self: flex-start; flex-wrap: wrap; }
+.mz-gtabs small { opacity: .6; font-size: 10px; }
+.mz-gchips { display: flex; flex-wrap: wrap; gap: 4px; max-height: 150px; overflow-y: auto; overflow-x: hidden; }
+.mz-gchip { border: 0; background: var(--hover); color: var(--text); border-radius: 999px; padding: 3px 10px; font-size: 11.5px; cursor: pointer; }
+.mz-gchip:hover { background: var(--select); }
+.mz-gchip.on { background: var(--accent); color: #fff; }
+/* 추천 결과: 머리줄 + 가수 칸 (동그라미 · 이름 · 나온 횟수 · ＋/✓) */
+.mz-recbox:empty { display: none; }
+.mz-rechead { display: flex; align-items: baseline; gap: 6px; padding: 2px 2px 6px; }
+.mz-rechead b { font-size: 12px; }
+.mz-rechead small { color: var(--faint); font-size: 11px; }
+.mz-rechead .pl-open { align-self: center; }
+.mz-recgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 4px; }
+.mz-recit { display: flex; align-items: center; gap: 8px; min-width: 0; border: 1px solid transparent; background: var(--hover); color: var(--text);
+  border-radius: 8px; padding: 5px 8px 5px 5px; cursor: pointer; text-align: left; font: inherit; }
+.mz-recit:hover { border-color: var(--accent); }
+.mz-recit b { font-size: 12px; font-weight: 600; }
+.mz-recit small { font-size: 10px; }
+.mz-av { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; color: #fff;
+  background: hsl(var(--h) 45% 42%); }
+.mz-plus { flex: 0 0 auto; color: var(--accent); font-size: 13px; }
+.mz-recit.added { opacity: .55; }
+.mz-recit.added .mz-plus { color: var(--sub); }
 
 .mz-picks-foot { display: flex; align-items: center; justify-content: space-between; padding: 2px 4px; }
 

@@ -441,11 +441,13 @@ async function loadAlbums(force) {
   if (!r.out.length) { body.innerHTML = `<div class="mz-empty">지금 곡 가수의 앨범을 찾지 못했어요</div>`; return; }
   const groups = {};
   for (const a of r.out) (groups[a.sec] = groups[a.sec] || []).push(a);
+  // Mac 판처럼 세로 목록: 작은 자켓 · 제목 · 종류/연도 · ▸ · ▶ — 누르면 바로 아래에 수록곡
   body.innerHTML = `<div class="mz-albums"><div class="mz-h">${esc(r.name)}</div>` + Object.entries(groups).map(([sec, list]) =>
-    `<div class="mz-sec">${esc(sec)}</div><div class="mz-grid">${list.map((a) => `<div class="mz-album mz-row" data-album="${esc(a.id)}" data-title="${esc(a.t)}">
-      <input type="checkbox" class="pick" ${pickedAlbums.has(a.id) ? "checked" : ""} title="앨범 통째로 고르기">
-      <button class="mz-aplay" title="처음부터 재생">▶</button>
-      <img src="${esc(a.th)}" alt="" referrerpolicy="no-referrer"><b>${esc(a.t)}</b><small>${esc(a.sub)}</small></div>`).join("")}</div>`).join("") + "</div>";
+    `<div class="mz-sec">${esc(sec)}</div>${list.map((a) => `<div class="mz-album mz-row" data-album="${esc(a.id)}" data-title="${esc(a.t)}" title="눌러서 수록곡 보기 · ▶ 처음부터 재생 · 오른쪽 클릭: 재생목록에 넣기">
+      <span class="mz-acover"><img src="${esc(a.th)}" alt="" referrerpolicy="no-referrer"><input type="checkbox" class="pick" ${pickedAlbums.has(a.id) ? "checked" : ""} title="앨범 통째로 고르기"></span>
+      <span class="mz-t"><b>${esc(a.t)}</b><small>${esc(a.sub)}</small></span>
+      <span class="mz-chev">›</span>
+      <button class="mz-aplay" title="처음부터 재생">▶</button></div>`).join("")}`).join("") + "</div>";
   for (const id of [...openAlbums]) if (body.querySelector(`[data-album="${CSS.escape(id)}"]`)) { openAlbums.delete(id); toggleAlbum(id); } else openAlbums.delete(id);
 }
 
@@ -460,14 +462,8 @@ async function toggleAlbum(id) {
   if (old) { old.remove(); card.classList.remove("open"); openAlbums.delete(id); return; }
   openAlbums.add(id);
   card.classList.add("open");
-  // 그 카드가 있는 줄의 마지막 카드 뒤에 (줄 전체 폭으로)
-  let last = card;
-  for (let n = card.nextElementSibling; n; n = n.nextElementSibling) {
-    if (!n.classList.contains("mz-album")) { if (n.classList.contains("mz-tracks")) break; continue; }
-    if (n.offsetTop !== card.offsetTop) break;
-    last = n;
-  }
-  while (last.nextElementSibling && last.nextElementSibling.classList.contains("mz-tracks")) last = last.nextElementSibling;
+  // 그 앨범 줄 바로 아래에
+  const last = card;
   const panel = document.createElement("div");
   panel.className = "mz-tracks";
   panel.dataset.for = id;
@@ -480,11 +476,21 @@ async function toggleAlbum(id) {
   if (!panel.isConnected) return;
   if (!r.out.length) { panel.innerHTML = `<div class="mz-note">수록곡을 찾지 못했어요</div>`; return; }
   const total = r.out.reduce((a, x) => a + secsOf(x.d), 0);
-  panel.innerHTML = `<div class="mz-note"><b>${esc(card.dataset.title)}</b> · ${r.out.length}곡 · ${hms(total)} <small>— 곡을 누르면 그 곡부터 재생, 체크해서 골라 재생 · 재생목록에 넣기</small></div>` +
+  panel.innerHTML = `<div class="mz-note">${r.out.length}곡 · ${hms(total)} <small>— 곡을 누르면 그 곡부터 재생 · 번호 칸을 체크해서 골라 재생</small></div>` +
     r.out.map((x, k) => `<div class="mz-row" data-vid="${esc(x.v)}" data-list="${esc(r.list || "")}" data-title="${esc(x.t)}">
       <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.v) ? "checked" : ""} title="골라서 재생 · 재생목록에 넣기"></span>
-      <span class="mz-t"><b>${esc(x.t)}</b>${x.a ? `<small>${esc(x.a)}</small>` : ""}</span>
+      <span class="mz-t"><b>${esc(trimAlbum(x.t, card.dataset.title))}</b>${x.a ? `<small>${esc(x.a)}</small>` : ""}</span>
       <span class="mz-d">${esc(x.d)}</span></div>`).join("");
+}
+/// '곡 (앨범 이름)' → '곡' (앨범 아래에 펼친 거라 앨범 이름은 이미 보임)
+function trimAlbum(t, album) {
+  const a = String(album || "").trim();
+  if (!a) return t;
+  for (const [o, c] of [["(", ")"], ["[", "]"]]) {
+    const tail = ` ${o}${a}${c}`;
+    if (t.endsWith(tail) && t.length > tail.length) return t.slice(0, -tail.length);
+  }
+  return t;
 }
 
 /// 고른 곡만 재생: 한 곡이면 그 곡만, 여러 곡이면 '고른 곡 (도구함)' 재생목록을 새로 만들어 틀고 전에 만든 건 지움
@@ -657,9 +663,9 @@ async function drawRandom() {
     <p class="mz-note">가수를 고르고(비중 1~5), 곡 수나 시간을 정하면 그 가수들의 인기곡에서 골라 재생목록으로 만들고 바로 재생해요.</p>
     <div class="mz-rand-search"><div class="mz-rand-row"><input type="search" id="rq" placeholder="가수 찾기 (이름 앞부분만 써도 돼요)"><button class="pl-open ghost" id="rFromQueue" title="지금 다음 트랙 목록에 있는 가수들을 한 번에">다음 트랙에서 가수 가져오기</button></div><div class="mz-hits" id="rhits"></div></div>
     <div class="mz-genre">
-      <button class="pl-open ghost" id="rGenreBtn" title="YouTube Music 의 장르별 대표 재생목록에서 많이 나오는 가수를 추천">장르로 가수 추천 ▾</button>
-      <div class="mz-chips" id="rGenres" hidden></div>
-      <div class="mz-hits" id="rRec"></div>
+      <button class="mz-gbtn" id="rGenreBtn" title="YouTube Music 의 장르별 대표 재생목록에서 많이 나오는 가수를 추천">${genreBtnLabel()}</button>
+      <div class="mz-gpanel" id="rGenres" hidden></div>
+      <div class="mz-recbox" id="rRec"></div>
     </div>
     <div class="mz-rand-picks" id="rpicks"></div>
     <div class="mz-rand-opts">
@@ -677,6 +683,7 @@ async function drawRandom() {
     <div class="mz-note" id="rstatus"></div>
   </div>`;
   drawPicks();
+  if (recGenre && recHits.length) drawRec(recGenre, recHits);
   if (!myLists) loadMyLists().then(() => { if (tab === 4 && myLists?.length) drawRandom(); });
   let t = null;
   $("#rq").oninput = (e) => {
@@ -700,18 +707,18 @@ async function drawRandom() {
       try { genreCache = await call("genres", {}, 25); } catch (err) { box.innerHTML = ""; fail(err); return; }
     }
     if (!genreCache.length) { box.innerHTML = '<div class="mz-note">장르를 못 읽었어요</div>'; return; }
-    const groups = {};
-    for (const [i, g] of genreCache.entries()) (groups[g.sec || "장르"] = groups[g.sec || "장르"] || []).push([i, g]);
-    // '장르' 묶음을 먼저 (분위기 · 상황은 뒤에)
-    const order = Object.keys(groups).sort((a, b) => (/장르|genre/i.test(b) ? 1 : 0) - (/장르|genre/i.test(a) ? 1 : 0));
-    box.innerHTML = order.map((sec) => `<div class="mz-sec">${esc(sec)}</div><div class="mz-chipline">${groups[sec].map(([i, g]) => `<button class="pl-open ghost" data-genre="${i}">${esc(g.t)}</button>`).join("")}</div>`).join("");
+    drawGenrePanel();
   };
   $("#rGenres").onclick = async (e) => {
+    const s = e.target.closest("[data-gsec]");
+    if (s) { genreSec = s.dataset.gsec; drawGenrePanel(); return; }
     const b = e.target.closest("[data-genre]");
     if (!b) return;
     const g = genreCache[+b.dataset.genre];
-    $("#rGenres").querySelectorAll("[data-genre]").forEach((x) => x.classList.toggle("on", x === b));
+    // 고르면 접고, 단추에 고른 장르를 보여 줌
+    $("#rGenres").hidden = true;
     recGenre = { g, pool: [], shown: new Set(), usedLists: [] };
+    $("#rGenreBtn").innerHTML = genreBtnLabel();
     await moreRec();
   };
   $("#rRec").onclick = (e) => {
@@ -722,8 +729,8 @@ async function drawRandom() {
     let n = 0;
     for (const a of add) if (a && !R.picks.some((p) => p.id === a.id)) { R.picks.push({ id: a.id, name: a.name, w: 3, songs: null }); n++; }
     saveR(); drawPicks();
-    if (b.dataset.rec === "all") $("#rRec").innerHTML = ""; else b.remove();
-    if (n) toast(`가수 ${n}명을 넣었어요`);
+    markRecAdded();
+    toast(n ? `가수 ${n}명을 넣었어요` : "이미 넣은 가수예요");
   };
   $("#rFromQueue").onclick = async () => {
     status("다음 트랙 읽는 중…");
@@ -1107,9 +1114,51 @@ async function moreRec() {
   if (!pick.length) { rec.innerHTML = `<div class="mz-note">‘${esc(st.g.t)}’ 에서 새로 추천할 가수가 없어요</div>`; return; }
   pick.forEach((a) => st.shown.add(a.id));
   recHits = pick;
-  rec.innerHTML = `<div class="mz-note">‘${esc(st.g.t)}’ 추천 가수 ${pick.length}명 (모은 가수 ${st.pool.length}명) — 눌러서 넣기</div>` +
-    pick.map((a, i) => `<button class="pl-open ghost" data-rec="${i}" title="이 장르 재생목록에 ${a.n}번 나옴">＋ ${esc(a.name)}</button>`).join("") +
-    `<button class="pl-open" data-rec="all">모두 넣기</button><button class="pl-open ghost" data-more="1" title="아직 안 보여 준 가수">다른 가수 보기 ↻</button>`;
+  drawRec(st, pick);
+}
+
+let genreSec = null; // 장르 펼침 칸에서 보고 있는 묶음 (장르 · 맞춤 · 분위기 …)
+function genreBtnLabel() {
+  return recGenre ? `<span class="mz-gk">장르</span><b>${esc(recGenre.g.t)}</b><span class="mz-gv">▾</span>` : `장르로 가수 추천<span class="mz-gv">▾</span>`;
+}
+function drawGenrePanel() {
+  const box = $("#rGenres");
+  if (!box || !genreCache) return;
+  const groups = {};
+  for (const [i, g] of genreCache.entries()) (groups[g.sec || "장르"] = groups[g.sec || "장르"] || []).push([i, g]);
+  // '장르' 묶음을 먼저 (분위기 · 상황은 뒤에)
+  const order = Object.keys(groups).sort((a, b) => (/장르|genre/i.test(b) ? 1 : 0) - (/장르|genre/i.test(a) ? 1 : 0));
+  if (!groups[genreSec]) genreSec = order[0];
+  const cur = recGenre && recGenre.g;
+  box.innerHTML = (order.length > 1 ? `<div class="seg mz-gtabs">${order.map((s) => `<button data-gsec="${esc(s)}" class="${s === genreSec ? "on" : ""}">${esc(s)} <small>${groups[s].length}</small></button>`).join("")}</div>` : "") +
+    `<div class="mz-gchips">${groups[genreSec].map(([i, g]) => `<button class="mz-gchip ${cur && cur.t === g.t && cur.params === g.params ? "on" : ""}" data-genre="${i}">${esc(g.t)}</button>`).join("")}</div>`;
+}
+/// 이름 → 같은 색 (가수 동그라미)
+function hueOf(s) { let h = 0; for (const c of String(s)) h = (h * 31 + c.codePointAt(0)) % 360; return h; }
+function drawRec(st, pick) {
+  const rec = $("#rRec");
+  if (!rec) return;
+  rec.innerHTML = `<div class="mz-rechead"><b>‘${esc(st.g.t)}’ 추천 가수</b><small>${pick.length}명 · 모은 가수 ${st.pool.length}명</small><span class="mz-sp"></span>
+      <button class="pl-open ghost" data-more="1" title="아직 안 보여 준 가수">↻ 다른 가수</button><button class="pl-open" data-rec="all">＋ 모두 넣기</button></div>
+    <div class="mz-recgrid">${pick.map((a, i) => `<button class="mz-recit" data-rec="${i}" title="눌러서 랜덤 가수에 넣기 · 이 장르 재생목록에 ${a.n}번 나옴">
+      <span class="mz-av" style="--h:${hueOf(a.name)}">${esc([...a.name.trim()][0] || "?")}</span>
+      <span class="mz-t"><b>${esc(a.name)}</b><small>재생목록에 ${a.n}번</small></span><span class="mz-plus">＋</span></button>`).join("")}</div>`;
+  markRecAdded();
+}
+/// 이미 랜덤 가수에 들어간 추천은 ✓
+function markRecAdded() {
+  const rec = $("#rRec");
+  if (!rec) return;
+  let left = 0;
+  rec.querySelectorAll(".mz-recit[data-rec]").forEach((b) => {
+    const a = recHits[+b.dataset.rec];
+    const on = !!a && R.picks.some((p) => p.id === a.id);
+    b.classList.toggle("added", on);
+    b.querySelector(".mz-plus").textContent = on ? "✓" : "＋";
+    if (!on) left++;
+  });
+  const all = rec.querySelector('[data-rec="all"]');
+  if (all) all.disabled = !left;
 }
 
 /// '3:45' · '1:02:03' → 초
