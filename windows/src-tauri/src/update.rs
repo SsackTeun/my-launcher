@@ -150,6 +150,9 @@ pub async fn self_update(app: tauri::AppHandle) -> Result<(), String> {
         // zip 으로 받은 도구함(같은 폴더에 version.txt)이면 zip, 아니면 설치 파일
         let zip_mode = dir.join("version.txt").exists() && !info.zip_url.is_empty() || info.setup_url.is_empty();
         let pid = std::process::id();
+        // 경로는 배치 파일에 직접 쓰지 않고 환경 변수로 넘김: cmd 는 배치 파일을 한국어 코드 페이지(949)로 읽어서
+        // UTF-8 로 쓴 '도구함' 같은 한글 경로가 깨짐 (환경 변수는 유니코드 그대로 전달됨)
+        let mut vars: Vec<(&str, std::ffi::OsString)> = vec![("ML_EXE", exe.clone().into_os_string())];
         let step = if zip_mode {
             let zip_path = tmp.join(ZIP);
             download(&info.zip_url, &zip_path)?;
@@ -157,20 +160,23 @@ pub async fn self_update(app: tauri::AppHandle) -> Result<(), String> {
             let out = tmp.join("files");
             zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| e.to_string())?
                 .extract(&out).map_err(|e| e.to_string())?;
-            format!("robocopy \"{}\" \"{}\" /E /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul", out.display(), dir.display())
+            vars.push(("ML_SRC", out.into_os_string()));
+            vars.push(("ML_DIR", dir.clone().into_os_string()));
+            "robocopy \"%ML_SRC%\" \"%ML_DIR%\" /E /R:5 /W:1 /NFL /NDL /NJH /NJS /NP >nul".to_string()
         } else {
             let setup = tmp.join(SETUP);
             download(&info.setup_url, &setup)?;
+            vars.push(("ML_SETUP", setup.into_os_string()));
             // /P: 묻지 않고 진행 막대만 보이게
-            format!("\"{}\" /P", setup.display())
+            "\"%ML_SETUP%\" /P".to_string()
         };
         let script = tmp.join("update.cmd");
         let body = format!(
-            "@echo off\r\n:wait\r\ntasklist /FI \"PID eq {pid}\" 2>nul | find \"{pid}\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n{step}\r\nstart \"\" \"{exe}\"\r\n",
-            exe = exe.display()
+            "@echo off\r\n:wait\r\ntasklist /FI \"PID eq {pid}\" 2>nul | find \"{pid}\" >nul && (timeout /t 1 /nobreak >nul & goto wait)\r\n{step}\r\nstart \"\" \"%ML_EXE%\"\r\n"
         );
         std::fs::write(&script, body).map_err(|e| e.to_string())?;
         crate::quiet(&mut std::process::Command::new("cmd"))
+            .envs(vars)
             .arg("/C")
             .arg(&script)
             .spawn()
