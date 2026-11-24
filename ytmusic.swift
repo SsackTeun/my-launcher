@@ -895,6 +895,15 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         }
     }
 
+    /// 한 곡만 재생 (자동재생 끔 — 끝나면 엉뚱한 곡이 이어지지 않게)
+    func playVideo(_ vid: String) {
+        guard let wv = webView, let u = URL(string: "https://music.youtube.com/watch?v=\(vid)") else { return }
+        wv.load(URLRequest(url: u))
+        for t in [3.0, 6.0, 10.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.setAutoplay(false) }
+        }
+    }
+
     /// 다음 트랙 아래 '자동재생' 스위치
     func setAutoplay(_ on: Bool) {
         webView?.evaluateJavaScript("(() => { const t = document.querySelector('#automix'); if (t && !!t.checked !== \(on)) t.click(); return t ? t.checked : null; })()")
@@ -913,6 +922,39 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                 guard case .success(let v) = r, let list = v as? String else { done(false); return }
                 self?.playList(list)
                 done(true)
+            }
+        }
+    }
+
+    /// 앨범 수록곡 (앨범 페이지 ID MPREb… → 재생목록 OLAK… · 곡들)
+    func albumTracks(id: String, done: @escaping (_ list: String?, _ tracks: [QueueItem]) -> Void) {
+        guard let wv = webView else { done(nil, []); return }
+        wv.callAsyncJavaScript("""
+        const ctx = ytcfg.get('INNERTUBE_CONTEXT');
+        const j = await (await fetch('/youtubei/v1/browse?prettyPrint=false', {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({context: ctx, browseId: id})})).json();
+        const b = JSON.stringify(j);
+        const list = (b.match(/"urlCanonical":"[^"]*list=(OLAK[^"&\\\\]+)/) || b.match(/"playlistId":"(OLAK[^"]+)"/) || [])[1] || null;
+        const out = [];
+        const all = []; JSON.stringify(j, (k, v) => { if (k === 'musicResponsiveListItemRenderer') all.push(v); return v; });
+        for (const v of all) {
+          const vid = v.playlistItemData && v.playlistItemData.videoId;
+          if (!vid) continue;
+          const col = i => ((v.flexColumns || [])[i] || {}).musicResponsiveListItemFlexColumnRenderer;
+          const t = ((col(0) || {}).text || {}).runs; const ar = ((col(1) || {}).text || {}).runs;
+          const fx = v.fixedColumns && v.fixedColumns[0] && v.fixedColumns[0].musicResponsiveListItemFixedColumnRenderer;
+          out.push({title: t ? t.map(r => r.text).join('') : '', artist: ar ? ar.map(r => r.text).join('') : '',
+                    dur: fx && fx.text && fx.text.runs ? fx.text.runs[0].text : '', vid});
+        }
+        return JSON.stringify({list, out});
+        """, arguments: ["id": id], in: nil, in: .page) { r in
+            MainActor.assumeIsolated {
+                guard case .success(let v) = r, let s = v as? String, let d = s.data(using: .utf8),
+                      let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { done(nil, []); return }
+                let arr = o["out"] as? [[String: String]] ?? []
+                done(o["list"] as? String, arr.enumerated().map { i, t in
+                    QueueItem(title: t["title"] ?? "", artist: t["artist"] ?? "", duration: t["dur"] ?? "", current: false, index: i, videoId: t["vid"] ?? "")
+                })
             }
         }
     }

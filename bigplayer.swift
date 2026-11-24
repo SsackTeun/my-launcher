@@ -149,7 +149,13 @@ final class BigPlayerView: NSView {
             MainActor.assumeIsolated { if let self, self.window != nil { self.showEQ(from: self.eqBtn) } }
         }
         actionBar.isHidden = true
-        actionBar.onAdd = { [weak self] b in self?.showAddMenu(from: b, vids: self?.selectedVids() ?? [], albums: self?.selectedAlbums() ?? []) }
+        actionBar.onAdd = { [weak self] b in
+            guard let self else { return }
+            self.showAddMenu(from: b, vids: self.selectedVids() + self.pickedTracks, albums: self.selectedAlbums())
+        }
+        actionBar.onPlay = { [weak self] in
+            self?.pickedVids { vids in self?.playVideos(vids) }
+        }
         actionBar.onCancel = { [weak self] in self?.setSelecting(false) }
         addSubview(actionBar)
     }
@@ -167,17 +173,18 @@ final class BigPlayerView: NSView {
     @objc private func toggleSelect() { setSelecting(!selecting) }
     private func setSelecting(_ on: Bool) {
         selecting = on
-        pickedQueue = []; pickedAlbums = []
+        pickedQueue = []; pickedAlbums = []; pickedTracks = []
         selectBtn.contentTintColor = on ? .launcherAccent : nil
         for r in doc.subviews { (r as? QueueRow)?.check = on ? false : nil }
-        for r in albumDoc.subviews { (r as? AlbumRow)?.check = on ? false : nil }
+        for r in albumDoc.subviews { (r as? AlbumRow)?.check = on ? false : nil; (r as? QueueRow)?.check = on ? false : nil }
         syncBar()
         needsLayout = true
     }
     private func syncBar() {
-        let n = pickedQueue.count + pickedAlbums.count
+        let songs = pickedQueue.count + pickedTracks.count
+        let n = songs + pickedAlbums.count
         actionBar.isHidden = !selecting
-        actionBar.text = n == 0 ? "곡 · 앨범을 눌러 고르세요" : "\(pickedQueue.count > 0 ? "\(pickedQueue.count)곡" : "")\(pickedQueue.count > 0 && pickedAlbums.count > 0 ? " · " : "")\(pickedAlbums.count > 0 ? "앨범 \(pickedAlbums.count)개" : "") 골랐어요"
+        actionBar.text = n == 0 ? "곡 · 앨범을 눌러 고르세요" : [songs > 0 ? "\(songs)곡" : "", pickedAlbums.count > 0 ? "앨범 \(pickedAlbums.count)개" : ""].filter { !$0.isEmpty }.joined(separator: " · ") + " 골랐어요"
         actionBar.canAdd = n > 0
     }
     private func selectedVids() -> [String] { items.filter { pickedQueue.contains($0.index) }.map(\.videoId).filter { !$0.isEmpty } }
@@ -530,6 +537,14 @@ final class BigPlayerView: NSView {
         loadAlbums(artistId)
     }
 
+    /// 불러온 가수 앨범 · 펼친 앨범 · 펼친 앨범의 수록곡 (앨범 ID → OLAK 목록 · 곡들)
+    private var albumName = ""
+    private var albumList: [AlbumEntry] = []
+    private var expanded = Set<String>()
+    private var albumTracks: [String: (list: String?, tracks: [QueueItem])] = [:]
+    /// 고르기: 앨범 수록곡 (고른 순서대로)
+    private var pickedTracks: [String] = []
+
     private func loadAlbums(_ id: String) {
         albumArtist = id
         albumDoc.subviews.forEach { $0.removeFromSuperview() }
@@ -537,41 +552,151 @@ final class BigPlayerView: NSView {
         status.isHidden = tab != 2
         music?.artistAlbums(id) { [weak self] name, list in
             guard let self, self.albumArtist == id else { return }
-            self.albumDoc.subviews.forEach { $0.removeFromSuperview() }
-            let head = SectionHead(name.isEmpty ? "앨범" : name, big: true)
-            if self.albumPinned {
-                head.action = ("지금 곡 가수로", { [weak self] in self?.albumPinned = false; self?.albumArtist = ""; self?.albumsForCurrent() })
+            self.albumName = name
+            self.albumList = list
+            self.expanded = []
+            self.drawAlbums()
+            self.status.stringValue = list.isEmpty ? "앨범을 찾지 못했어요" : ""
+            self.status.isHidden = self.tab != 2 || !list.isEmpty
+            self.albumScroll.contentView.scroll(to: .zero)
+        }
+    }
+
+    /// 앨범 줄들 (펼친 앨범은 아래에 수록곡)
+    private func drawAlbums() {
+        let keep = albumScroll.contentView.bounds.origin
+        albumDoc.subviews.forEach { $0.removeFromSuperview() }
+        let head = SectionHead(albumName.isEmpty ? "앨범" : albumName, big: true)
+        if albumPinned {
+            head.action = ("지금 곡 가수로", { [weak self] in self?.albumPinned = false; self?.albumArtist = ""; self?.albumsForCurrent() })
+        }
+        albumDoc.addSubview(head)
+        var sec = ""
+        for a in albumList {
+            if a.section != sec { sec = a.section; albumDoc.addSubview(SectionHead(sec)) }
+            var row: AlbumRow!
+            row = AlbumRow(a) { [weak self] in
+                guard let self else { return }
+                if self.selecting {
+                    if self.pickedAlbums.contains(a.id) { self.pickedAlbums.remove(a.id) } else { self.pickedAlbums.insert(a.id) }
+                    row.check = self.pickedAlbums.contains(a.id)
+                    self.syncBar()
+                    return
+                }
+                self.toggleExpand(a)
             }
-            self.albumDoc.addSubview(head)
-            var sec = ""
-            for a in list {
-                if a.section != sec { sec = a.section; self.albumDoc.addSubview(SectionHead(sec)) }
-                var row: AlbumRow!
-                row = AlbumRow(a) { [weak self] in
+            row.expanded = expanded.contains(a.id)
+            row.onPlay = { [weak self] in self?.playAlbumEntry(a) }
+            row.onExpand = { [weak self] in self?.toggleExpand(a) }
+            row.makeMenu = { [weak self] in
+                let m = NSMenu()
+                m.addItem(MenuAction("처음부터 재생") { self?.playAlbumEntry(a) })
+                m.addItem(MenuAction(self?.expanded.contains(a.id) == true ? "수록곡 접기" : "수록곡 보기") { self?.toggleExpand(a) })
+                let add = NSMenuItem(title: "재생목록에 앨범 넣기", action: nil, keyEquivalent: "")
+                add.submenu = self?.addMenu(vids: [], albums: [a.id])
+                m.addItem(add)
+                return m
+            }
+            if selecting { row.check = pickedAlbums.contains(a.id) }
+            albumDoc.addSubview(row)
+            guard expanded.contains(a.id) else { continue }
+            guard let got = albumTracks[a.id] else { albumDoc.addSubview(SectionHead("   수록곡 불러오는 중…")); continue }
+            if got.tracks.isEmpty { albumDoc.addSubview(SectionHead("   수록곡을 찾지 못했어요")); continue }
+            for (k, t) in got.tracks.enumerated() {
+                var tr: QueueRow!
+                tr = QueueRow(item: t, width: 320) { [weak self] in
                     guard let self else { return }
                     if self.selecting {
-                        if self.pickedAlbums.contains(a.id) { self.pickedAlbums.remove(a.id) } else { self.pickedAlbums.insert(a.id) }
-                        row.check = self.pickedAlbums.contains(a.id)
+                        if let i = self.pickedTracks.firstIndex(of: t.videoId) { self.pickedTracks.remove(at: i) } else { self.pickedTracks.append(t.videoId) }
+                        tr.check = self.pickedTracks.contains(t.videoId)
                         self.syncBar()
                         return
                     }
-                    self.playAlbumEntry(a)
+                    // 이 곡부터 앨범 재생
+                    if let l = got.list { self.music?.playList(l, from: t.videoId); self.toast("‘\(t.title)’부터 앨범을 재생해요") }
+                    else { self.playVideos([t.videoId], title: t.title) }
+                    self.lastQueueKey = ""
                 }
-                row.makeMenu = { [weak self] in
+                tr.translatesAutoresizingMaskIntoConstraints = true
+                tr.number = k + 1
+                if selecting { tr.check = pickedTracks.contains(t.videoId) }
+                tr.makeMenu = { [weak self] in
                     let m = NSMenu()
-                    m.addItem(MenuAction("처음부터 재생") { self?.playAlbumEntry(a) })
-                    let add = NSMenuItem(title: "재생목록에 앨범 넣기", action: nil, keyEquivalent: "")
-                    add.submenu = self?.addMenu(vids: [], albums: [a.id])
+                    m.addItem(MenuAction("이 곡만 재생") { self?.playVideos([t.videoId], title: t.title) })
+                    if let l = got.list { m.addItem(MenuAction("이 곡부터 앨범 재생") { self?.music?.playList(l, from: t.videoId) }) }
+                    let add = NSMenuItem(title: "재생목록에 넣기", action: nil, keyEquivalent: "")
+                    add.submenu = self?.addMenu(vids: [t.videoId], albums: [])
                     m.addItem(add)
                     return m
                 }
-                if self.selecting { row.check = self.pickedAlbums.contains(a.id) }
-                self.albumDoc.addSubview(row)
+                albumDoc.addSubview(tr)
             }
-            self.status.stringValue = list.isEmpty ? "앨범을 찾지 못했어요" : ""
-            self.status.isHidden = self.tab != 2 || !list.isEmpty
-            self.layoutAlbums()
-            self.albumScroll.contentView.scroll(to: .zero)
+        }
+        layoutAlbums()
+        albumScroll.contentView.scroll(to: keep)
+        albumScroll.reflectScrolledClipView(albumScroll.contentView)
+    }
+
+    private func toggleExpand(_ a: AlbumEntry) {
+        if expanded.contains(a.id) { expanded.remove(a.id); drawAlbums(); return }
+        expanded.insert(a.id)
+        drawAlbums()
+        guard albumTracks[a.id] == nil else { return }
+        music?.albumTracks(id: a.id) { [weak self] list, tracks in
+            guard let self else { return }
+            self.albumTracks[a.id] = (list, tracks)
+            if self.expanded.contains(a.id) { self.drawAlbums() }
+        }
+    }
+
+    /// 고른 곡만 재생: '고른 곡 (도구함)' 재생목록 하나를 새로 만들어 틀고, 전에 만든 건 지움
+    /// (YouTube Music 은 곡 몇 개만으로 바로 재생 목록을 만드는 주소가 없어서)
+    private func playVideos(_ vids: [String], title: String? = nil) {
+        var seen = Set<String>()
+        let vids = vids.filter { !$0.isEmpty && seen.insert($0).inserted }
+        guard let first = vids.first else { return }
+        if vids.count == 1 {
+            // 한 곡이면 그 곡만 (자동재생 끔)
+            music?.playVideo(first)
+            toast("‘\(title ?? "고른 곡")’을 재생해요")
+            return
+        }
+        toast("고른 \(vids.count)곡 준비 중…", stay: true)
+        let key = "ytmPickedListId"
+        if let old = UserDefaults.standard.string(forKey: key) {
+            music?.deletePlaylist(old) { _ in }
+            PlaylistPane.recentlyDeleted.insert(old)
+        }
+        music?.createPlaylist("고른 곡 (도구함)", videoIds: vids) { [weak self] id in
+            guard let self else { return }
+            guard let id else { self.toast("재생하지 못했어요 (로그인 확인)"); return }
+            UserDefaults.standard.set(id, forKey: key)
+            if self.selecting { self.setSelecting(false) }
+            // 서버에 반영되기 전에 틀면 곡이 빠진 채로 시작해서 조금 기다렸다가
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.music?.playList(id)
+                self?.toast("고른 \(vids.count)곡을 재생해요")
+                self?.lastQueueKey = ""
+                self?.plPane.reload(lists: true)
+            }
+        }
+    }
+
+    /// 고른 것 모두 → 곡 ID 들 (다음 트랙 곡 · 앨범 수록곡 · 고른 앨범의 모든 곡, 고른 순서대로)
+    private func pickedVids(_ done: @escaping ([String]) -> Void) {
+        var vids = selectedVids() + pickedTracks
+        let albums = albumList.filter { pickedAlbums.contains($0.id) }
+        var left = albums.count
+        guard left > 0 else { done(vids); return }
+        var got: [String: [String]] = [:]
+        for a in albums {
+            let finish = { (ts: [QueueItem]) in
+                got[a.id] = ts.map(\.videoId)
+                left -= 1
+                if left == 0 { for a in albums { vids += got[a.id] ?? [] }; done(vids) }
+            }
+            if let c = albumTracks[a.id] { finish(c.tracks) }
+            else { music?.albumTracks(id: a.id) { [weak self] l, ts in self?.albumTracks[a.id] = (l, ts); finish(ts) } }
         }
     }
 
@@ -896,6 +1021,21 @@ final class AlbumRow: NSView {
     private static var cache: [String: NSImage] = [:]
     var makeMenu: (() -> NSMenu)?
     private let badge = NSImageView()
+    /// 펼침 표시 ▸ / ▾ 와 ▶ 재생 단추
+    var onPlay: (() -> Void)?
+    var onExpand: (() -> Void)?
+    var expanded = false { didSet { chevron.image = NSImage(systemSymbolName: expanded ? "chevron.down" : "chevron.right", accessibilityDescription: nil) } }
+    private let chevron = NSImageView()
+    private lazy var playBtn: NSButton = {
+        let b = NSButton(image: NSImage(systemSymbolName: "play.circle.fill", accessibilityDescription: "처음부터 재생")!, target: self, action: #selector(playTapped))
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 20, weight: .regular)
+        b.contentTintColor = .secondaryLabelColor
+        b.toolTip = "처음부터 재생"
+        addSubview(b)
+        return b
+    }()
+    @objc private func playTapped() { onPlay?() }
     /// 고르기 모드 체크 (nil = 보통)
     var check: Bool? {
         didSet {
@@ -927,7 +1067,11 @@ final class AlbumRow: NSView {
         s.textColor = .secondaryLabelColor
         s.lineBreakMode = .byTruncatingTail
         addSubview(s)
-        toolTip = "‘\(e.title)’ 처음부터 재생 · 오른쪽 클릭: 재생목록에 넣기"
+        toolTip = "눌러서 수록곡 보기 · ▶ 처음부터 재생 · 오른쪽 클릭: 재생목록에 넣기"
+        chevron.image = NSImage(systemSymbolName: "chevron.right", accessibilityDescription: nil)
+        chevron.symbolConfiguration = .init(pointSize: 10, weight: .semibold)
+        chevron.contentTintColor = .tertiaryLabelColor
+        addSubview(chevron)
         badge.isHidden = true
         badge.symbolConfiguration = .init(pointSize: 16, weight: .semibold)
         addSubview(badge)
@@ -954,9 +1098,11 @@ final class AlbumRow: NSView {
         super.layout()
         cover.frame = NSRect(x: 10, y: 6, width: 44, height: 44)
         badge.frame = NSRect(x: 34, y: 28, width: 20, height: 20)
-        let x: CGFloat = 64, w = bounds.width - x - 10
+        let x: CGFloat = 64, w = bounds.width - x - 10 - 52
         t.frame = NSRect(x: x, y: 10, width: w, height: 18)
         s.frame = NSRect(x: x, y: 29, width: w, height: 16)
+        playBtn.frame = NSRect(x: bounds.width - 58, y: 14, width: 28, height: 28)
+        chevron.frame = NSRect(x: bounds.width - 24, y: 21, width: 14, height: 14)
     }
     override func updateTrackingAreas() {
         trackingAreas.forEach(removeTrackingArea)
@@ -982,10 +1128,12 @@ final class SelectBar: NSView {
     private let label = NSTextField(labelWithString: "")
     private let addBtn = NSButton(title: "재생목록에 넣기 ▾", target: nil, action: nil)
     private let cancelBtn = NSButton(title: "취소", target: nil, action: nil)
+    private let playBtn = NSButton(title: "▶ 재생", target: nil, action: nil)
+    var onPlay: (() -> Void)?
     var onAdd: ((NSView) -> Void)?
     var onCancel: (() -> Void)?
     var text: String { get { label.stringValue } set { label.stringValue = newValue } }
-    var canAdd = false { didSet { addBtn.isEnabled = canAdd } }
+    var canAdd = false { didSet { addBtn.isEnabled = canAdd; playBtn.isEnabled = canAdd } }
     override var isFlipped: Bool { true }
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -996,18 +1144,21 @@ final class SelectBar: NSView {
         label.textColor = .secondaryLabelColor
         label.lineBreakMode = .byTruncatingTail
         addSubview(label)
-        for b in [addBtn, cancelBtn] { b.controlSize = .small; b.bezelStyle = .rounded; b.target = self; addSubview(b) }
-        addBtn.action = #selector(addTapped); cancelBtn.action = #selector(cancelTapped)
+        for b in [playBtn, addBtn, cancelBtn] { b.controlSize = .small; b.bezelStyle = .rounded; b.target = self; addSubview(b) }
+        addBtn.action = #selector(addTapped); cancelBtn.action = #selector(cancelTapped); playBtn.action = #selector(playTapped)
+        playBtn.toolTip = "고른 곡만 바로 재생 (앨범을 고르면 그 앨범의 모든 곡)"
         addBtn.keyEquivalent = "\r"
     }
     required init?(coder: NSCoder) { fatalError() }
     @objc private func addTapped() { onAdd?(addBtn) }
     @objc private func cancelTapped() { onCancel?() }
+    @objc private func playTapped() { onPlay?() }
     override func layout() {
         super.layout()
-        cancelBtn.sizeToFit(); addBtn.sizeToFit()
+        cancelBtn.sizeToFit(); addBtn.sizeToFit(); playBtn.sizeToFit()
         cancelBtn.frame = NSRect(x: bounds.width - cancelBtn.frame.width - 6, y: (bounds.height - 22) / 2, width: cancelBtn.frame.width, height: 22)
         addBtn.frame = NSRect(x: cancelBtn.frame.minX - addBtn.frame.width - 4, y: (bounds.height - 22) / 2, width: addBtn.frame.width, height: 22)
-        label.frame = NSRect(x: 10, y: (bounds.height - 16) / 2, width: max(20, addBtn.frame.minX - 14), height: 16)
+        playBtn.frame = NSRect(x: addBtn.frame.minX - playBtn.frame.width - 4, y: (bounds.height - 22) / 2, width: playBtn.frame.width, height: 22)
+        label.frame = NSRect(x: 10, y: (bounds.height - 16) / 2, width: max(20, playBtn.frame.minX - 14), height: 16)
     }
 }
