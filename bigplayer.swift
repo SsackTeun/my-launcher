@@ -11,6 +11,11 @@ final class BigPlayerView: NSView {
     }
     /// 아래 칸 높이 · 크게 보기일 때 가장 좁은 창 폭
     static let height: CGFloat = 326
+    /// 아래 가장자리를 끌어서 늘린 높이 (가장 작게는 기본 높이)
+    static var userHeight: CGFloat {
+        get { max(height, CGFloat(UserDefaults.standard.double(forKey: "bigPlayerH"))) }
+        set { UserDefaults.standard.set(Double(newValue), forKey: "bigPlayerH") }
+    }
     static let minWidth: CGFloat = 560
 
     private weak var music: YTMusic?

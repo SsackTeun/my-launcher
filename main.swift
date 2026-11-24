@@ -825,32 +825,36 @@ final class DragHandle: NSView {
 /// 창 왼쪽 · 오른쪽 테두리: 잡고 끌면 창 폭 조절 (보이지 않는 얇은 띠, 마우스를 대면 ↔ 커서)
 final class EdgeResizer: NSView {
     var onBegin: (() -> Void)?
-    var onDrag: ((CGFloat) -> Void)?      // 처음 누른 곳에서 오른쪽으로 움직인 거리
+    var onDrag: ((CGFloat) -> Void)?      // 처음 누른 곳에서 오른쪽(세로면 아래쪽)으로 움직인 거리
     var onReset: (() -> Void)?
+    /// true 면 위아래로 끌어서 높이 조절
+    var vertical = false
+    private var cursor: NSCursor { vertical ? .resizeUpDown : .resizeLeftRight }
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
         addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .mouseMoved, .activeAlways, .inVisibleRect, .cursorUpdate], owner: self))
     }
     // 창 밖에서 들어올 때는 cursorUpdate 가 안 오는 경우가 있어서 (창이 키 창이 아닐 때) 들어오고 · 움직일 때도 직접 바꿈
-    override func cursorUpdate(with event: NSEvent) { NSCursor.resizeLeftRight.set() }
+    override func cursorUpdate(with event: NSEvent) { cursor.set() }
     override func mouseEntered(with event: NSEvent) {
-        toolTip = "좌우로 끌어서 창 폭 조절 · 더블클릭하면 기본 폭"
-        NSCursor.resizeLeftRight.set()
+        toolTip = vertical ? "위아래로 끌어서 창 높이 조절 · 더블클릭하면 기본 높이" : "좌우로 끌어서 창 폭 조절 · 더블클릭하면 기본 폭"
+        cursor.set()
     }
-    override func mouseMoved(with event: NSEvent) { NSCursor.resizeLeftRight.set() }
+    override func mouseMoved(with event: NSEvent) { cursor.set() }
     override func mouseExited(with event: NSEvent) { NSCursor.arrow.set() }
     override var mouseDownCanMoveWindow: Bool { false }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 { onReset?(); return }
         guard let w = window else { return }
-        let start = NSEvent.mouseLocation.x
+        let start = NSEvent.mouseLocation
         onBegin?()
-        NSCursor.resizeLeftRight.push()
+        cursor.push()
         w.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { [weak self] ev, stop in
             guard let self, let ev, ev.type != .leftMouseUp else { stop.pointee = true; return }
-            self.onDrag?(NSEvent.mouseLocation.x - start)
+            let m = NSEvent.mouseLocation
+            self.onDrag?(self.vertical ? start.y - m.y : m.x - start.x)
         }
         NSCursor.pop()
     }
@@ -1704,6 +1708,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             r.frame = NSRect(x: x, y: 0, width: 6, height: size.height)
             fx.addSubview(r)
         }
+        // 크게 보기면 아래 가장자리로 높이 조절
+        detachedBottom.removeFromSuperview()
+        if let (bv, _) = below, bv === bigPlayer {
+            detachedBottom.frame = NSRect(x: 6, y: 0, width: size.width - 12, height: 6)
+            fx.addSubview(detachedBottom)
+        }
         Theme.chrome(fx, radius: Theme.playerRadius)
         if widget { hoverRaise(fx) }
         // 마우스를 올려 잠깐 맨 앞으로 나와 있는 중이면 그대로 둠
@@ -1808,6 +1818,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         return r
     }
+    /// 크게 보기 플레이어: 아래 가장자리를 끌어서 높이 조절 (위 끝은 그대로, 아래로 늘어남)
+    private var bigHStart: CGFloat = 0
+    lazy var detachedBottom: EdgeResizer = {
+        let r = EdgeResizer(frame: .zero)
+        r.vertical = true
+        r.onBegin = { [unowned self] in bigHStart = BigPlayerView.userHeight }
+        r.onDrag = { [unowned self] dy in
+            // 화면 아래를 넘지 않게
+            let room = (playerPanel.flatMap { p in (p.screen ?? NSScreen.main).map { p.frame.minY - $0.visibleFrame.minY } } ?? 0)
+            let maxH = BigPlayerView.userHeight + max(0, room)
+            let v = max(BigPlayerView.height, min(maxH, (bigHStart + dy).rounded()))
+            guard abs(v - BigPlayerView.userHeight) >= 2 else { return }
+            BigPlayerView.userHeight = v
+            refresh()
+        }
+        r.onReset = { [unowned self] in
+            UserDefaults.standard.removeObject(forKey: "bigPlayerH")
+            refresh()
+        }
+        return r
+    }()
     lazy var detachedLeft = detachedResizer(left: true)
     lazy var detachedRight = detachedResizer(left: false)
     /// 도구함 창 테두리 · 모서리 (왼 · 오른 · 위 · 네 모서리, 아래는 손잡이 줄)
@@ -3270,7 +3301,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 크게 보기면 가사 줄은 안 씀 (가사 탭이 따로 있음) — 전에 붙어 있던 걸 떼어 냄 (겹쳐 보였음)
             else if let sv = lyrics.stripView.superview, sv === playerPanel?.contentView { lyrics.stripView.removeFromSuperview() }
             showDetached(.player, view: playerBar, width: dw, height: playerH,
-                         below: big ? (bigPlayer, BigPlayerView.height) : (lyrics.stripView, lyrics.stripHeight))
+                         below: big ? (bigPlayer, BigPlayerView.userHeight) : (lyrics.stripView, lyrics.stripHeight))
             bigPlayer.needsLayout = true
         } else { playerPanel?.orderOut(nil); bigPlayer.removeFromSuperview() }
         syncMusicItem()
