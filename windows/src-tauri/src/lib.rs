@@ -17,6 +17,8 @@ mod desk;
 #[cfg(windows)]
 mod media;
 #[cfg(windows)]
+mod mirror;
+#[cfg(windows)]
 mod update;
 mod web;
 #[cfg(windows)]
@@ -510,6 +512,124 @@ fn add_cover(app: &tauri::AppHandle) -> Result<(), String> {
     open_cover(app, &id, x, y, 320.0, 120.0)
 }
 
+// MARK: 영역 비추기 (오버레이) — 끌어 고른 영역을 항상 위 작은 창(mirror-<id>)에 실시간으로 (mirror.rs)
+
+/// 영역 고르기 창: 마우스가 있는 모니터를 덮는 투명한 창 (pick.html) — 끌어서 영역을 고르면 mirror_make
+fn open_pick(app: &tauri::AppHandle) -> Result<(), String> {
+    if let Some(old) = app.get_webview_window("mirror-pick") {
+        let _ = old.destroy();
+    }
+    let [x, y, w, h] = mirror::cursor_monitor();
+    let win = WebviewWindowBuilder::new(app, "mirror-pick", WebviewUrl::App("pick.html".into()))
+        .title("영역 고르기")
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .resizable(false)
+        .visible(false)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = win.set_size(tauri::PhysicalSize::new(w.max(1) as u32, h.max(1) as u32));
+    let _ = win.show();
+    let _ = win.set_focus();
+    Ok(())
+}
+
+/// 비추는 창 만들기 (자리 · 크기는 물리 픽셀)
+fn open_mirror(app: &tauri::AppHandle, m: mirror::Mirror, x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
+    let label = format!("mirror-{}", m.id);
+    if app.get_webview_window(&label).is_some() {
+        return Ok(());
+    }
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::App("mirror.html".into()))
+        .title("비추기")
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .resizable(true)
+        .focused(false)
+        .visible(false)
+        .min_inner_size(40.0, 24.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _ = win.set_position(tauri::PhysicalPosition::new(x, y));
+    let _ = win.set_size(tauri::PhysicalSize::new(w.max(40) as u32, h.max(24) as u32));
+    let dest = win.hwnd().map(|h| h.0 as isize).map_err(|e| e.to_string())?;
+    mirror::attach(m, dest);
+    if !COVER_HIDDEN.load(Ordering::Relaxed) {
+        let _ = win.show();
+    }
+    refresh_tray(app);
+    Ok(())
+}
+
+#[tauri::command]
+fn mirror_pick(app: tauri::AppHandle) -> Result<(), String> {
+    open_pick(&app)
+}
+
+/// 고른 영역(화면 물리 픽셀)으로 비추기 시작 — 고르기 창은 닫고, 잠금을 풀어 바로 옮길 수 있게
+#[tauri::command]
+async fn mirror_make(app: tauri::AppHandle, x: i32, y: i32, w: i32, h: i32) -> Result<String, String> {
+    if w < 8 || h < 8 {
+        return Err("영역이 너무 작아요".into());
+    }
+    // 고르기 창을 숨긴 뒤 그 아래 창을 찾음 (못 찾으면 고르기 창을 다시 보여 줌)
+    let pick = app.get_webview_window("mirror-pick");
+    if let Some(p) = &pick {
+        let _ = p.hide();
+    }
+    std::thread::sleep(std::time::Duration::from_millis(150));
+    let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0).to_string();
+    let Some(m) = mirror::from_region(&id, x, y, w, h) else {
+        if let Some(p) = &pick {
+            let _ = p.show();
+            let _ = p.set_focus();
+        }
+        return Err("그 자리에서 창을 찾지 못했어요".into());
+    };
+    if let Some(p) = pick {
+        let _ = p.destroy();
+    }
+    set_cover(&app, Some(false), Some(false));
+    open_mirror(&app, m, x + 30, y + 30, w, h)?;
+    Ok(id)
+}
+
+/// 다시 켰을 때 되살리기 (원본 창은 같은 프로그램 · 같은 종류 창으로 다시 찾음)
+#[tauri::command]
+#[allow(clippy::too_many_arguments)]
+async fn mirror_restore(
+    app: tauri::AppHandle, id: String, cls: String, title: String, exe: String, sx: i32, sy: i32, sw: i32, sh: i32, x: i32, y: i32, w: i32, h: i32,
+) -> Result<(), String> {
+    let m = mirror::Mirror { id, cls, title, exe, sx, sy, sw, sh, ..Default::default() };
+    open_mirror(&app, m, x, y, w, h)
+}
+
+#[tauri::command]
+fn mirror_info(id: String) -> Option<mirror::Mirror> {
+    mirror::info(&id)
+}
+
+/// 다시 그리기 (위쪽 top 픽셀은 조작 줄 자리) — 원본이 없어졌으면 다시 찾아 붙임. 비추고 있으면 true
+#[tauri::command]
+fn mirror_update(id: String, top: i32, alpha: u8) -> bool {
+    mirror::update(&id, top, alpha)
+}
+
+#[tauri::command]
+fn mirror_close(app: tauri::AppHandle, id: String) {
+    mirror::detach(&id);
+    if let Some(w) = app.get_webview_window(&format!("mirror-{id}")) {
+        let _ = w.destroy();
+    }
+}
+
 #[tauri::command]
 fn cover_open(app: tauri::AppHandle, id: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
     open_cover(&app, &id, x, y, w, h)
@@ -563,12 +683,13 @@ fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         menu.append(&MenuItem::with_id(app, "ytmusic-quit", "YouTube Music 끄기", true, None::<&str>)?)?;
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
-    let covers = app.webview_windows().keys().any(|l| l.starts_with("cover-"));
+    let covers = app.webview_windows().keys().any(|l| l.starts_with("cover-") || (l.starts_with("mirror-") && l != "mirror-pick"));
     menu.append(&MenuItem::with_id(app, "cover-add", "가림막 추가", true, None::<&str>)?)?;
+    menu.append(&MenuItem::with_id(app, "mirror-add", "영역 비추기 (오버레이)…", true, None::<&str>)?)?;
     if covers {
         let st = cover_now();
-        menu.append(&CheckMenuItem::with_id(app, "cover-lock", "가림막 잠금 (클릭이 아래 창으로 통과)", true, st.locked, None::<&str>)?)?;
-        menu.append(&CheckMenuItem::with_id(app, "cover-hide", "가림막 숨기기", true, st.hidden, None::<&str>)?)?;
+        menu.append(&CheckMenuItem::with_id(app, "cover-lock", "가림막 · 비추기 잠금 (클릭이 아래 창으로 통과)", true, st.locked, None::<&str>)?)?;
+        menu.append(&CheckMenuItem::with_id(app, "cover-hide", "가림막 · 비추기 숨기기", true, st.hidden, None::<&str>)?)?;
     }
     menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&CheckMenuItem::with_id(app, "autostart", "로그인 시 자동 실행", true, desk::autostart(None), None::<&str>)?)?;
@@ -734,6 +855,9 @@ pub fn run() {
                         "cover-add" => {
                             let _ = add_cover(app);
                         }
+                        "mirror-add" => {
+                            let _ = open_pick(app);
+                        }
                         "cover-lock" => {
                             set_cover(app, Some(!COVER_LOCKED.load(Ordering::Relaxed)), None);
                         }
@@ -788,7 +912,10 @@ pub fn run() {
         .on_window_event(|w, e| {
             if let tauri::WindowEvent::Destroyed = e {
                 web::forget(w.label());
-                if w.label() == "ytmusic" || w.label().starts_with("cover-") {
+                if let Some(id) = w.label().strip_prefix("mirror-") {
+                    mirror::detach(id);
+                }
+                if w.label() == "ytmusic" || w.label().starts_with("cover-") || w.label().starts_with("mirror-") {
                     let h = w.app_handle().clone();
                     // 창이 다 없어진 뒤에 메뉴를 다시 만듦
                     std::thread::spawn(move || {
@@ -816,6 +943,12 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             cover_open,
             cover_add,
+            mirror_pick,
+            mirror_make,
+            mirror_restore,
+            mirror_info,
+            mirror_update,
+            mirror_close,
             cover_state,
             cover_set,
             update::update_info,

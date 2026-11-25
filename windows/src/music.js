@@ -1946,10 +1946,11 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
   // 가림막: ＋ 추가 · 잠금 · 숨기기 (모든 가림막 같이, 트레이 🧰 에도 있음)
   let cov = { locked: true, hidden: false };
   function drawCover() {
-    const n = Object.keys((() => { try { return JSON.parse(localStorage.getItem("covers") || "{}"); } catch { return {}; } })()).length;
+    const cnt = (k) => { try { return Object.keys(JSON.parse(localStorage.getItem(k) || "{}")).length; } catch { return 0; } };
+    const n = cnt("covers") + cnt("mirrors");
     $("#covLock").hidden = $("#covHide").hidden = !n;
     $("#covLock").textContent = cov.locked ? "🔓 풀기" : "🔒 잠그기";
-    $("#covLock").title = cov.locked ? "가림막 잠금 풀기 — 옮기고 크기 · 색을 바꿀 수 있어요" : "가림막 잠그기 — 클릭이 아래 창(게임)으로 통과해요";
+    $("#covLock").title = cov.locked ? "가림막 · 비추기 잠금 풀기 — 옮기고 크기 · 색 · 투명도를 바꿀 수 있어요" : "가림막 · 비추기 잠그기 — 클릭이 아래 창(게임)으로 통과해요";
     $("#covHide").textContent = cov.hidden ? "보이기" : "숨기기";
   }
   invoke("cover_state").then((s) => { cov = s; drawCover(); }).catch(() => {});
@@ -1976,6 +1977,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     }
     if (e.target.closest("#lineBtn")) { setConfig("lyricsLine", !(cfg.lyricsLine !== false)); return; }
     if (e.target.closest("#covAdd")) { invoke("cover_add").then(() => setTimeout(drawCover, 600)).catch((err) => toast(`가림막을 만들지 못했어요: ${err}`)); return; }
+    if (e.target.closest("#mirAdd")) { hub.hidden = true; invoke("mirror_pick").then(() => setTimeout(drawCover, 600)).catch((err) => toast(`영역을 고를 수 없어요: ${err}`)); return; }
     if (e.target.closest("#covLock")) { invoke("cover_set", { locked: !cov.locked }).catch(() => {}); return; }
     if (e.target.closest("#covHide")) { invoke("cover_set", { hidden: !cov.hidden }).catch(() => {}); return; }
   });

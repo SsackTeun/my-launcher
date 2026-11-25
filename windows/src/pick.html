@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>영역 고르기</title>
+  <!-- 영역 비추기: 모니터 전체를 덮는 투명한 창에서 끌어서 영역 고르기 → 그 영역을 항상 위 작은 창에 실시간으로 (Esc · 오른쪽 클릭 = 그만두기) -->
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; cursor: crosshair; user-select: none; background: rgba(0, 0, 0, .28); font: 13px "Segoe UI", "Malgun Gothic", sans-serif; }
+    #hint { position: fixed; top: 18px; left: 50%; transform: translateX(-50%); padding: 8px 16px; border-radius: 10px; background: rgba(20, 20, 24, .9); color: #fff; pointer-events: none; white-space: nowrap; }
+    #hint small { color: #aaa; margin-left: 8px; }
+    #sel { position: fixed; display: none; border: 2px solid #8ecbff; background: rgba(142, 203, 255, .12); box-shadow: 0 0 0 9999px rgba(0, 0, 0, .25); }
+    #size { position: fixed; display: none; padding: 2px 6px; border-radius: 6px; background: #8ecbff; color: #000; font-size: 11px; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="hint">비춰 볼 영역을 끌어서 고르세요 (예: 채팅창)<small>Esc · 오른쪽 클릭 = 그만두기</small></div>
+  <div id="sel"></div>
+  <div id="size"></div>
+  <script>
+    const T = window.__TAURI__;
+    const sel = document.getElementById("sel"), size = document.getElementById("size");
+    let start = null, cur = null;
+    const quit = () => T?.core.invoke("close_window", { label: "mirror-pick" });
+    function box() {
+      const x = Math.min(start.x, cur.x), y = Math.min(start.y, cur.y);
+      return { x, y, w: Math.abs(cur.x - start.x), h: Math.abs(cur.y - start.y) };
+    }
+    addEventListener("keydown", (e) => { if (e.key === "Escape") quit(); });
+    addEventListener("contextmenu", (e) => { e.preventDefault(); quit(); });
+    addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      start = cur = { x: e.clientX, y: e.clientY };
+      document.getElementById("hint").style.display = "none";
+    });
+    addEventListener("mousemove", (e) => {
+      if (!start) return;
+      cur = { x: e.clientX, y: e.clientY };
+      const b = box();
+      Object.assign(sel.style, { display: "block", left: b.x + "px", top: b.y + "px", width: b.w + "px", height: b.h + "px" });
+      Object.assign(size.style, { display: "block", left: b.x + "px", top: Math.max(0, b.y - 22) + "px" });
+      size.textContent = `${Math.round(b.w * devicePixelRatio)} × ${Math.round(b.h * devicePixelRatio)}`;
+    });
+    addEventListener("mouseup", async (e) => {
+      if (!start || e.button !== 0) return;
+      cur = { x: e.clientX, y: e.clientY };
+      const b = box();
+      start = null;
+      if (b.w < 10 || b.h < 10) { sel.style.display = size.style.display = "none"; document.getElementById("hint").style.display = ""; return; }
+      // 화면 물리 픽셀로: 이 창의 왼쪽 위(물리) + 창 안 좌표 × 배율
+      const w = T.window.getCurrentWindow();
+      const o = await w.outerPosition();
+      const r = devicePixelRatio;
+      try {
+        await T.core.invoke("mirror_make", { x: Math.round(o.x + b.x * r), y: Math.round(o.y + b.y * r), w: Math.round(b.w * r), h: Math.round(b.h * r) });
+      } catch (err) {
+        // 못 만들었으면 이유를 보여 주고 다시 고르게
+        sel.style.display = size.style.display = "none";
+        const h = document.getElementById("hint");
+        h.innerHTML = `${String(err)} — 다시 끌어서 골라 주세요<small>Esc · 오른쪽 클릭 = 그만두기</small>`;
+        h.style.display = "";
+      }
+    });
+  </script>
+</body>
+</html>

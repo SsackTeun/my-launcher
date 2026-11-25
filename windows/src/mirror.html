@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>비추기</title>
+  <!-- 영역 비추기 창 (mirror-<id>): 고른 영역을 실시간으로 (Windows 가 이 창 위에 직접 그림 — 보기 전용)
+       잠금 풀림: 위쪽 조작 줄(투명도 · 잠그기 · 지우기) · 끌어서 옮기기 · 오른쪽 아래로 크기
+       잠금: 조작 줄 없이 영역만, 클릭은 아래 창(게임)으로 통과 -->
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font: 12px "Segoe UI", "Malgun Gothic", sans-serif; user-select: none; }
+    #area { position: fixed; inset: 0; display: grid; place-items: center; text-align: center; color: rgba(255, 255, 255, .8); border-radius: 6px; }
+    body.lost #area { background: rgba(20, 20, 24, .75); }
+    #msg { display: none; padding: 6px; }
+    body.lost #msg { display: block; }
+    body.edit #area { top: 30px; outline: 2px dashed rgba(142, 203, 255, .9); outline-offset: -2px; cursor: move; }
+    #bar { position: fixed; left: 0; right: 0; top: 0; height: 28px; display: none; align-items: center; gap: 5px; padding: 0 6px; box-sizing: border-box;
+           border-radius: 8px; background: rgba(20, 20, 24, .92); color: #eee; cursor: move; }
+    body.edit #bar { display: flex; }
+    #name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: #aaa; font-size: 11px; }
+    input[type=range] { width: 64px; cursor: default; }
+    #av { min-width: 34px; color: #bbb; font-size: 11px; }
+    button.t { border: 0; border-radius: 6px; background: rgba(255, 255, 255, .12); color: #fff; cursor: pointer; padding: 2px 8px; font: inherit; white-space: nowrap; }
+    button.t:hover { background: rgba(255, 255, 255, .22); }
+    button.t.del:hover { background: #d33; }
+    #grip { position: fixed; right: 0; bottom: 0; width: 18px; height: 18px; display: none; cursor: nwse-resize;
+            background: linear-gradient(135deg, transparent 50%, rgba(142, 203, 255, .95) 50%); border-bottom-right-radius: 6px; }
+    body.edit #grip { display: block; }
+  </style>
+</head>
+<body>
+  <div id="bar" data-tauri-drag-region>
+    <span id="name" data-tauri-drag-region></span>
+    <input type="range" id="a" min="20" max="100" step="5" title="투명도 (끝까지 올리면 불투명)" /><b id="av"></b>
+    <button class="t" id="lock" title="잠그기 — 조작 줄이 사라지고 클릭이 아래 창(게임)으로 통과해요 (풀기: 트레이 🧰 · 플레이어 ☰)">🔒 잠그기</button>
+    <button class="t del" id="del" title="이 비추기 지우기">✕</button>
+  </div>
+  <div id="area" data-tauri-drag-region><div id="msg">원본 창을 찾는 중…<br /><small>원본 창이 꺼져 있거나 최소화돼 있으면 안 보여요</small></div></div>
+  <div id="grip" title="끌어서 크기 바꾸기"></div>
+  <script src="mirror.js"></script>
+</body>
+</html>

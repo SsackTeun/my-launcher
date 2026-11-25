@@ -10,7 +10,8 @@
     "bar",
     "music",
     "unlock",
-    "cover-*"
+    "cover-*",
+    "mirror-*"
   ],
   "permissions": [
     "core:default",

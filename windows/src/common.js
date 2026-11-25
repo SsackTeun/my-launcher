@@ -99,5 +99,10 @@ if (T && ["main", "music"].includes(win().label)) {
   try {
     const cs = JSON.parse(localStorage.getItem("covers") || "{}");
     for (const [id, c] of Object.entries(cs)) if (c && c.w && c.h) invoke("cover_open", { id, x: c.x, y: c.y, w: c.w, h: c.h }).catch(() => {});
+    // 영역 비추기도 (원본 창은 같은 프로그램 · 같은 종류 창으로 다시 찾음)
+    const ms = JSON.parse(localStorage.getItem("mirrors") || "{}");
+    for (const [id, m] of Object.entries(ms)) {
+      if (m && m.cls && m.w && m.h) invoke("mirror_restore", { id, cls: m.cls, title: m.title || "", exe: m.exe || "", sx: m.sx, sy: m.sy, sw: m.sw, sh: m.sh, x: m.x, y: m.y, w: m.w, h: m.h }).catch(() => {});
+    }
   } catch { /* 없음 */ }
 }
