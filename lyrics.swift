@@ -677,6 +677,117 @@ struct LyricsStrip: View {
     }
 }
 
+// MARK: - 크게 보기 왼쪽 아래 빈칸: 지금 줄 앞뒤 몇 줄이 노래를 따라 흐름
+
+struct LyricsSide: View {
+    @ObservedObject var model: LyricsModel
+    /// 떼어 낸 작은 창 안이면 true (버튼이 '다시 붙이기')
+    var detached = false
+    var onOpenWindow: (() -> Void)?
+    /// 보여 줄 줄 수 (기본 2: 지금 줄 · 다음 줄, 0: 칸 가득)
+    @AppStorage("sideLyricsLines") private var count = 2
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                // 가사 ▾ : 몇 줄 보여 줄지
+                Menu {
+                    Picker("보여 줄 줄 수", selection: $count) {
+                        Text("2줄 (지금 · 다음)").tag(2)
+                        Text("4줄").tag(4)
+                        Text("8줄").tag(8)
+                        Text("칸 가득 (앞 줄부터)").tag(0)
+                    }
+                    .pickerStyle(.inline)
+                } label: {
+                    HStack(spacing: 3) {
+                        Text("가사").font(.system(size: 11, weight: .semibold))
+                        Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
+                    }
+                    .foregroundStyle(.secondary)
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("보여 줄 가사 줄 수")
+                Spacer(minLength: 4)
+                Button { onOpenWindow?() } label: {
+                    Image(systemName: detached ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle").font(.system(size: 11, weight: .semibold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(detached ? "크게 보기 창으로 다시 붙이기" : "이 가사 칸만 떼어 내서 따로 띄우기")
+            }
+            // 받은 칸 높이 안에서만 (줄이 많아도 칸이 커지거나 위로 넘치지 않게)
+            GeometryReader { geo in
+                TimelineView(.periodic(from: .now, by: 0.2)) { _ in
+                    lines(model.times == nil ? nil : model.currentIndex(at: model.now))
+                }
+                .frame(width: geo.size.width, height: geo.size.height, alignment: .topLeading)
+            }
+            .clipped()
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .padding(.top, detached ? 14 : 0)   // 떼어 낸 창: 닫기 단추 자리만큼
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(detached ? 0 : 0.05)))
+        .clipped()
+    }
+
+    private func blank(_ i: Int) -> Bool { model.lines[i].trimmingCharacters(in: .whitespaces).isEmpty }
+
+    @ViewBuilder
+    private func lines(_ cur: Int?) -> some View {
+        if model.status != "ok" || model.lines.isEmpty {
+            Text(model.status == "none" ? "이 곡은 가사가 없어요" : "가사 불러오는 중…")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            // 칸 가득: 지금 줄 바로 앞 한 줄부터 / 아니면 지금 줄부터 정한 줄 수만 (빈 줄은 건너뜀). 시간 없는 가사면 처음부터
+            let start: Int = {
+                guard let c = cur else { return 0 }
+                if count > 0 { return c }
+                var i = c - 1
+                while i > 0 && blank(i) { i -= 1 }
+                return max(0, i)
+            }()
+            let shown = Array(Array((start..<model.lines.count).filter { !blank($0) || $0 == cur }).prefix(count > 0 ? count : 14))
+            VStack(alignment: .leading, spacing: 5) {
+                ForEach(shown, id: \.self) { i in row(i, cur: cur).id(i) }
+            }
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .animation(.easeOut(duration: 0.3), value: cur)
+        }
+    }
+
+    @ViewBuilder
+    private func row(_ i: Int, cur: Int?) -> some View {
+        let isCur = cur == i
+        let synced = model.times != nil
+        let line = model.lines[i].trimmingCharacters(in: .whitespaces)
+        VStack(alignment: .leading, spacing: 1) {
+            Text(line.isEmpty ? "♪" : line)
+                .font(.system(size: (isCur ? 14 : 12) * model.fontScale, weight: isCur ? .bold : .regular))
+                .foregroundStyle(isCur || !synced ? Color.primary : ((cur ?? -1) > i ? Color.secondary.opacity(0.6) : Color.secondary))
+                .lineLimit(2)
+            if isCur, model.showsPron, let p = model.prons[i] {
+                Text(p).font(.system(size: 11 * model.fontScale)).foregroundStyle(.secondary).italic().lineLimit(1)
+            }
+            if isCur || !synced, let t = model.translation(for: i), t != model.lines[i] {
+                Text(t).font(.system(size: 11 * model.fontScale)).foregroundStyle(isCur ? Color.lyricTranslation : Color.secondary).lineLimit(2)
+            }
+        }
+        .transition(.asymmetric(insertion: .move(edge: .bottom).combined(with: .opacity), removal: .move(edge: .top).combined(with: .opacity)))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            // 시간 맞춤 가사면 그 줄로 이동
+            if let times = model.times, i < times.count, model.duration > 0 { model.onSeek?(times[i] / model.duration) }
+        }
+        .help(synced ? "이 줄부터 듣기" : "")
+    }
+}
+
 // MARK: - 가사 관리 (플레이어가 켜져 있으면 늘 가사를 불러옴) · 전체 가사 창
 
 @MainActor
@@ -694,6 +805,49 @@ final class LyricsController: NSObject, NSWindowDelegate {
         v.sizingOptions = []   // 칸 크기에 맞춤 (가사 길이에 따라 창이 커지지 않게)
         return v
     }()
+    /// 크게 보기 왼쪽 아래 빈칸: 노래를 따라 흐르는 가사 몇 줄 (⧉ 로 따로 창)
+    lazy var sideView: NSView = {
+        let v = NSHostingView(rootView: LyricsSide(model: model, onOpenWindow: { [weak self] in self?.detachSide() }))
+        v.sizingOptions = []
+        return v
+    }()
+    /// 가사 칸을 떼어 냈는지 바뀔 때 (크게 보기가 칸을 숨기거나 다시 보여 줌)
+    var onSideDetach: ((Bool) -> Void)?
+    private var sidePanel: NSPanel?
+    /// 가사 칸을 그 모양 그대로 작은 창으로 떼어 냄 (항상 위)
+    func detachSide() {
+        if sidePanel == nil {
+            let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 340, height: 150),
+                            styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .utilityWindow],
+                            backing: .buffered, defer: false)
+            p.title = "가사"
+            p.titleVisibility = .hidden
+            p.titlebarAppearsTransparent = true
+            p.isMovableByWindowBackground = true
+            p.isFloatingPanel = true
+            p.hidesOnDeactivate = false
+            p.isReleasedWhenClosed = false
+            p.minSize = NSSize(width: 220, height: 90)
+            let host = NSHostingView(rootView: LyricsSide(model: model, detached: true, onOpenWindow: { [weak self] in self?.attachSide() }))
+            host.sizingOptions = []
+            p.contentView = host
+            p.delegate = self
+            p.setFrameAutosaveName("LyricsSideWindow")
+            if UserDefaults.standard.string(forKey: "NSWindow Frame LyricsSideWindow") == nil { p.center() }
+            sidePanel = p
+        }
+        sidePanel?.orderFront(nil)
+        start()
+        onSideDetach?(true)
+    }
+    /// 떼어 낸 가사 창을 닫고 크게 보기로 되돌림
+    func attachSide() {
+        sidePanel?.orderOut(nil)
+        onSideDetach?(false)
+    }
+    func windowWillClose(_ notification: Notification) {
+        if (notification.object as? NSWindow) === sidePanel { onSideDetach?(false) }
+    }
     var stripHeight: CGFloat { model.stripExpanded ? LyricsStrip.expandedHeight(model.fontScale, pron: model.showsPron) : LyricsStrip.collapsedHeight }
 
     init(music: YTMusic) {

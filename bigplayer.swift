@@ -21,8 +21,37 @@ final class BigPlayerView: NSView {
     private weak var music: YTMusic?
     /// 가사 탭에 넣을 가사 줄 (도구함이 쓰는 것과 같은 것)
     private let lyricsView: NSView
+    /// 왼쪽 아래 빈칸에 노래를 따라 흐르는 가사 몇 줄 (가사 탭에선 숨김)
+    private let sideLyrics: NSView
+    /// 가사를 따로 창으로 (가사 탭 오른쪽 위 ⧉)
+    var onLyricsWindow: (() -> Void)?
+    /// 가사 칸을 떼어 내 따로 띄운 동안은 칸을 숨김
+    var sideDetached = false { didSet { needsLayout = true } }
+    private let lyricsWinBtn = NSButton()
+    /// '랜덤' 탭: 랜덤 플레이리스트 만드는 판 (따로 창과 같은 것)
+    private let randomScroll = NSScrollView()
+    private let randomDoc = FlippedView()
+    private func attachRandom() {
+        let w = RandomPlaylistWindow.shared
+        let v = w.embedded(music: music)
+        if v.superview !== randomDoc { v.removeFromSuperview(); randomDoc.addSubview(v) }
+        // 만들거나 덧붙인 뒤 플레이리스트 탭 목록도 새로
+        w.onCreated = { [weak self] _ in
+            self?.plPane.reload()
+            for t in [3.0, 8.0] { DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.plPane.reload() } }
+        }
+        layoutRandom()
+        randomScroll.contentView.scroll(to: .zero)
+    }
+    private func layoutRandom() {
+        guard let v = randomDoc.subviews.first else { return }
+        RandomPlaylistWindow.shared.fit(height: randomScroll.contentSize.height)
+        let w = max(v.frame.width, randomScroll.contentSize.width)
+        randomDoc.frame = NSRect(x: 0, y: 0, width: w, height: v.frame.height)
+        v.setFrameOrigin(NSPoint(x: (w - v.frame.width) / 2, y: 0))
+    }
     private let art = NSImageView()
-    private let tabs = NSSegmentedControl(labels: ["다음 트랙", "가사", "앨범", "플레이리스트"], trackingMode: .selectOne, target: nil, action: nil)
+    private let tabs = NSSegmentedControl(labels: ["다음 트랙", "가사", "앨범", "플레이리스트", "랜덤"], trackingMode: .selectOne, target: nil, action: nil)
     private let scroll = WheelScrollView()
     private let doc = FlippedView()
     private let status = NSTextField(labelWithString: "")
@@ -59,10 +88,32 @@ final class BigPlayerView: NSView {
 
     override var isFlipped: Bool { true }
 
-    init(music: YTMusic, lyricsView: NSView) {
+    init(music: YTMusic, lyricsView: NSView, sideLyrics: NSView) {
         self.music = music
         self.lyricsView = lyricsView
+        self.sideLyrics = sideLyrics
         super.init(frame: .zero)
+        addSubview(sideLyrics)
+        randomScroll.drawsBackground = false
+        randomScroll.hasVerticalScroller = true
+        randomScroll.autohidesScrollers = true
+        randomScroll.documentView = randomDoc
+        randomScroll.isHidden = true
+        addSubview(randomScroll)
+        // 🎲 · '랜덤 가수에 넣기' 를 누르면: 크게 보기가 열려 있으면 이 탭으로
+        RandomPlaylistWindow.shared.embedHost = { [weak self] in
+            guard let self, self.window?.isVisible == true else { return false }
+            self.tab = 4
+            self.showTab()
+            self.window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return true
+        }
+        lyricsWinBtn.image = NSImage(systemSymbolName: "macwindow", accessibilityDescription: "가사 따로 창")
+        lyricsWinBtn.isBordered = false
+        lyricsWinBtn.toolTip = "가사를 따로 창으로 띄우기"
+        lyricsWinBtn.target = self; lyricsWinBtn.action = #selector(openLyricsWindow)
+        addSubview(lyricsWinBtn)
 
         art.imageScaling = .scaleProportionallyUpOrDown
         art.wantsLayer = true
@@ -160,6 +211,18 @@ final class BigPlayerView: NSView {
         followBtn.target = self; followBtn.action = #selector(toggleFollow)
         syncFollowBtn()
         addSubview(followBtn)
+        autoBtn.controlSize = .mini
+        autoBtn.target = self; autoBtn.action = #selector(toggleAutoplay)
+        autoLabel.font = .systemFont(ofSize: 11, weight: .medium)
+        autoLabel.textColor = .secondaryLabelColor
+        syncAutoBtn()
+        addSubview(autoLabel)
+        addSubview(autoBtn)
+        autoInfo.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "자동재생 설명")
+        autoInfo.isBordered = false
+        autoInfo.contentTintColor = .tertiaryLabelColor
+        autoInfo.target = self; autoInfo.action = #selector(showAutoInfo)
+        addSubview(autoInfo)
         headLabel.font = .systemFont(ofSize: 11.5, weight: .medium)
         headLabel.textColor = .secondaryLabelColor
         headLabel.lineBreakMode = .byTruncatingTail
@@ -315,11 +378,13 @@ final class BigPlayerView: NSView {
         // 앨범 탭: 직접 고른 가수가 아니면 지금 곡의 가수를 따라감
         if tab == 2, st.title != lastTitle, !albumPinned { albumsForCurrent() }
         if tab == 3 { plPane.tickPlaying() }
-        if tab == 0 { syncQueueHover(); tickLeft() }
+        if tab == 0 { syncQueueHover(); tickLeft(); syncAutoBtn() }
         // 처음 켤 땐 페이지가 덜 떠서 목록을 못 받을 수 있어 몇 번 더
         if plPane.playlists.isEmpty, ticks % 3 == 0, ticks < 40 { plPane.reload() }
         lastTitle = st.title
     }
+
+    @objc private func openLyricsWindow() { onLyricsWindow?() }
 
     @objc private func tabChanged() {
         tab = tabs.selectedSegment
@@ -337,9 +402,15 @@ final class BigPlayerView: NSView {
         if tab == 0 { status.stringValue = items.isEmpty ? "다음 트랙을 찾지 못했어요\n곡을 재생하면 여기에 보여요" : "" }
         if tab == 1 { if lyricsView.superview !== self { addSubview(lyricsView) } } else { lyricsView.removeFromSuperview() }
         plPane.isHidden = tab != 3
+        randomScroll.isHidden = tab != 4
+        if tab == 4 { attachRandom() }
         selectBtn.isHidden = !(tab == 0 || tab == 2)
+        lyricsWinBtn.isHidden = tab != 1
         searchBtn.isHidden = tab != 0 || linked == nil
         followBtn.isHidden = tab != 0
+        autoBtn.isHidden = tab != 0
+        autoLabel.isHidden = tab != 0
+        autoInfo.isHidden = tab != 0
         if selecting && selectBtn.isHidden { setSelecting(false) }
         needsLayout = true
     }
@@ -374,6 +445,12 @@ final class BigPlayerView: NSView {
         tabs.sizeToFit()
         tabs.frame = NSRect(x: x, y: pad - 2, width: min(w - 28, max(tabs.frame.width, 160)), height: 24)
         selectBtn.frame = NSRect(x: x + w - 24, y: pad - 1, width: 24, height: 22)
+        lyricsWinBtn.frame = selectBtn.frame
+        // 왼쪽 아래 빈칸: 조작 줄 밑에서 창 아래 끝까지 (좁으면 · 가사 탭이면 숨김)
+        let sy = art.frame.maxY + Self.controlsH + 10
+        let sh = bounds.height - sy - pad
+        sideLyrics.frame = NSRect(x: art.frame.minX, y: sy, width: art.frame.width, height: max(0, sh))
+        sideLyrics.isHidden = sh < 70 || tab == 1 || sideDetached
 
         let full = NSRect(x: x - 6, y: tabs.frame.maxY + 6, width: w + 6, height: bounds.height - tabs.frame.maxY - 6 - 4)
         // 고르는 중이면 아래에 '플레이리스트에 넣기' 줄
@@ -383,12 +460,20 @@ final class BigPlayerView: NSView {
         let hb = NSRect(x: body.minX + 8, y: body.minY, width: body.width - 8, height: Self.headH)
         searchBtn.frame = NSRect(x: hb.maxX - 24, y: hb.minY, width: 22, height: Self.headH)
         followBtn.frame = NSRect(x: (searchBtn.isHidden ? hb.maxX : searchBtn.frame.minX) - 24, y: hb.minY, width: 22, height: Self.headH)
-        headLabel.frame = NSRect(x: hb.minX, y: hb.minY + 3, width: max(20, followBtn.frame.minX - hb.minX - 4), height: 16)
+        // 자동재생 [스위치] (YouTube Music 과 같은 모양)
+        let sw = autoBtn.fittingSize
+        autoBtn.frame = NSRect(x: followBtn.frame.minX - 6 - sw.width, y: hb.minY + (Self.headH - sw.height) / 2, width: sw.width, height: sw.height)
+        autoLabel.sizeToFit()
+        autoLabel.frame = NSRect(x: autoBtn.frame.minX - 4 - autoLabel.frame.width, y: hb.minY + 3, width: autoLabel.frame.width, height: 16)
+        autoInfo.frame = NSRect(x: autoLabel.frame.minX - 17, y: hb.minY + 3, width: 15, height: 16)
+        headLabel.frame = NSRect(x: hb.minX, y: hb.minY + 3, width: max(20, autoInfo.frame.minX - hb.minX - 6), height: 16)
         headLabel.isHidden = tab != 0
         var qb = body; qb.origin.y += Self.headH; qb.size.height -= Self.headH
         scroll.frame = qb
         albumScroll.frame = body
         plPane.frame = full
+        randomScroll.frame = full
+        layoutRandom()
         status.frame = NSRect(x: body.minX, y: body.midY - 9, width: body.width, height: 18)
         if lyricsView.superview === self { lyricsView.frame = body }
         layoutRows()
@@ -531,6 +616,46 @@ final class BigPlayerView: NSView {
         set { UserDefaults.standard.set(newValue, forKey: "queueFollow") }
     }
     private let followBtn = NSButton()
+    /// 자동재생 (YouTube Music '유사한 콘텐츠를 현재 재생목록 끝에 추가' 스위치)
+    private let autoBtn = NSSwitch()
+    private let autoLabel = NSTextField(labelWithString: "자동재생")
+    private let autoInfo = NSButton()
+    /// ⓘ: 자동재생이 무엇인지 짧게 (YouTube Music 의 같은 스위치)
+    @objc private func showAutoInfo() {
+        let l = NSTextField(wrappingLabelWithString: "YouTube Music 의 ‘자동재생’과 같아요.\n유사한 콘텐츠를 지금 목록 끝에 추가해요 — 켜면 목록이 끝난 뒤 비슷한 곡이 이어서 나오고, 끄면 목록이 끝나면 멈춰요.")
+        l.font = .systemFont(ofSize: 12)
+        l.preferredMaxLayoutWidth = 240
+        let size = l.fittingSize
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: size.width + 24, height: size.height + 20))
+        l.frame = NSRect(x: 12, y: 10, width: size.width, height: size.height)
+        v.addSubview(l)
+        let vc = NSViewController(); vc.view = v
+        let p = NSPopover()
+        p.contentViewController = vc
+        p.behavior = .transient
+        p.appearance = window?.appearance
+        p.show(relativeTo: autoInfo.bounds, of: autoInfo, preferredEdge: .maxY)
+    }
+    private var autoShown: Bool?
+    /// 방금 누른 뒤 잠깐은 페이지 상태가 아직 안 바뀌었을 수 있어서 고른 값으로 보여 줌
+    private var autoPendingUntil = Date.distantPast
+    private func syncAutoBtn() {
+        let on = Date() < autoPendingUntil ? (YTMusic.autoplayPref ?? false) : (music?.state?.autoplay ?? YTMusic.autoplayPref ?? false)
+        guard on != autoShown else { return }
+        autoShown = on
+        autoBtn.state = on ? .on : .off
+        let tip = "자동재생: 유사한 콘텐츠를 지금 목록 끝에 추가 — " + (on ? "켬 (목록이 끝나면 비슷한 곡을 이어서 틀어요)" : "끔 (목록이 끝나면 멈춰요)")
+        autoBtn.toolTip = tip; autoLabel.toolTip = tip
+    }
+    @objc private func toggleAutoplay() {
+        let on = autoBtn.state == .on
+        YTMusic.autoplayPref = on
+        music?.setAutoplay(on)
+        autoPendingUntil = Date().addingTimeInterval(3)
+        syncAutoBtn()
+        toast(on ? "자동재생 켬 — 목록이 끝나면 비슷한 곡을 이어서 틀어요" : "자동재생 끔 — 목록이 끝나면 멈춰요")
+        refreshQueue(after: 1.2)
+    }
     /// 다음 트랙 맨 위 고정 줄: 몇 곡 중 몇 번째 · 남은 시간 (오른쪽에 따라가기 · 검색)
     private let headLabel = NSTextField(labelWithString: "")
     private static let headH: CGFloat = 22
@@ -811,6 +936,8 @@ final class BigPlayerView: NSView {
         m.addItem(.separator())
         m.addItem(MenuAction("이 곡의 앨범, 이 곡부터 재생") { [weak self] in self?.playAlbum(item, fromSong: true) })
         m.addItem(MenuAction("이 곡의 앨범, 처음부터 재생") { [weak self] in self?.playAlbum(item, fromSong: false) })
+        m.addItem(MenuAction("이 곡의 앨범을 지금 곡 다음에 넣기") { [weak self] in self?.queueAlbumOf(item, next: true) })
+        m.addItem(MenuAction("이 곡의 앨범을 다음 트랙 끝에 이어 붙이기") { [weak self] in self?.queueAlbumOf(item, next: false) })
         if !item.artistId.isEmpty {
             m.addItem(.separator())
             m.addItem(MenuAction("‘\(item.artist)’ 앨범 모두 보기") { [weak self] in self?.showAlbums(artistId: item.artistId) })
@@ -836,6 +963,29 @@ final class BigPlayerView: NSView {
             m.addItem(add)
         }
         return m
+    }
+
+    /// 앨범 수록곡을 다음 트랙에 (지금 곡 다음 · 끝에) — 지금 듣는 목록은 그대로, 플레이리스트엔 안 들어감
+    private func queueAlbum(id: String, name: String, next: Bool) {
+        toast("‘\(name)’ 수록곡 읽는 중…", stay: true)
+        music?.albumTracks(id: id) { [weak self] _, ts in
+            guard let self else { return }
+            let vids = ts.map(\.videoId).filter { !$0.isEmpty }
+            guard !vids.isEmpty else { self.toast("수록곡을 찾지 못했어요"); return }
+            self.music?.queueInsert(vids, afterCurrent: next) { [weak self] n in
+                self?.toast(n > 0 ? "‘\(name)’ \(n)곡을 \(next ? "지금 곡 다음에" : "다음 트랙 끝에") 넣었어요" : "다음 트랙에 넣지 못했어요")
+                self?.refreshQueue(after: 0.3)
+            }
+        }
+    }
+
+    private func queueAlbumOf(_ item: QueueItem, next: Bool) {
+        toast("‘\(item.title)’ 앨범 찾는 중…", stay: true)
+        music?.findAlbum(item) { [weak self] a in
+            guard let self else { return }
+            guard let a, !a.albumId.isEmpty else { self.toast("이 곡은 앨범을 찾지 못했어요 (라이브 · 커버 영상 등)"); return }
+            self.queueAlbum(id: a.albumId, name: a.name.isEmpty ? "앨범" : a.name, next: next)
+        }
     }
 
     private func playAlbum(_ item: QueueItem, fromSong: Bool) {
@@ -970,6 +1120,9 @@ final class BigPlayerView: NSView {
                 let m = NSMenu()
                 m.addItem(MenuAction("처음부터 재생") { self?.playAlbumEntry(a) })
                 m.addItem(MenuAction(self?.expanded.contains(a.id) == true ? "수록곡 접기" : "수록곡 보기") { self?.toggleExpand(a) })
+                m.addItem(.separator())
+                m.addItem(MenuAction("지금 곡 다음에 넣기 (다음 트랙)") { self?.queueAlbum(id: a.id, name: a.title, next: true) })
+                m.addItem(MenuAction("다음 트랙 끝에 이어 붙이기") { self?.queueAlbum(id: a.id, name: a.title, next: false) })
                 let add = NSMenuItem(title: "플레이리스트에 앨범 넣기", action: nil, keyEquivalent: "")
                 add.submenu = self?.addMenu(vids: [], albums: [a.id])
                 m.addItem(add)

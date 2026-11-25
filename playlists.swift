@@ -18,6 +18,9 @@ struct PlaylistTrack: Equatable {
     let thumb: String
     /// 가수 페이지 ID (UC…) — 가수 링크가 있을 때만
     var artistId = ""
+    /// 앨범 이름 · 앨범 페이지 ID (MPRE…) — 노래일 때만 (영상은 비어 있음)
+    var album = ""
+    var albumId = ""
 }
 
 /// 플레이리스트 전체 곡 수 (다음 트랙이 50곡씩만 불러와서, 전체가 몇 곡인지 보여 줄 때 씀)
@@ -101,8 +104,11 @@ extension YTMusic {
             const th = ((i.thumbnail && i.thumbnail.musicThumbnailRenderer && i.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails) || []).slice(-1)[0];
             const ar = ((i.flexColumns[1] && i.flexColumns[1].musicResponsiveListItemFlexColumnRenderer.text.runs) || [])
               .map(x => x.navigationEndpoint && x.navigationEndpoint.browseEndpoint && x.navigationEndpoint.browseEndpoint.browseId).find(x => x && x.startsWith('UC')) || '';
+            const alRuns = (i.flexColumns[2] && i.flexColumns[2].musicResponsiveListItemFlexColumnRenderer.text.runs) || [];
+            const al = alRuns.find(x => x.navigationEndpoint && x.navigationEndpoint.browseEndpoint && /^MPRE/.test(x.navigationEndpoint.browseEndpoint.browseId || ''));
             out.push({t: txt(i.flexColumns[0]), a: txt(i.flexColumns[1]), d: fx ? (fx.text.runs || [{}])[0].text || '' : '',
-                      v: d.videoId, s: d.playlistSetVideoId, th: th ? th.url : '', ar});
+                      v: d.videoId, s: d.playlistSetVideoId, th: th ? th.url : '', ar,
+                      al: al ? al.text : '', alid: al ? al.navigationEndpoint.browseEndpoint.browseId : ''});
           }
           const tok = nextToken(j); if (!tok) break;
           j = await api('browse', {continuation: tok});
@@ -116,7 +122,7 @@ extension YTMusic {
                 guard seen.insert(s).inserted else { return nil }
                 return PlaylistTrack(title: $0["t"] as? String ?? "", artist: $0["a"] as? String ?? "", duration: $0["d"] as? String ?? "",
                                      videoId: $0["v"] as? String ?? "", setId: s, thumb: $0["th"] as? String ?? "",
-                                     artistId: $0["ar"] as? String ?? "")
+                                     artistId: $0["ar"] as? String ?? "", album: $0["al"] as? String ?? "", albumId: $0["alid"] as? String ?? "")
             })
         }
     }
@@ -184,7 +190,12 @@ final class PlaylistPane: NSView {
     private let newBtn = NSButton()
     private let renameBtn = NSButton()
     private let delBtn = NSButton()
-    private let randBtn = NSButton()
+    private let groupBtn = NSButton()
+    /// 앨범별로 묶어 보기 (이어진 같은 앨범 곡들 위에 머리줄)
+    static var groupByAlbum: Bool {
+        get { UserDefaults.standard.bool(forKey: "plGroupAlbum") }
+        set { UserDefaults.standard.set(newValue, forKey: "plGroupAlbum") }
+    }
     private let undoBtn = NSButton(title: "되돌리기", target: nil, action: nil)
     private let scroll = NSScrollView()
     private let doc = FlippedView()
@@ -192,7 +203,7 @@ final class PlaylistPane: NSView {
     private var lists: [PlaylistInfo] = []
     private(set) var tracks: [PlaylistTrack] = []
     /// 방금 뺀 곡 (되돌리기용: 그 곡 · 원래 뒤에 있던 곡)
-    private var removed: (PlaylistTrack, String?)?
+    private var removed: [(track: PlaylistTrack, after: String?)]?
     var toast: ((String) -> Void)?
 
     static var selectedId: String {
@@ -214,12 +225,13 @@ final class PlaylistPane: NSView {
                                    (newBtn, "plus.circle", "새 플레이리스트", #selector(newList)),
                                    (renameBtn, "pencil", "이 플레이리스트 이름 바꾸기", #selector(renameList)),
                                    (delBtn, "trash", "플레이리스트 지우기 (여러 개 골라서)", #selector(deleteList)),
-                                   (randBtn, "dice", "랜덤 플레이리스트 만들기 (가수 · 비중 · 곡 수 · 시간)", #selector(openRandom))] {
+                                   (groupBtn, "square.stack.3d.up", "앨범별로 묶어 보기", #selector(toggleGroup))] {
             b.image = NSImage(systemSymbolName: sym, accessibilityDescription: tip)
             b.isBordered = false; b.toolTip = tip; b.target = self; b.action = act
             b.symbolConfiguration = .init(pointSize: 16, weight: .regular)
             addSubview(b)
         }
+        syncGroupBtn()
         undoBtn.isBordered = false
         undoBtn.font = .systemFont(ofSize: 11, weight: .medium)
         undoBtn.contentTintColor = .launcherAccent
@@ -245,8 +257,8 @@ final class PlaylistPane: NSView {
         delBtn.frame = NSRect(x: w - 26, y: 2, width: 24, height: 24)
         renameBtn.frame = NSRect(x: delBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         newBtn.frame = NSRect(x: renameBtn.frame.minX - 26, y: 2, width: 24, height: 24)
-        randBtn.frame = NSRect(x: newBtn.frame.minX - 26, y: 2, width: 24, height: 24)
-        playBtn.frame = NSRect(x: randBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        groupBtn.frame = NSRect(x: newBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        playBtn.frame = NSRect(x: groupBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         undoBtn.frame = NSRect(x: playBtn.frame.minX - uw, y: 5, width: uw - 6, height: 18)
         picker.frame = NSRect(x: 4, y: 2, width: max(80, playBtn.frame.minX - uw - 10), height: 24)
         scroll.frame = NSRect(x: 0, y: 32, width: w, height: bounds.height - 32)
@@ -331,12 +343,30 @@ final class PlaylistPane: NSView {
         doc.subviews.forEach { $0.removeFromSuperview() }
         let playingHere = music?.state?.listId == Self.selectedId
         let nowVid = music?.state?.videoId ?? ""
-        for (i, t) in ts.enumerated() {
-            let r = PlaylistRow(t, index: i)
+        let grouped = Self.groupByAlbum
+        var i = 0
+        while i < ts.count {
+            // 앨범별: 이어진 같은 앨범 곡들 위에 머리줄 (이름 · 곡 수 · 시간 · ▶ · ⊖)
+            if grouped {
+                var j = i
+                while j + 1 < ts.count && ts[j + 1].album == ts[i].album && ts[j + 1].albumId == ts[i].albumId { j += 1 }
+                let group = Array(ts[i...j])
+                let h = AlbumGroupHead(title: ts[i].album.isEmpty ? "앨범 정보 없음 (영상 등)" : ts[i].album,
+                                       detail: "\(group.count)곡 · \(Self.total(group))")
+                h.onPlay = { [weak self] in self?.play(from: group[0]) }
+                h.onRemove = { [weak self] in self?.removeGroup(group) }
+                doc.addSubview(h)
+                for k in i...j { addRow(ts[k], k, drag: false) }
+                i = j + 1
+            } else { addRow(ts[i], i, drag: true); i += 1 }
+        }
+        func addRow(_ t: PlaylistTrack, _ k: Int, drag: Bool) {
+            let r = PlaylistRow(t, index: k)
             if playingHere && t.videoId == nowVid { r.markPlaying() }
             r.onPlay = { [weak self] in self?.play(from: t) }
             r.onRemove = { [weak self] in self?.remove(t) }
-            r.onDrag = { [weak self] row, y, done in self?.dragging(row, y: y, done: done) }
+            // 묶어 볼 땐 끌어서 옮기기 끔 (머리줄이 섞여 자리 계산이 어긋남)
+            if drag { r.onDrag = { [weak self] row, y, done in self?.dragging(row, y: y, done: done) } }
             doc.addSubview(r)
         }
         status.stringValue = ts.isEmpty ? "빈 플레이리스트예요\n다음 트랙 · 앨범에서 곡을 넣어 보세요" : ""
@@ -347,12 +377,14 @@ final class PlaylistPane: NSView {
     private func stack() {
         guard dragRow == nil else { return }   // 끄는 중엔 줄 자리를 되돌리지 않음
         let w = scroll.contentSize.width
-        let rows = doc.subviews.compactMap { $0 as? PlaylistRow }   // 끌 때 나오는 선은 빼고
-        for (i, r) in rows.enumerated() {
-            r.frame = NSRect(x: 0, y: CGFloat(i) * PlaylistRow.rowH, width: w, height: PlaylistRow.rowH)
-            r.needsLayout = true
+        var y: CGFloat = 0
+        for v in doc.subviews {
+            let h: CGFloat = v is AlbumGroupHead ? AlbumGroupHead.height : PlaylistRow.rowH
+            v.frame = NSRect(x: 0, y: y, width: w, height: h)
+            v.needsLayout = true
+            y += h
         }
-        doc.frame = NSRect(x: 0, y: 0, width: w, height: CGFloat(rows.count) * PlaylistRow.rowH)
+        doc.frame = NSRect(x: 0, y: 0, width: w, height: y)
     }
 
     // MARK: 조작
@@ -397,20 +429,6 @@ final class PlaylistPane: NSView {
                 self.toast?("‘\(name)’ 플레이리스트를 만들었어요")
                 self.reload()
             }
-        }
-    }
-
-    /// 🎲 랜덤 플레이리스트 창 (지금 곡의 가수를 먼저 넣어 둠)
-    @objc private func openRandom() {
-        let w = RandomPlaylistWindow.shared
-        // 만들거나 덧붙인 뒤: 서버 목록이 늦게 바뀌어서 바로 · 3초 · 8초 뒤에 다시 받음
-        w.onCreated = { [weak self] _ in
-            self?.reload()
-            for t in [3.0, 8.0] { DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.reload() } }
-        }
-        music?.currentArtistId { [weak self] id in
-            let name = self?.music?.state?.byline.components(separatedBy: " • ").first ?? ""
-            w.show(music: self?.music, start: id.map { ArtistHit(id: $0, name: name) })
         }
     }
 
@@ -499,7 +517,7 @@ final class PlaylistPane: NSView {
         music?.removeFromPlaylist(id, t) { [weak self] ok in
             guard let self else { return }
             if ok {
-                self.removed = (t, after)
+                self.removed = [(t, after)]
                 self.undoBtn.title = "‘\(t.title.prefix(12))’ 되돌리기"
                 self.undoBtn.isHidden = false
                 self.needsLayout = true
@@ -507,18 +525,59 @@ final class PlaylistPane: NSView {
         }
     }
 
+    /// 앨범째 빼기: 화면에서 바로 빼고 플레이리스트에선 한 번에 (되돌리기 가능)
+    private func removeGroup(_ group: [PlaylistTrack]) {
+        let id = Self.selectedId
+        let gone = Set(group.map(\.setId))
+        let entries: [(track: PlaylistTrack, after: String?)] = tracks.enumerated().compactMap { k, t in
+            gone.contains(t.setId) ? (t, k + 1 < tracks.count ? tracks[k + 1].setId : nil) : nil
+        }
+        show(tracks.filter { !gone.contains($0.setId) })
+        music?.removeManyFromPlaylist(id, group.map { ($0.setId, $0.videoId) }) { [weak self] ok in
+            guard let self else { return }
+            guard ok else { self.toast?("빼지 못했어요"); self.loadTracks(); return }
+            self.removed = entries
+            let name = group[0].album.isEmpty ? "\(group.count)곡" : "‘\(group[0].album.prefix(12))’"
+            self.undoBtn.title = "\(name) 되돌리기"
+            self.undoBtn.isHidden = false
+            self.needsLayout = true
+        }
+    }
+
     @objc private func undo() {
-        guard let (t, after) = removed else { return }
+        guard let entries = removed, !entries.isEmpty else { return }
         let id = Self.selectedId
         removed = nil; undoBtn.isHidden = true; needsLayout = true
-        // 다시 넣으면 맨 끝에 붙어서, 새 자리 ID 를 찾아 원래 자리(뒤에 있던 곡 앞)로 옮김
-        music?.addToPlaylist(id, videoIds: [t.videoId]) { [weak self] ok in
-            guard let self, ok else { self?.toast?("되돌리지 못했어요"); return }
-            self.music?.playlistTracks(id) { ts in
-                guard let ts, let back = ts.last(where: { $0.videoId == t.videoId }) else { self.loadTracks(); return }
-                self.music?.moveInPlaylist(id, setId: back.setId, before: after) { _ in self.loadTracks() }
+        // 다시 넣으면 맨 끝에 붙어서, 새 자리 ID 로 뒤 곡부터 원래 자리(뒤에 있던 곡 앞)로 옮김
+        music?.addToPlaylistIds(id, videoIds: entries.map(\.track.videoId)) { [weak self] m in
+            guard let self else { return }
+            guard let m, !m.isEmpty else { self.toast?("되돌리지 못했어요"); self.loadTracks(); return }
+            var newSid: [String: String] = [:]   // 옛 자리 ID → 새 자리 ID
+            for e in entries { if let s = m[e.track.videoId] { newSid[e.track.setId] = s } }
+            let order = Array(entries.reversed())
+            @MainActor func move(_ i: Int) {
+                guard i < order.count else { self.loadTracks(); return }
+                let e = order[i]
+                guard let sid = newSid[e.track.setId] else { move(i + 1); return }
+                self.music?.moveInPlaylist(id, setId: sid, before: e.after.map { newSid[$0] ?? $0 }) { _ in move(i + 1) }
             }
+            move(0)
         }
+    }
+
+    @objc private func toggleGroup() {
+        Self.groupByAlbum.toggle()
+        syncGroupBtn()
+        show(tracks)
+    }
+    private func syncGroupBtn() {
+        groupBtn.contentTintColor = Self.groupByAlbum ? .launcherAccent : nil
+        groupBtn.toolTip = Self.groupByAlbum ? "앨범별로 묶어 보는 중 — 누르면 곡만 (끌어서 순서 바꾸기는 곡만 볼 때)" : "앨범별로 묶어 보기 (앨범째 재생 · 빼기)"
+    }
+    /// 곡들 길이 합 '1:02:03' · '23:45'
+    static func total(_ ts: [PlaylistTrack]) -> String {
+        let s = ts.reduce(0) { a, t in a + t.duration.split(separator: ":").reduce(0) { $0 * 60 + (Int($1) ?? 0) } }
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s % 3600 / 60, s % 60) : String(format: "%d:%02d", s / 60, s % 60)
     }
 
     // MARK: 끌어서 순서 바꾸기 (다음 트랙과 같은 방식: 잡은 줄이 마우스를 따라오고 다른 줄이 비켜 줌)
@@ -673,4 +732,49 @@ final class PlaylistRow: NSView {
         if moved { NSCursor.arrow.set(); onDrag?(self, event.locationInWindow.y, true) }
         else if bounds.contains(convert(event.locationInWindow, from: nil)) { onPlay?() }
     }
+}
+
+/// 앨범별로 묶어 볼 때 앨범 머리줄: 앨범 이름 · 곡 수 · 시간 · ▶ 여기부터 재생 · ⊖ 앨범째 빼기
+@MainActor
+final class AlbumGroupHead: NSView {
+    static let height: CGFloat = 30
+    var onPlay: (() -> Void)?
+    var onRemove: (() -> Void)?
+    private let name: NSTextField, info: NSTextField
+    private let play = NSButton(), minus = NSButton()
+    override var isFlipped: Bool { true }
+    init(title: String, detail: String) {
+        name = NSTextField(labelWithString: title)
+        info = NSTextField(labelWithString: detail)
+        super.init(frame: .zero)
+        name.font = .systemFont(ofSize: 12, weight: .semibold)
+        name.lineBreakMode = .byTruncatingTail
+        name.toolTip = title
+        info.font = .systemFont(ofSize: 11)
+        info.textColor = .secondaryLabelColor
+        for v in [name, info] { addSubview(v) }
+        for (b, sym, tip, act) in [(play, "play.circle", "이 앨범부터 재생", #selector(playTapped)),
+                                   (minus, "minus.circle", "이 앨범 곡을 모두 플레이리스트에서 빼기 (되돌리기 가능)", #selector(removeTapped))] {
+            b.image = NSImage(systemSymbolName: sym, accessibilityDescription: tip)
+            b.isBordered = false; b.toolTip = tip; b.target = self; b.action = act
+            b.contentTintColor = b === minus ? .systemRed : .secondaryLabelColor
+            addSubview(b)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layout() {
+        super.layout()
+        let w = bounds.width
+        minus.frame = NSRect(x: w - 30, y: 6, width: 20, height: 20)
+        play.frame = NSRect(x: w - 54, y: 6, width: 20, height: 20)
+        info.sizeToFit()
+        info.frame = NSRect(x: play.frame.minX - 6 - info.frame.width, y: 9, width: info.frame.width, height: 15)
+        name.frame = NSRect(x: 8, y: 8, width: max(40, info.frame.minX - 16), height: 17)
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.labelColor.withAlphaComponent(0.06).setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 3), xRadius: 6, yRadius: 6).fill()
+    }
+    @objc private func playTapped() { onPlay?() }
+    @objc private func removeTapped() { onRemove?() }
 }

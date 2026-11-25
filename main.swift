@@ -1746,7 +1746,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return b
     }()
     lazy var bigPlayer: BigPlayerView = {
-        let v = BigPlayerView(music: music, lyricsView: lyrics.tabView)
+        let v = BigPlayerView(music: music, lyricsView: lyrics.tabView, sideLyrics: lyrics.sideView)
+        v.onLyricsWindow = { [unowned self] in lyrics.show() }
+        lyrics.onSideDetach = { [weak v] d in v?.sideDetached = d }
         v.onVolume = { [unowned self] b in playerBar.showVolume(from: b) }
         v.onNudge = { [unowned self] d in playerBar.nudgeVolume(d) }
         return v

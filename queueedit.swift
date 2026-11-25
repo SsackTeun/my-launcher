@@ -55,7 +55,8 @@ extension YTMusic {
     }
 
     /// 곡들을 대기열 at 번째 자리에 넣기 (nil 이면 맨 끝 · 자동재생 곡 앞). setIds 가 있으면 플레이리스트 자리 ID 도 붙여 둠 (나중에 뺄 수 있게)
-    func queueInsert(_ vids: [String], setIds: [String] = [], at: Int? = nil, done: @escaping (Int) -> Void) {
+    /// afterCurrent: 지금 곡 바로 다음 자리에 (at 대신)
+    func queueInsert(_ vids: [String], setIds: [String] = [], at: Int? = nil, afterCurrent: Bool = false, done: @escaping (Int) -> Void) {
         runAPIPublic(Self.queueCtl + """
         if (!QQ || !vids.length) return 0;
         const j = await api('music/get_queue', {videoIds: vids});
@@ -63,10 +64,11 @@ extension YTMusic {
         items.forEach((c, k) => { const r = R(c); if (r && sids[k]) r.playlistSetVideoId = sids[k]; });
         if (!items.length) return 0;
         const n = QQ.getItems().length;
-        const idx = (at === null || at < 0 || at > n) ? n : at;
+        const cur = afterCurrent && QQ.getCurrentItemIndex ? QQ.getCurrentItemIndex() : -1;
+        const idx = cur >= 0 ? Math.min(n, cur + 1) : (at === null || at < 0 || at > n) ? n : at;
         QQ.store.dispatch({type: 'ADD_ITEMS', payload: {nextQueueItemId: QQ.store.getState().queue.nextQueueItemId, index: idx, items, shouldAssignIds: true}});
         return QQ.getItems().length - n;
-        """, ["vids": vids, "sids": setIds, "at": at.map { $0 as Any } ?? NSNull()]) { done(($0 as? Int) ?? Int(($0 as? Double) ?? 0)) }
+        """, ["vids": vids, "sids": setIds, "at": at.map { $0 as Any } ?? NSNull(), "afterCurrent": afterCurrent]) { done(($0 as? Int) ?? Int(($0 as? Double) ?? 0)) }
     }
 
     /// 다음 트랙에 붙인 곡(자리 ID 없는 것)에 플레이리스트 자리 ID 를 붙여 둠 (나중에 빼기 · 옮기기용)

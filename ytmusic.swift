@@ -21,6 +21,8 @@ struct PlayerState {
     /// 지금 틀고 있는 플레이리스트 ID (주소의 list=…) · 곡 ID (v=…)
     var listId = ""
     var videoId = ""
+    /// YouTube Music 다음 트랙 아래 '자동재생' 스위치 (못 찾으면 nil)
+    var autoplay: Bool?
     var has: Set<String> = ["prev", "playPause", "next", "like", "dislike", "shuffle", "repeat", "mute", "progress", "volume"]
     var repeatOn: Bool { repeatLabel == "ALL" || repeatLabel == "ONE" }
     var repeatOne: Bool { repeatLabel == "ONE" }
@@ -219,7 +221,8 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
           }
           return Object.keys(n).sort((a, b) => n[b] - n[a])[0] || '';
         })(),
-        vid: new URLSearchParams(location.search).get('v') || ''
+        vid: new URLSearchParams(location.search).get('v') || '',
+        automix: (() => { const t = document.querySelector('#automix'); return t ? !!t.checked : null; })()
       });
     })()
     """
@@ -260,7 +263,12 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         auto31Tick()
         // 내 플레이리스트 · 앨범을 듣는 중이면 자동재생을 계속 꺼 둠 (목록이 끝난 뒤 다른 가수 곡이 이어지지 않게)
         //   — 처음 틀 때 한 번만 껐더니, 중간에 다시 켜지면 목록 뒤에 섞인 곡이 붙었음. 믹스(RD…)는 원래 이어지는 거라 그대로
-        if eqTick % 5 == 0, let l = state?.listId, l.hasPrefix("PL") || l.hasPrefix("OLAK") { setAutoplay(false) }
+        //   사용자가 자동재생을 직접 켜거나 껐으면(크게 보기 다음 트랙 ∞) 어떤 목록이든 그 값을 지킴
+        if eqTick % 5 == 0 {
+            if let want = Self.autoplayPref {
+                if let now = state?.autoplay, now != want { setAutoplay(want) }
+            } else if let l = state?.listId, l.hasPrefix("PL") || l.hasPrefix("OLAK") { setAutoplay(false) }
+        }
         // 진단: 소리 보정 팝업 열기
         if UserDefaults.standard.bool(forKey: "ytmOpenEQ") {
             UserDefaults.standard.set(false, forKey: "ytmOpenEQ")
@@ -353,6 +361,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
                     st.listId = l.isEmpty ? (UserDefaults.standard.string(forKey: "ytmLastList") ?? "") : l
                     if !l.isEmpty { UserDefaults.standard.set(l, forKey: "ytmLastList") }
                     st.videoId = o["vid"] as? String ?? ""
+                    st.autoplay = o["automix"] as? Bool
                     // 모바일 화면에선 좋아요 · 반복 · 셔플 버튼을 못 찾을 수 있어서 기본 조작만
                     if o["mobile"] as? Bool == true { st.has = ["prev", "playPause", "next", "mute", "progress", "volume"] }
                 } else {
@@ -914,7 +923,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         wv.load(URLRequest(url: u))
         // 페이지가 다 뜨는 시간이 들쭉날쭉해서 몇 번 확인
         for t in [3.0, 6.0, 10.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.setAutoplay(false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.setAutoplay(Self.autoplayPref ?? false) }
         }
     }
 
@@ -923,8 +932,14 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         guard let wv = webView, let u = URL(string: "https://music.youtube.com/watch?v=\(vid)") else { return }
         wv.load(URLRequest(url: u))
         for t in [3.0, 6.0, 10.0] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.setAutoplay(false) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.setAutoplay(Self.autoplayPref ?? false) }
         }
+    }
+
+    /// 사용자가 고른 자동재생 (nil: 아직 안 고름 — 플레이리스트 · 앨범이면 끔, 믹스는 그대로)
+    static var autoplayPref: Bool? {
+        get { UserDefaults.standard.object(forKey: "ytmAutoplay") as? Bool }
+        set { UserDefaults.standard.set(newValue, forKey: "ytmAutoplay") }
     }
 
     /// 다음 트랙 아래 '자동재생' 스위치

@@ -260,14 +260,59 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
     private var rec: Rec?
     private var recHits: [ArtistHit] = []
 
+    /// 만드는 판 (따로 창 · 크게 보기 '랜덤' 탭이 같이 씀 — 한 번에 한 곳에만 붙음)
+    private(set) var content: NSView?
+    /// 크게 보기가 열려 있으면 '랜덤' 탭에서 보여 줌 (보여 줬으면 true) — 아니면 따로 창
+    var embedHost: (() -> Bool)?
+
     func show(music: YTMusic?, start: ArtistHit? = nil) {
+        prepare(music: music)
+        if let a = start, !picks.contains(where: { $0.artist.id == a.id }) { add(a) }
+        if embedHost?() == true { panel?.orderOut(nil); return }
+        if let v = content, panel?.contentView !== v { v.removeFromSuperview(); unfit(); panel?.contentView = v }
+        panel?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// 크게 보기 '랜덤' 탭: 판을 꺼내 줌 (따로 창은 닫음)
+    func embedded(music: YTMusic?) -> NSView {
+        prepare(music: music)
+        panel?.orderOut(nil)
+        return content!
+    }
+
+    /// 크게 보기 탭에선 칸 높이에 맞춰 늘림: 위(가수 찾기 · 장르)와 아래(얼마나 · 어디에 · 만들기)는 그대로,
+    /// 남는 높이는 추천 가수 칸과 고른 가수 목록이 절반씩 (따로 창은 원래 크기)
+    private var baseFrames: [ObjectIdentifier: NSRect] = [:]
+    private static let baseH: CGFloat = 616
+    func fit(height: CGFloat) {
+        guard let v = content else { return }
+        if baseFrames.isEmpty { for s in v.subviews { baseFrames[ObjectIdentifier(s)] = s.frame } }
+        let extra = max(0, height - Self.baseH)
+        let recExtra = (extra / 2).rounded(), listExtra = extra - recExtra
+        v.setFrameSize(NSSize(width: v.frame.width, height: Self.baseH + extra))
+        let recBase = baseFrames[ObjectIdentifier(recScroll)] ?? recScroll.frame
+        let listBase = baseFrames[ObjectIdentifier(listScroll)] ?? listScroll.frame
+        for s in v.subviews {
+            guard var f = baseFrames[ObjectIdentifier(s)] else { continue }
+            if s === recScroll { f.origin.y += listExtra; f.size.height += recExtra }
+            else if s === listScroll { f.size.height += listExtra }
+            else if f.minY >= recBase.maxY { f.origin.y += extra }              // 맨 위 줄들
+            else if f.minY >= listBase.maxY { f.origin.y += listExtra }         // 추천 칸과 목록 사이 안내 글
+            s.frame = f
+        }
+        // 칸이 커졌으면 안의 내용(위에서부터 그린 것)도 칸 높이만큼
+        recDoc.setFrameSize(NSSize(width: recDoc.frame.width, height: max(recDoc.frame.height, recScroll.contentSize.height)))
+        list.setFrameSize(NSSize(width: list.frame.width, height: max(list.frame.height, listScroll.contentSize.height)))
+    }
+    /// 따로 창으로 돌아갈 땐 원래 크기
+    private func unfit() { if !baseFrames.isEmpty { fit(height: Self.baseH) } }
+
+    private func prepare(music: YTMusic?) {
         self.music = music
         if panel == nil { build() }
         loadTargets()
         loadGenres()
-        if let a = start, !picks.contains(where: { $0.artist.id == a.id }) { add(a) }
-        panel?.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
     }
 
     private func build() {
@@ -375,6 +420,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         hint.frame = NSRect(x: 16, y: 22, width: W - 170, height: 14)
         v.addSubview(hint)
         p.contentView = v
+        content = v
         panel = p
         relist()
     }
