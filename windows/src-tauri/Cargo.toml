@@ -1,6 +1,6 @@
 [package]
 name = "my-launcher"
-version = "0.4.7"
+version = "0.4.8"
 description = "도구함 (Windows) — 내 앱들을 카테고리별로 모아 실행하는 런처"
 edition = "2021"
 

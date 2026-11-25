@@ -306,7 +306,9 @@
     z-index: 2147483645 !important; background: #000 !important; }
   html.ytmini:not(.ytmini-s) body *:has(#movie_player), html.ytmini.ytmini-s body *:has(#shorts-player),
   html.ytmini:not(.ytmini-s) #movie_player, html.ytmini.ytmini-s #shorts-player, html.ytmini .html5-video-container {
-    overflow: visible !important; clip-path: none !important; transform: none !important; contain: none !important; filter: none !important; will-change: auto !important; }
+    clip-path: none !important; transform: none !important; contain: none !important; filter: none !important; will-change: auto !important; }
+  /* 쇼츠는 스크롤 상자로 넘기므로 overflow 를 건드리면 다음 쇼츠로 안 넘어감 (fixed 영상은 overflow 에 안 잘림) */
+  html.ytmini:not(.ytmini-s) body *:has(#movie_player), html.ytmini:not(.ytmini-s) #movie_player, html.ytmini:not(.ytmini-s) .html5-video-container { overflow: visible !important; }
   html.ytmini .ytp-caption-window-container { visibility: visible !important; z-index: 2147483646 !important; position: absolute !important; inset: 0 !important; pointer-events: none !important; }
   html.ytmini .ytp-caption-window-container * { visibility: visible !important; }`;
   const NF_CSS = `
