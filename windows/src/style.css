@@ -359,7 +359,7 @@ body.music #app { height: 100vh; }
 .mz-h { font-weight: 700; font-size: 15px; margin: 4px 2px 8px; }
 .mz-sec { font-size: 12px; color: var(--sub); font-weight: 600; margin: 12px 2px 6px; }
 
-/* 곡 줄 (다음 트랙 · 재생목록) */
+/* 곡 줄 (다음 트랙 · 플레이리스트) */
 .mz-row { position: relative; display: flex; align-items: center; gap: 10px; padding: 5px 8px; border-radius: 8px; cursor: pointer; }
 .mz-row:hover { background: var(--hover); }
 .mz-row.cur { background: var(--select); }
@@ -394,7 +394,7 @@ body.music #app { height: 100vh; }
 .mz-tracks .mz-note { padding: 2px 8px 4px; font-size: 11px; color: var(--sub); }
 .mz-tracks .mz-note small { color: var(--faint); }
 
-/* 재생목록 */
+/* 플레이리스트 */
 .mz-pl { display: flex; height: 100%; gap: 10px; }
 .mz-pl-side { width: 220px; flex: 0 0 auto; display: flex; flex-direction: column; border-right: 1px solid var(--line); padding-right: 8px; min-height: 0; }
 .mz-pl-tools { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
@@ -410,7 +410,7 @@ body.music #app { height: 100vh; }
 .mz-pl-head small { color: var(--sub); }
 .mz-pl-tracks { overflow-y: auto; flex: 1; }
 
-/* 랜덤 재생목록 */
+/* 랜덤 플레이리스트 */
 .mz-rand { max-width: 560px; display: flex; flex-direction: column; gap: 10px; padding: 4px; }
 .mz-rand input[type=search], .mz-rand input[type=text], .mz-rand input[type=number], .mz-rand select {
   font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 5px 9px; outline: 0; }
@@ -582,3 +582,29 @@ body.host .settings { flex: 1; min-height: 0; }
 .upd-bar button { border: 0; border-radius: 6px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .upd-bar .upd-go { background: var(--orange, #f0a030); color: #fff; font-weight: 600; }
 .upd-bar .upd-later { background: transparent; color: var(--sub, #aaa); }
+
+/* 다음 트랙: 위 고정 줄 오른쪽 아이콘 (🔍 검색해서 넣기 · ◎ 지금 곡 따라가기) · 내 플레이리스트와 연결 안내 */
+.mz-body { position: relative; }
+.mz-qhead { display: flex; align-items: center; gap: 4px; }
+.mz-qtext { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mz-qbtn { flex: 0 0 auto; width: 24px; height: 22px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--faint); cursor: pointer; display: grid; place-items: center; }
+.mz-qbtn svg { width: 14px; height: 14px; }
+.mz-qbtn:hover { background: var(--hover); color: var(--text); }
+.mz-qbtn.on { color: var(--accent); }
+.mz-qlink { display: flex; align-items: center; gap: 6px; margin: 0 2px 6px; padding: 5px 8px; border-radius: 7px; font-size: 11px; color: var(--sub); background: var(--panel); }
+.mz-qlink .pl-open { padding: 2px 10px; font-size: 11px; }
+/* 빼기: 접히며 흐려짐 · 끌어서 옮기기: 잡은 줄은 떠오르고 다른 줄이 비켜 줌 */
+.mz-row.gone { height: 0 !important; padding-top: 0; padding-bottom: 0; opacity: 0; overflow: hidden; transition: height .18s, padding .18s, opacity .15s; }
+.mz-row.mov { touch-action: none; }
+.mz-body.qdrag { user-select: none; cursor: grabbing; }
+.mz-body.qdrag .mz-row { transition: transform .12s; }
+.mz-body.qdrag .mz-row:hover { background: transparent; }
+.mz-body.qdrag .mz-row.cur { background: var(--select); }
+.mz-row.dragging, .mz-body.qdrag .mz-row.dragging { transition: none; z-index: 5; background: var(--panel); box-shadow: 0 6px 18px rgba(0,0,0,.3); }
+/* 검색해서 넣기 창 */
+.box.mz-search { width: min(440px, 94vw); }
+.mz-sres { overflow-y: auto; max-height: 52vh; min-height: 120px; display: flex; flex-direction: column; gap: 1px; }
+.mz-sres .mz-row { cursor: default; }
+.mz-add { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; border: 0; padding: 0; background: transparent; color: var(--accent); font-size: 15px; cursor: pointer; }
+.mz-add:hover { background: var(--hover); }
+.mz-add.done { color: #34c759; cursor: default; }

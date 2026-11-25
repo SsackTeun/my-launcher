@@ -264,7 +264,7 @@ const Player = (() => {
         <span class="pl-vol"><button class="icon" data-p="mute" title="소리">${PI.vol}</button><input type="range" min="0" max="100" data-p="vol"></span>
         ${hear ? hearHTML() : ""}
         <span class="pl-sp"></span>
-        ${opts.noBig ? "" : `<button class="icon" data-p="big" title="크게 보기 — 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 재생목록 · 랜덤 재생목록">${PI.big}</button>`}
+        ${opts.noBig ? "" : `<button class="icon" data-p="big" title="크게 보기 — 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 플레이리스트 · 랜덤 플레이리스트">${PI.big}</button>`}
         <button class="icon ${opts.lyricsOn ? "on" : ""}" data-p="lyrics" title="가사">${PI.lyrics}</button>
         ${opts.detached ? "" : `<button class="icon" data-p="detach" title="플레이어 떼어 내기">${PI.detach}</button>`}
       </div>`;
@@ -412,7 +412,7 @@ const Player = (() => {
     if (/i\.ytimg\.com\/vi\//.test(u)) return u.replace(/\/(default|mqdefault|hqdefault|sddefault)(\.jpg|\.webp)/, "/maxresdefault$2");
     return u;
   }
-  /// 크게 보기: 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 재생목록 · 랜덤 재생목록
+  /// 크게 보기: 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 플레이리스트 · 랜덤 플레이리스트
   function openBig() {
     // 플레이어 창을 크게 (열려 있으면 그 창이 '크게' 로 바뀜, 없으면 크게 열림)
     try { localStorage.setItem("playerBig", "1"); } catch { /* 없음 */ }

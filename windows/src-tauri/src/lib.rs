@@ -212,7 +212,7 @@ fn media_mode(app_only: bool) {
     media::set_app_only(app_only);
 }
 
-/// 사이트 창 페이지에서 함수를 돌려 결과 받기 (재생목록 · 다음 트랙 · 랜덤 재생목록 등)
+/// 사이트 창 페이지에서 함수를 돌려 결과 받기 (플레이리스트 · 다음 트랙 · 랜덤 플레이리스트 등)
 #[tauri::command]
 async fn site_call(app: tauri::AppHandle, site: String, body: String, args: Option<serde_json::Value>, timeout: Option<u64>) -> Result<serde_json::Value, String> {
     let a = args.unwrap_or(serde_json::Value::Null);

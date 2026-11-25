@@ -8,7 +8,7 @@
   window.__ml = true;
 
   // '사이트에서 나갈까요?' 안 띄우기: 사이트가 떠나기 전 확인(beforeunload)을 걸어도 무시
-  // (도구함이 다른 재생목록으로 넘기거나 창을 닫을 때 막히지 않게. 이 사이트들엔 저장 안 한 문서 같은 게 없음)
+  // (도구함이 다른 플레이리스트로 넘기거나 창을 닫을 때 막히지 않게. 이 사이트들엔 저장 안 한 문서 같은 게 없음)
   try {
     const add = EventTarget.prototype.addEventListener;
     EventTarget.prototype.addEventListener = function (type, fn, opt) {

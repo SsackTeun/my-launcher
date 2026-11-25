@@ -1,9 +1,17 @@
 // 크게 보기 (Mac 판 bigplayer.swift · playlists.swift · random.swift 를 Windows 로)
-// 왼쪽: 큰 앨범 · 곡 · 조작 / 오른쪽 탭: 다음 트랙 · 가사 · 앨범 · 재생목록 · 랜덤 재생목록
+// 왼쪽: 큰 앨범 · 곡 · 조작 / 오른쪽 탭: 다음 트랙 · 가사 · 앨범 · 플레이리스트 · 랜덤 플레이리스트
 // YouTube Music 창(숨겨져 있어도 됨) 페이지 안에서 로그인한 계정으로 요청 — 쿠키 · 서명은 페이지 밖으로 안 나감
 "use strict";
 
 // MARK: 페이지 함수 (YouTube Music 창에서 돌림 — args · api · collect · nextToken · albumList 를 씀)
+
+/// 페이지 대기열 손잡이 (QQ: 대기열, QC: 대기열 화면, R: 곡 정보 꺼내기) — YouTube Music 이 자기 화면에서 고칠 때와 같은 함수
+const QCTL = `
+    const QEL = document.querySelector('ytmusic-player-queue');
+    const QC = QEL && QEL.polymerController;
+    const QQ = QC && QC.queue;
+    const R = (x) => x && (x.playlistPanelVideoWrapperRenderer ? x.playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer : x.playlistPanelVideoRenderer);
+`;
 
 const JS = {
   // 다음 트랙 (Mac 판 queueJS)
@@ -25,6 +33,9 @@ const JS = {
       vid: (() => { const w = it.closest('ytmusic-playlist-panel-video-wrapper-renderer');
         const cp = w && w.querySelector('#counterpart-renderer ytmusic-player-queue-item');
         return (cp && cp.data && cp.data.videoId) || (it.data && it.data.videoId) || ''; })(),
+      // 플레이리스트 자리 ID · 대기열에 든 곡 ID (내 플레이리스트에서 빼기 · 옮기기용)
+      sid: (it.data && it.data.playlistSetVideoId) || '',
+      pvid: (it.data && it.data.videoId) || '',
       aid: ((it.data && it.data.longBylineText && it.data.longBylineText.runs || []).map((r) => r.navigationEndpoint && r.navigationEndpoint.browseEndpoint && r.navigationEndpoint.browseEndpoint.browseId).find((x) => x && x.startsWith('UC'))) || '',
     })).filter((x) => x.title && (autoOn || !x.auto));`,
   playQueue: `
@@ -60,7 +71,7 @@ const JS = {
     }
     return { name, aid, out };`,
   albumList: `return await albumList(args.id);`,
-  // 앨범 수록곡 (앨범 페이지 MPREb… → 재생목록 OLAK… · 곡들). 앨범 페이지엔 곡마다 가수가 없어서 a 는 비는 경우가 많음
+  // 앨범 수록곡 (앨범 페이지 MPREb… → 플레이리스트 OLAK… · 곡들). 앨범 페이지엔 곡마다 가수가 없어서 a 는 비는 경우가 많음
   albumTracks: `
     const j = await api('browse', { browseId: args.id });
     const b = JSON.stringify(j);
@@ -74,7 +85,7 @@ const JS = {
       out.push({ t: txt((v.flexColumns || [])[0]), a: txt((v.flexColumns || [])[1]), d: fx && fx.text && fx.text.runs ? fx.text.runs[0].text : '', v: vid });
     }
     return { list, out };`,
-  // 재생목록 (Mac 판 playlists.swift)
+  // 플레이리스트 (Mac 판 playlists.swift)
   myPlaylists: `
     const j = await api('browse', { browseId: 'FEmusic_liked_playlists' });
     return collect(j, 'musicTwoRowItemRenderer').map((i) => ({
@@ -107,7 +118,86 @@ const JS = {
     const j = await api('browse/edit_playlist', { playlistId: args.pid, actions });
     return j.status === 'STATUS_SUCCEEDED';`,
   remove: `const j = await api('browse/edit_playlist', { playlistId: args.pid, actions: [{ action: 'ACTION_REMOVE_VIDEO', setVideoId: args.sid, removedVideoId: args.vid }] }); return j.status === 'STATUS_SUCCEEDED';`,
-  // 랜덤 재생목록 (Mac 판 random.swift)
+  rename: `const j = await api('browse/edit_playlist', { playlistId: args.pid, actions: [{ action: 'ACTION_SET_PLAYLIST_NAME', playlistName: args.name }] }); return j.status === 'STATUS_SUCCEEDED';`,
+  // 다음 트랙에서 내 플레이리스트 고치기 (Mac 판 queueedit.swift) — 플레이리스트는 edit_playlist, 대기열은 YouTube Music 페이지의 대기열을 직접
+  // 지금 듣는 플레이리스트: 주소의 list=, 없으면(도구함을 다시 켜서 이어 재생 등) 대기열 곡들에 붙은 플레이리스트
+  currentList: QCTL + `
+    const u = new URLSearchParams(location.search).get('list');
+    if (u) return u;
+    const n = {};
+    for (const x of (QQ ? QQ.getItems() : [])) { const r = R(x), w = r && r.navigationEndpoint && r.navigationEndpoint.watchEndpoint; if (w && w.playlistId) n[w.playlistId] = (n[w.playlistId] || 0) + 1; }
+    return Object.keys(n).sort((a, b) => n[b] - n[a])[0] || '';`,
+  removeMany: `const j = await api('browse/edit_playlist', { playlistId: args.pid, actions: args.sids.map((s, k) => ({ action: 'ACTION_REMOVE_VIDEO', setVideoId: s, removedVideoId: args.vids[k] })) }); return j.status === 'STATUS_SUCCEEDED';`,
+  moveBefore: `
+    const a = { action: 'ACTION_MOVE_VIDEO_BEFORE', setVideoId: args.sid };
+    if (args.before) a.movedSetVideoIdSuccessor = args.before;
+    const j = await api('browse/edit_playlist', { playlistId: args.pid, actions: [a] });
+    return j.status === 'STATUS_SUCCEEDED';`,
+  // 넣고 새로 생긴 자리 ID 를 곡 ID 별로 (이미 있던 곡은 건너뛰어서 빠짐)
+  addIds: `
+    const j = await api('browse/edit_playlist', { playlistId: args.pid, actions: args.vids.map((v) => ({ action: 'ACTION_ADD_VIDEO', addedVideoId: v, dedupeOption: 'DEDUPE_OPTION_SKIP' })) });
+    if (j.status !== 'STATUS_SUCCEEDED') return null;
+    const m = {};
+    for (const r of (j.playlistEditResults || [])) { const d = r.playlistEditVideoAddedResultData; if (d && d.videoId) m[d.videoId] = d.setVideoId || ''; }
+    return m;`,
+  qRemove: QCTL + `
+    if (!QQ) return false;
+    const items = QQ.getItems(), r = R(items[args.i]);
+    if (!r || (args.sid && r.playlistSetVideoId !== args.sid)) return false;
+    const ix = r.navigationEndpoint && r.navigationEndpoint.watchEndpoint && r.navigationEndpoint.watchEndpoint.index;
+    if (typeof ix === 'number') QQ.removeItem(String(ix)); else QQ.store.dispatch({ type: 'REMOVE_ITEM', payload: args.i });
+    return QQ.getItems().length === items.length - 1;`,
+  qShuffled: QCTL + `return !!(QQ && QQ.store.getState().queue.shuffleEnabled);`,
+  qMove: QCTL + `
+    if (!QQ || !QC.onDrop) return false;
+    const ct = QEL.querySelector('#contents'), kids = [...ct.children], items = QQ.getItems();
+    if (kids.length !== items.length || !kids[args.from]) return false;
+    const r = R(items[args.from]); if (!r || (args.sid && r.playlistSetVideoId !== args.sid) || (args.vid && r.videoId !== args.vid)) return false;
+    const el = kids[args.from];
+    ct.insertBefore(el, kids[args.to] || null);
+    QC.onDrop({ detail: { dragEl: el } });
+    return true;`,
+  qInsert: QCTL + `
+    const vids = args.vids || [], sids = args.sids || [];
+    if (!QQ || !vids.length) return 0;
+    const j = await api('music/get_queue', { videoIds: vids });
+    const items = (j.queueDatas || []).map((q) => q.content).filter(Boolean);
+    items.forEach((c, k) => { const r = R(c); if (r && sids[k]) r.playlistSetVideoId = sids[k]; });
+    if (!items.length) return 0;
+    const n = QQ.getItems().length;
+    const idx = (args.at == null || args.at < 0 || args.at > n) ? n : args.at;
+    QQ.store.dispatch({ type: 'ADD_ITEMS', payload: { nextQueueItemId: QQ.store.getState().queue.nextQueueItemId, index: idx, items, shouldAssignIds: true } });
+    return QQ.getItems().length - n;`,
+  qSetSid: QCTL + `
+    if (!QQ) return false;
+    const it = QQ.getItems().map(R).reverse().find((r) => r && r.videoId === args.vid && (!r.playlistSetVideoId || (args.old && r.playlistSetVideoId === args.old)));
+    if (it) it.playlistSetVideoId = args.sid;
+    return !!it;`,
+  // 노래 검색 (YouTube Music '노래' 칸만)
+  searchSongs: `
+    let j = await api('search', { query: args.q });
+    let p = null;
+    for (const c of collect(j, 'chipCloudChipRenderer')) {
+      const t = ((c.text || {}).runs || [{}])[0].text || '';
+      const e = c.navigationEndpoint && c.navigationEndpoint.searchEndpoint;
+      if (e && e.params && /^(노래|Songs|曲|歌曲)$/i.test(t.trim())) { p = decodeURIComponent(e.params); break; }
+    }
+    if (p) j = await api('search', { query: args.q, params: p });
+    const txt = (c) => ((c && c.musicResponsiveListItemFlexColumnRenderer && c.musicResponsiveListItemFlexColumnRenderer.text.runs) || []).map((x) => x.text).join('');
+    const out = [];
+    for (const i of collect(j, 'musicResponsiveListItemRenderer')) {
+      const v = (i.playlistItemData && i.playlistItemData.videoId) || '';
+      if (!v || out.some((o) => o.v === v)) continue;
+      const runs = ((i.flexColumns[1] && i.flexColumns[1].musicResponsiveListItemFlexColumnRenderer.text.runs) || []).map((x) => x.text);
+      const parts = runs.join('').split(' • ').map((s) => s.trim()).filter(Boolean);
+      const dur = parts.length && /^\\d+(:\\d\\d)+$/.test(parts[parts.length - 1]) ? parts.pop() : '';
+      if (parts.length > 1 && /^(노래|Song|曲|歌曲)$/i.test(parts[0])) parts.shift();
+      const th = ((i.thumbnail && i.thumbnail.musicThumbnailRenderer && i.thumbnail.musicThumbnailRenderer.thumbnail.thumbnails) || []).slice(-1)[0];
+      out.push({ t: txt(i.flexColumns[0]), a: parts.join(' · '), d: dur, v, th: th ? th.url : '' });
+      if (out.length >= 20) break;
+    }
+    return out;`,
+  // 랜덤 플레이리스트 (Mac 판 random.swift)
   searchArtists: `
     const q = args.q;
     const isArtist = (e) => e && e.browseEndpoint && /^UC/.test(e.browseEndpoint.browseId || '') &&
@@ -154,7 +244,7 @@ const JS = {
     }
     if (!out.length) for (const b of collect(r, 'musicNavigationButtonRenderer')) btn(b, '');
     return out;`,
-  // 장르에서 가수 추천: 그 장르의 대표 재생목록 몇 개를 열어 가장 많이 나오는 가수
+  // 장르에서 가수 추천: 그 장르의 대표 플레이리스트 몇 개를 열어 가장 많이 나오는 가수
   genreArtists: `
     const r = await api('browse', { browseId: args.id || 'FEmusic_moods_and_genres_category', params: args.params });
     const lists = [];
@@ -173,7 +263,7 @@ const JS = {
         const id = run.navigationEndpoint.browseEndpoint.browseId; const c = count.get(id) || { id, name: run.text, n: 0 }; c.n += 1; count.set(id, c);
       }
     }
-    // 무작위로 섞어서 (이미 읽은 건 빼고) 몇 개만 — 누를 때마다 다른 재생목록에서 모음
+    // 무작위로 섞어서 (이미 읽은 건 빼고) 몇 개만 — 누를 때마다 다른 플레이리스트에서 모음
     const skip = new Set(args.skip || []);
     const pool = lists.filter((x) => !skip.has(x));
     for (let i = pool.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [pool[i], pool[j]] = [pool[j], pool[i]]; }
@@ -209,7 +299,7 @@ const JS = {
 const call = (name, args, timeout) => invoke("site_call", { site: "ytmusic", body: JS[name], args: args ?? {}, timeout: timeout ?? 30 });
 const ytOpen = () => invoke("window_exists", { label: "ytmusic" }).catch(() => false);
 
-/// YouTube Music 창에서 재생목록(또는 앨범 OLAK…)을 재생. 자동재생은 끔 (목록이 끝나면 섞인 곡이 이어 붙지 않게)
+/// YouTube Music 창에서 플레이리스트(또는 앨범 OLAK…)을 재생. 자동재생은 끔 (목록이 끝나면 섞인 곡이 이어 붙지 않게)
 async function playList(list, from) {
   const u = `https://music.youtube.com/watch?${from ? `v=${encodeURIComponent(from)}&` : ""}list=${encodeURIComponent(list)}`;
   await invoke("web_eval", { label: "ytmusic", js: `location.href = ${JSON.stringify(u)}` });
@@ -252,24 +342,28 @@ function confirmBox(title, body, ok = "확인") {
 const status = (t) => { $("#mzStatus").textContent = t || ""; };
 const fail = (e) => { status(""); toast(String(e).includes("창이 없어요") ? "YouTube Music 창을 먼저 열어 주세요" : `실패했어요: ${e}`); };
 
-// MARK: 재생목록 캐시 · 넣기 메뉴 (다음 트랙 · 앨범 · 재생목록 탭이 같이 씀)
+// MARK: 플레이리스트 캐시 · 넣기 메뉴 (다음 트랙 · 앨범 · 플레이리스트 탭이 같이 씀)
 
 let myLists = null;
+const renamed = {}; // 플레이리스트 id → 바꾼 이름
 async function loadMyLists(force) {
   if (myLists && !force) return myLists;
   myLists = await call("myPlaylists").catch(() => null);
+  if (myLists) for (const k of Object.keys(qDelta)) delete qDelta[k]; // 새로 받은 곡 수엔 고친 게 들어 있음
+  // 방금 이름을 바꾼 건 서버 목록에 늦게 반영될 수 있어서 바꾼 이름으로
+  for (const l of myLists || []) if (renamed[l.id]) l.t = renamed[l.id];
   return myLists || [];
 }
-/// "재생목록에 넣기" 메뉴: 내 재생목록들 + 새 재생목록
+/// "플레이리스트에 넣기" 메뉴: 내 플레이리스트들 + 새 플레이리스트
 async function addMenu(x, y, vids, albums) {
   if (!vids.length && !albums.length) { toast("넣을 곡을 골라 주세요"); return; }
-  status("재생목록 읽는 중…");
+  status("플레이리스트 읽는 중…");
   const lists = await loadMyLists();
   status("");
-  showMenu(x, y, [{ label: "재생목록에 넣기", header: true },
+  showMenu(x, y, [{ label: "플레이리스트에 넣기", header: true },
     ...lists.map((l) => ({ label: l.t, action: () => addTo(l.id, l.t, vids, albums) })),
-    "-", { label: "새 재생목록…", action: async () => {
-      const name = await ask("새 재생목록 이름", "", "예: 드라이브");
+    "-", { label: "새 플레이리스트…", action: async () => {
+      const name = await ask("새 플레이리스트 이름", "", "예: 드라이브");
       if (!name) return;
       status("만드는 중…");
       try {
@@ -292,7 +386,7 @@ async function addTo(pid, title, vids, albums) {
 
 // MARK: 탭
 
-const TABS = ["다음 트랙", "가사", "앨범", "재생목록", "랜덤"];
+const TABS = ["다음 트랙", "가사", "앨범", "플레이리스트", "랜덤"];
 let tab = 0;
 try { tab = Math.min(4, +localStorage.getItem("mzTab") || 0); } catch { /* 없음 */ }
 const picked = new Set();      // 다음 트랙에서 고른 videoId
@@ -324,13 +418,16 @@ async function show() {
   if (tab === 3) loadPlaylists();
   if (tab === 4) drawRandom();
 }
-/// 아래 줄: 고른 것이 있으면 [재생목록에 넣기] [고르기 취소]
+/// 아래 줄: 고른 것이 있으면 [플레이리스트에 넣기] [고르기 취소]
 function drawBar() {
   const n = picked.size + pickedAlbums.size;
   const bar = $("#mzBar");
   bar.hidden = !n || (tab !== 0 && tab !== 2);
   const label = [picked.size ? `${picked.size}곡` : "", pickedAlbums.size ? `앨범 ${pickedAlbums.size}개` : ""].filter(Boolean).join(" · ");
-  bar.innerHTML = n ? `<span>${label} 고름</span><span class="mz-sp"></span><button class="pl-open" id="barPlay" title="고른 곡만 바로 재생 (앨범을 고르면 그 앨범의 모든 곡)">▶ 재생</button><button class="pl-open" id="barAdd">재생목록에 넣기 ▾</button><button class="pl-open ghost" id="barClear">고르기 취소</button>` : "";
+  // 지금 플레이리스트와 연결된 다음 트랙에서 고른 곡이면 [빼기]도
+  const rm = tab === 0 && qLink && !pickedAlbums.size ? qItems.filter((x) => !x.auto && x.sid && picked.has(x.vid)) : [];
+  const canRemove = rm.length && rm.length === picked.size;
+  bar.innerHTML = n ? `<span>${label} 고름</span><span class="mz-sp"></span>${canRemove ? `<button class="pl-open danger" id="barRemove" title="‘${esc(qLink.t)}’ · 다음 트랙에서 빼기">빼기</button>` : ""}<button class="pl-open" id="barPlay" title="고른 곡만 바로 재생 (앨범을 고르면 그 앨범의 모든 곡)">▶ 재생</button><button class="pl-open" id="barAdd">플레이리스트에 넣기 ▾</button><button class="pl-open ghost" id="barClear">고르기 취소</button>` : "";
   if (!n) return;
   $("#barPlay").onclick = async () => {
     const vids = [...picked];
@@ -340,6 +437,7 @@ function drawBar() {
     await playVideos(vids);
   };
   $("#barAdd").onclick = (e) => { const r = e.target.getBoundingClientRect(); addMenu(r.left, r.top - 8 - 200, [...picked], [...pickedAlbums]); };
+  if (canRemove) $("#barRemove").onclick = () => { picked.clear(); body.classList.remove("picking"); removeMany(rm); drawBar(); };
   $("#barClear").onclick = () => { picked.clear(); pickedAlbums.clear(); drawBar(); body.querySelectorAll("input.pick").forEach((x) => (x.checked = false)); };
 }
 
@@ -357,38 +455,313 @@ function queueLeftTick() {
   const el = document.getElementById("qLeft");
   if (el && qLeft) el.textContent = hms(queueLeft());
 }
-async function loadQueue(quiet) {
-  if (!quiet) status("읽는 중…");
-  let q;
-  try { q = await call("queue", {}, 15); } catch (e) { fail(e); return; }
+// 내 플레이리스트와 연결: 지금 듣는 플레이리스트가 내 것이면, 여기서 빼고 · 옮기고 · 넣은 게 플레이리스트에도 반영 (Mac 판과 같음)
+let qItems = [];        // 지금 보이는 다음 트랙 (자동재생 곡 포함, 화면 순서)
+let qLink = null;       // { id, t, total } — 지금 듣는 내 플레이리스트
+let qLinkChecked = "";  // 새로 만든 플레이리스트일 수 있어 목록을 한 번 다시 받은 플레이리스트
+const qDelta = {};      // 플레이리스트 id → 여기서 넣고 뺀 곡 수 (목록의 'N곡' 이 늦게 바뀌어서)
+let qUndo = null;       // { entries: [{ it, after }], pid } — 방금 뺀 곡 되돌리기
+let qTouch = 0;         // 마지막으로 목록을 직접 만진 때 (8초 동안은 지금 곡으로 저절로 스크롤 안 함)
+let qScrolledFor = "";  // 마지막으로 스크롤해 맞춘 지금 곡
+let qJustDragged = 0;
+let qFollow = true;     // 곡이 바뀌면 지금 곡으로 스크롤 (취향 — 켜고 끌 수 있음)
+try { qFollow = localStorage.getItem("mzQueueFollow") !== "0"; } catch { /* 없음 */ }
+const touched = () => { qTouch = Date.now(); };
+const ICON_SEARCH = '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+const ICON_FOLLOW = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M8 .8v2.4M8 12.8v2.4M.8 8h2.4M12.8 8h2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
+
+async function findLink() {
+  const l = await call("currentList", {}, 10).catch(() => "");
+  if (!l || !l.startsWith("PL")) return null;
+  let p = (await loadMyLists()).find((x) => x.id === l);
+  if (!p && myLists && qLinkChecked !== l) { qLinkChecked = l; p = (await loadMyLists(true)).find((x) => x.id === l); }
+  if (!p) return null;
+  // 목록 부제 '싹튼 • 트랙 27개' (영어면 '27 tracks') 에서 전체 곡 수
+  const m = String(p.sub || "").match(/트랙\s*([\d,]+)\s*개|([\d,]+)\s*(?:곡|tracks?|songs?)/i);
+  const n = m ? +(m[1] || m[2]).replace(/,/g, "") : 0;
+  return { id: p.id, t: p.t, total: n ? n + (qDelta[p.id] || 0) : 0 };
+}
+function refreshQueue(ms = 400) { setTimeout(() => { if (tab === 0) { queueSig = ""; loadQueue(true, true); } }, ms); }
+
+async function loadQueue(quiet, force) {
+  // 방금 고친 직후엔 YouTube Music 이 아직 옛 목록을 줄 수 있어서 잠깐 쉼 (고친 쪽에서 refreshQueue 로 다시 읽음)
+  if (quiet && !force && Date.now() - qTouch < 2500) return;
+  if (!quiet) { status("읽는 중…"); qScrolledFor = ""; }
+  let q, link;
+  try { [q, link] = await Promise.all([call("queue", {}, 15), findLink()]); } catch (e) { fail(e); return; }
   q = Array.isArray(q) ? q : [];
   status("");
-  if (tab !== 0) return;
-  const sig = JSON.stringify(q.map((x) => [x.vid, x.cur]));
+  if (tab !== 0 || drag?.on) return;
+  if (link?.id !== qLink?.id) qUndo = null;
+  qLink = link;
+  const sig = JSON.stringify([q.map((x) => [x.vid, x.cur, x.sid]), link?.id, link?.t, !!qUndo]);
   if (quiet && sig === queueSig) return;
+  renderQueue(q, sig);
+}
+
+function renderQueue(q, sig = "") {
   queueSig = sig;
-  if (!q.length) { body.innerHTML = `<div class="mz-empty">다음 트랙이 비어 있어요<br><small>YouTube Music 에서 곡이나 재생목록을 틀면 여기에 나와요</small></div>`; return; }
+  qItems = q;
+  if (!q.length) { qLeft = null; body.innerHTML = `<div class="mz-empty">다음 트랙이 비어 있어요<br><small>YouTube Music 에서 곡이나 플레이리스트를 틀면 여기에 나와요</small></div>`; return; }
   // 몇 곡 중 몇 번째 · 남은 시간 (위) / 전체 재생시간 (아래). 자동재생으로 붙은 곡은 따로 셈
   const main = q.filter((x) => !x.auto);
   const curK = q.findIndex((x) => x.cur);
   const total = main.reduce((a, x) => a + secsOf(x.dur), 0);
   const autoTotal = q.filter((x) => x.auto).reduce((a, x) => a + secsOf(x.dur), 0);
-  const st = Player.state();
-  const after = curK >= 0 ? main.filter((x, k) => q.indexOf(x) > curK).reduce((a, x) => a + secsOf(x.dur), 0) : total;
+  const after = curK >= 0 ? main.filter((x) => q.indexOf(x) > curK).reduce((a, x) => a + secsOf(x.dur), 0) : total;
   // 남은 시간 = 지금 곡의 남은 부분 + 그 뒤 곡들 (재생 위치를 따라 1초마다 줄어듦 — queueLeftTick)
   qLeft = curK >= 0 && !q[curK].auto ? { dur: secsOf(q[curK].dur), after, title: q[curK].title } : null;
-  const head = qLeft
+  const link = qLink;
+  const partial = !!(link && link.total > main.length);
+  let head = qLeft
     ? `<b>${main.length}곡 중 ${main.indexOf(q[curK]) + 1}번째</b> · 남은 시간 <span id="qLeft">${hms(queueLeft())}</span>`
     : `<b>${main.length}곡</b>`;
-  body.innerHTML = `<div class="mz-qhead">${head}</div>` + q.map((x, k) => `<div class="mz-row ${x.cur ? "cur" : ""} ${x.auto ? "auto" : ""}" data-i="${x.i}" data-vid="${esc(x.vid)}" data-aid="${esc(x.aid)}" data-artist="${esc(artistOf(x.artist))}">
-      <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.vid) ? "checked" : ""} title="골라서 재생목록에 넣기"></span>
+  if (partial) head = `<b>전체 ${link.total}곡 중 ${main.length}곡 불러옴</b>${qLeft ? ` · 지금 ${main.indexOf(q[curK]) + 1}번째 · 불러온 곡 남은 시간 <span id="qLeft">${hms(queueLeft())}</span>` : ""}`;
+  // 위 고정 줄 오른쪽: 🔍 검색해서 넣기(연결됐을 때) · ◎ 지금 곡 따라가기
+  const icons = `${link ? `<button class="mz-qbtn" id="qSearch" title="‘${esc(link.t)}’에 넣을 노래 찾기 (플레이리스트 · 다음 트랙 끝에)">${ICON_SEARCH}</button>` : ""}` +
+    `<button class="mz-qbtn ${qFollow ? "on" : ""}" id="qFollow" title="${qFollow ? "곡이 바뀌면 지금 곡으로 스크롤해요 — 누르면 끔" : "목록이 저절로 움직이지 않아요 — 누르면 지금 곡 따라가기"}">${ICON_FOLLOW}</button>`;
+  let note = "";
+  if (link) {
+    if (qUndo) {
+      const u = qUndo.entries;
+      const what = u.length === 1 ? `‘${esc(u[0].it.title.slice(0, 16))}’을` : `${u.length}곡을`;
+      note = `<div class="mz-qlink">${what} ‘${esc(link.t)}’에서 뺐어요<span class="mz-sp"></span><button class="pl-open ghost" id="qUndo">되돌리기</button></div>`;
+    } else note = `<div class="mz-qlink">‘${esc(link.t)}’과 연결됨 · ⊖ 빼기 · 끌어서 옮기기 · 🔍 검색해서 넣기 — 플레이리스트에도 반영돼요</div>`;
+  }
+  const editable = (x) => link && !x.auto && x.sid;
+  // 끌어서 순서 바꾸기: 내 플레이리스트면 플레이리스트에도, 아니면(앨범 · 라디오 · 남의 플레이리스트) 다음 트랙에서만
+  const movable = (x) => !x.auto && (!link || x.sid);
+  body.innerHTML = `<div class="mz-qhead"><span class="mz-qtext">${head}</span><span class="mz-sp"></span>${icons}</div>${note}` + q.map((x, k) => `<div class="mz-row ${x.cur ? "cur" : ""} ${x.auto ? "auto" : ""} ${editable(x) ? "edit" : ""} ${movable(x) ? "mov" : ""}" data-k="${k}" data-i="${x.i}" data-vid="${esc(x.vid)}" data-aid="${esc(x.aid)}" data-artist="${esc(artistOf(x.artist))}">
+      <span class="mz-num">${x.auto ? "" : main.indexOf(x) + 1}<input type="checkbox" class="pick" ${picked.has(x.vid) ? "checked" : ""} title="골라서 플레이리스트에 넣기${link ? " · 빼기" : ""}"></span>
       ${x.th ? `<img src="${esc(x.th)}" alt="" referrerpolicy="no-referrer">` : '<span class="mz-noimg"></span>'}
       <span class="mz-t"><b>${esc(x.title)}</b><small>${esc(x.artist)}</small></span>
-      <span class="mz-d">${esc(x.dur)}</span></div>`).join("") +
+      <span class="mz-d">${esc(x.dur)}</span>${editable(x) ? `<button class="mz-x" data-qx="1" title="‘${esc(link.t)}’에서 빼기${x.cur ? " (지금 곡 — 다음 곡으로 넘어가요)" : ""}">⊖</button>` : ""}</div>`).join("") +
     `<div class="mz-qfoot">전체 ${main.length}곡 · ${hms(total)}${autoTotal ? ` <small>+ 자동재생 ${q.length - main.length}곡 · ${hms(autoTotal)}</small>` : ""}</div>`;
   body.classList.toggle("picking", picked.size > 0);
-  body.querySelector(".mz-row.cur")?.scrollIntoView({ block: "center" });
+  drawBar();
+  // 지금 곡으로 스크롤: 따라가기를 켰고, 곡이 바뀌었고, 8초 안에 직접 만지지 않았을 때만
+  const cur = q[curK];
+  const curKey = cur ? `${cur.vid}|${cur.i}` : "";
+  if (qFollow && curKey && curKey !== qScrolledFor && Date.now() - qTouch > 8000) {
+    body.querySelector(".mz-row.cur")?.scrollIntoView({ block: "center" });
+    qScrolledFor = curKey;
+  }
 }
+
+/// 화면 목록을 바로 바꿈 (순서 · 번호), 서버 일은 뒤에서
+function applyLocal(newMain) {
+  const all = [...newMain, ...qItems.filter((x) => x.auto)].map((x, k) => ({ ...x, i: k }));
+  renderQueue(all, "");
+}
+
+/// 고른 곡들(하나도 됨)을 다음 트랙 · 플레이리스트에서 빼기 — 화면은 바로, 서버는 뒤에서. 지금 곡을 빼면 다음 곡으로 넘어감
+function removeMany(sel) {
+  const link = qLink;
+  sel = sel.filter((x) => x && !x.auto && x.sid);
+  if (!link || !sel.length) return;
+  touched();
+  const main = qItems.filter((x) => !x.auto);
+  const gone = new Set(sel.map((x) => x.i));
+  // 되돌리기용: 각 곡 바로 뒤 곡 (원래 순서 기준)
+  const entries = main.map((it, k) => (gone.has(it.i) ? { it, after: k + 1 < main.length ? main[k + 1].sid : null } : null)).filter(Boolean);
+  const keep = main.filter((x) => !gone.has(x.i));
+  // 1) 화면: 빠지는 줄은 접히며 흐려지고, 남은 줄이 올라옴
+  for (const r of body.querySelectorAll(".mz-row[data-k]")) {
+    if (!gone.has(qItems[+r.dataset.k]?.i)) continue;
+    r.style.height = r.offsetHeight + "px";
+    void r.offsetHeight;
+    r.classList.add("gone");
+  }
+  setTimeout(() => { qUndo = { entries, pid: link.id }; applyLocal(keep); }, 180);
+  // 2) 뒤에서: 다음 트랙(뒤 곡부터 빼야 번호가 안 밀림) · 플레이리스트(한 번에)
+  (async () => { for (const it of [...sel].sort((a, b) => b.i - a.i)) await call("qRemove", { i: it.i, sid: it.sid }).catch(() => {}); })();
+  qDelta[link.id] = (qDelta[link.id] || 0) - sel.length;
+  if (link.total) link.total -= sel.length;
+  call("removeMany", { pid: link.id, sids: sel.map((x) => x.sid), vids: sel.map((x) => x.pvid || x.vid) }, 30)
+    .then((ok) => { if (!ok) throw 0; refreshQueue(1000); })
+    .catch(() => { qUndo = null; qDelta[link.id] += sel.length; toast("플레이리스트에서 빼지 못했어요"); refreshQueue(); });
+}
+
+async function undoRemove() {
+  const u = qUndo;
+  if (!u) return;
+  touched();
+  qUndo = null;
+  // 화면엔 바로 원래 자리에 (앞 곡부터)
+  const main = qItems.filter((x) => !x.auto);
+  const back = [...u.entries].sort((a, b) => a.it.i - b.it.i);
+  for (const e of back) main.splice(Math.min(e.it.i, main.length), 0, e.it);
+  applyLocal(main);
+  qDelta[u.pid] = (qDelta[u.pid] || 0) + back.length;
+  if (qLink?.id === u.pid && qLink.total) qLink.total += back.length;
+  // 다음 트랙: 앞 곡부터 원래 자리에
+  const ins = (async () => { for (const e of back) await call("qInsert", { vids: [e.it.pvid || e.it.vid], sids: [e.it.sid], at: e.it.i }, 30).catch(() => {}); })();
+  // 플레이리스트: 다시 넣으면 맨 끝에 붙어서, 뒤 곡부터 원래 자리(뒤에 있던 곡 앞)로
+  const m = await call("addIds", { pid: u.pid, vids: back.map((e) => e.it.pvid || e.it.vid) }, 30).catch(() => null);
+  if (!m || !Object.keys(m).length) { qDelta[u.pid] -= back.length; toast("되돌리지 못했어요"); refreshQueue(); return; }
+  await ins;
+  const newSid = {}; // 옛 자리 ID → 새 자리 ID
+  for (const e of back) {
+    const s = m[e.it.pvid || e.it.vid];
+    if (!s) continue;
+    newSid[e.it.sid] = s;
+    call("qSetSid", { vid: e.it.pvid || e.it.vid, sid: s, old: e.it.sid }).catch(() => {});
+  }
+  for (const e of [...back].reverse()) {
+    const sid = newSid[e.it.sid];
+    if (!sid) continue;
+    await call("moveBefore", { pid: u.pid, sid, before: e.after ? newSid[e.after] || e.after : null }, 30).catch(() => {});
+  }
+  refreshQueue(300);
+}
+
+/// 곡들을 지금 플레이리스트 끝 + 다음 트랙 끝에 — 넣을 곡 수를 바로 돌려주고 서버 일은 뒤에서 (이미 있으면 0)
+function addLinked(vids) {
+  const link = qLink;
+  if (!link) return 0;
+  touched();
+  const main = qItems.filter((x) => !x.auto);
+  const have = new Set(main.flatMap((x) => [x.vid, x.pvid]));
+  const fresh = [...new Set(vids)].filter((v) => v && !have.has(v));
+  if (!fresh.length) { toast(`이미 ‘${link.t}’에 있어요`); return 0; }
+  // 긴 플레이리스트를 일부만 불러온 중이면 다음 트랙엔 안 붙임 (나머지를 불러올 때 같이 와서 두 번 나오지 않게)
+  const partial = link.total > main.length;
+  const ins = partial ? Promise.resolve(0) : call("qInsert", { vids: fresh }, 30).catch(() => 0);
+  if (!partial) ins.then(() => refreshQueue(200));
+  (async () => {
+    const m = await call("addIds", { pid: link.id, vids: fresh }, 30).catch(() => null);
+    if (!m) { toast(`‘${link.t}’에 넣지 못했어요`); refreshQueue(); return; }
+    await ins;
+    for (const [v, s] of Object.entries(m)) if (s) call("qSetSid", { vid: v, sid: s }).catch(() => {});
+    const n = Object.keys(m).length;
+    qDelta[link.id] = (qDelta[link.id] || 0) + n;
+    if (link.total) link.total += n;
+    if (partial) toast(`‘${link.t}’ 끝에 넣었어요 (다음 트랙엔 나머지를 불러올 때 보여요)`);
+    refreshQueue(300);
+  })();
+  return fresh.length;
+}
+
+/// 🔍 검색해서 넣기: 노래를 찾아 ＋ 를 누르면 지금 플레이리스트 · 다음 트랙 끝에 (넣으면 ✓)
+function openSongSearch() {
+  const link = qLink;
+  if (!link) return;
+  const added = new Set();
+  let hits = [], seq = 0;
+  modal.innerHTML = `<div class="box mz-search"><h3>‘${esc(link.t)}’에 넣을 노래 찾기</h3>
+    <input type="search" id="sq" placeholder="노래 · 가수 이름 (Enter)">
+    <div class="mz-sres" id="sres"><div class="mz-note">검색어를 넣고 Enter</div></div>
+    <div class="btns"><button data-r="0">닫기</button></div></div>`;
+  modal.hidden = false;
+  const inp = $("#sq");
+  inp.focus();
+  const draw = () => {
+    $("#sres").innerHTML = hits.length ? hits.map((t, i) => `<div class="mz-row" title="${esc(t.t)} · ${esc(t.a)}">
+      ${t.th ? `<img src="${esc(t.th)}" alt="" referrerpolicy="no-referrer">` : '<span class="mz-noimg"></span>'}
+      <span class="mz-t"><b>${esc(t.t)}</b><small>${esc(t.a)}</small></span><span class="mz-d">${esc(t.d)}</span>
+      <button class="mz-add ${added.has(t.v) ? "done" : ""}" data-add="${i}" title="${added.has(t.v) ? "넣었어요" : "플레이리스트 · 다음 트랙에 넣기"}">${added.has(t.v) ? "✓" : "＋"}</button></div>`).join("")
+      : '<div class="mz-note">찾지 못했어요</div>';
+  };
+  inp.onkeydown = async (e) => {
+    if (e.key !== "Enter") return;
+    const q = inp.value.trim();
+    if (!q) return;
+    const my = ++seq;
+    $("#sres").innerHTML = '<div class="mz-note">찾는 중…</div>';
+    let r = [];
+    try { r = await call("searchSongs", { q }, 25); } catch { r = []; }
+    if (my !== seq || modal.hidden) return;
+    hits = Array.isArray(r) ? r : [];
+    draw();
+  };
+  modal.onclick = (e) => {
+    const b = e.target.closest("[data-add]");
+    if (b) {
+      const t = hits[+b.dataset.add];
+      if (!t || added.has(t.v)) return;
+      if (qLink?.id !== link.id) { toast("지금 듣는 플레이리스트가 바뀌었어요"); return; }
+      if (addLinked([t.v]) > 0) { added.add(t.v); b.classList.add("done"); b.textContent = "✓"; b.title = "넣었어요"; }
+      return;
+    }
+    if (e.target.closest("[data-r]") || e.target === modal) modal.hidden = true;
+  };
+}
+
+// 끌어서 옮기기: 잡은 줄이 마우스를 따라오고 다른 줄들이 비켜 줌, 놓으면 화면은 바로 · 플레이리스트 · 다음 트랙은 뒤에서
+let drag = null;
+body.addEventListener("pointerdown", (e) => {
+  if (tab !== 0 || e.button !== 0 || e.target.closest("input, button")) return;
+  const row = e.target.closest(".mz-row.mov[data-k]");
+  if (row) drag = { row, y0: e.clientY, on: false };
+});
+window.addEventListener("pointermove", (e) => {
+  if (!drag) return;
+  if (!drag.on) {
+    if (Math.abs(e.clientY - drag.y0) < 5) return;
+    const rows = [...body.querySelectorAll(".mz-row[data-k]:not(.auto)")];
+    const from = rows.indexOf(drag.row);
+    if (from < 0 || rows.length < 2) { drag = null; return; }
+    Object.assign(drag, { on: true, rows, from, to: from, top0: drag.row.offsetTop, h: rows[1].offsetTop - rows[0].offsetTop,
+      grab: e.clientY - body.getBoundingClientRect().top + body.scrollTop - drag.row.offsetTop });
+    drag.row.classList.add("dragging");
+    body.classList.add("qdrag");
+    touched();
+  }
+  const d = drag, rect = body.getBoundingClientRect();
+  // 위아래 끝 가까이 가면 목록을 굴림
+  if (e.clientY < rect.top + 28) body.scrollTop -= 14;
+  if (e.clientY > rect.bottom - 28) body.scrollTop += 14;
+  const n = d.rows.length;
+  const first = d.rows[0].offsetTop;
+  const y = Math.max(first, Math.min(first + (n - 1) * d.h, e.clientY - rect.top + body.scrollTop - d.grab));
+  d.row.style.transform = `translateY(${y - d.top0}px)`;
+  const to = Math.max(0, Math.min(n - 1, Math.round((y - first) / d.h)));
+  if (to === d.to) return;
+  d.to = to;
+  d.rows.forEach((r, j) => {
+    if (r === d.row) return;
+    const shift = d.from < to && j > d.from && j <= to ? -d.h : to < d.from && j >= to && j < d.from ? d.h : 0;
+    r.style.transform = shift ? `translateY(${shift}px)` : "";
+  });
+});
+window.addEventListener("pointerup", async () => {
+  const d = drag;
+  drag = null;
+  if (!d?.on) return;
+  qJustDragged = Date.now();
+  touched();
+  const link = qLink;
+  const main = qItems.filter((x) => !x.auto);
+  const { from, to } = d;
+  const item = main[from];
+  const done = () => body.classList.remove("qdrag");
+  if (!item || to === from) { done(); renderQueue(qItems, queueSig); return; }
+  // 내 플레이리스트가 아니면 다음 트랙에서만 (섞어 듣는 중이어도 됨)
+  if (!link) {
+    const m = main.slice();
+    m.splice(to, 0, m.splice(from, 1)[0]);
+    d.row.style.transform = `translateY(${d.rows[to].offsetTop - d.top0}px)`;
+    setTimeout(() => { done(); applyLocal(m); }, 120);
+    call("qMove", { from: item.i, to: to > from ? to + 1 : to, sid: "", vid: item.pvid || item.vid }).then((ok) => { if (!ok) throw 0; })
+      .catch(() => { toast("다음 트랙 순서를 바꾸지 못했어요"); refreshQueue(); });
+    return;
+  }
+  if (to === main.length - 1 && link.total > main.length) { done(); toast("긴 플레이리스트는 불러온 곡 맨 끝으로는 못 옮겨요"); renderQueue(qItems, queueSig); return; }
+  // 섞어 듣는 중이면 다음 트랙 순서가 플레이리스트 순서와 달라서 못 옮김
+  if (await call("qShuffled").catch(() => false)) { done(); toast("섞어 듣기 중엔 순서를 바꿀 수 없어요"); renderQueue(qItems, queueSig); return; }
+  const m = main.slice();
+  m.splice(to, 0, m.splice(from, 1)[0]);
+  d.row.style.transform = `translateY(${d.rows[to].offsetTop - d.top0}px)`;
+  setTimeout(() => { done(); applyLocal(m); }, 120);
+  // 그 곡 뒤에 올 곡 (자리 ID 가 있는 곡) 앞으로 — 없으면 맨 끝
+  const before = m.slice(to + 1).find((x) => x.sid)?.sid || null;
+  // 대기열은 '그 곡 앞에 꽂기' 자리로 (원래 순서 기준)
+  const insertAt = to > from ? to + 1 : to;
+  call("qMove", { from: item.i, to: insertAt, sid: item.sid }).catch(() => {});
+  call("moveBefore", { pid: link.id, sid: item.sid, before }, 30).then((ok) => { if (!ok) throw 0; }).catch(() => { toast("플레이리스트 순서를 바꾸지 못했어요"); refreshQueue(); });
+});
+body.addEventListener("wheel", () => { if (tab === 0) touched(); }, { passive: true });
+
 body.addEventListener("change", (e) => {
   const c = e.target.closest("input.pick");
   if (!c) return;
@@ -402,8 +775,21 @@ body.addEventListener("change", (e) => {
 body.addEventListener("click", async (e) => {
   if (e.target.closest("input")) return;
   if (tab === 0) {
-    const row = e.target.closest(".mz-row[data-i]");
-    if (row) { await call("playQueue", { i: +row.dataset.i }).catch(fail); setTimeout(() => loadQueue(true), 800); }
+    if (e.target.closest("#qFollow")) {
+      qFollow = !qFollow;
+      try { localStorage.setItem("mzQueueFollow", qFollow ? "1" : "0"); } catch { /* 없음 */ }
+      toast(qFollow ? "곡이 바뀌면 지금 곡으로 스크롤해요" : "목록이 저절로 움직이지 않아요");
+      if (qFollow) { qTouch = 0; qScrolledFor = ""; }
+      renderQueue(qItems, queueSig);
+      return;
+    }
+    if (e.target.closest("#qSearch")) { openSongSearch(); return; }
+    if (e.target.closest("#qUndo")) { undoRemove(); return; }
+    const row = e.target.closest(".mz-row[data-k]");
+    if (!row || Date.now() - qJustDragged < 300) return;
+    if (e.target.closest("[data-qx]")) { removeMany([qItems[+row.dataset.k]]); return; }
+    await call("playQueue", { i: +row.dataset.i }).catch(fail);
+    refreshQueue(800);
   }
   if (tab === 2) {
     const card = e.target.closest(".mz-album[data-album]");
@@ -421,9 +807,14 @@ body.addEventListener("contextmenu", (e) => {
   if (!row) return;
   e.preventDefault();
   if (tab === 0 && row.dataset.vid) {
+    const it = qItems[+row.dataset.k], link = qLink;
+    const linkItems = !link || !it ? [] : it.auto || !it.sid
+      ? ["-", { label: `‘${link.t}’에 넣기 (지금 플레이리스트 · 다음 트랙 끝에)`, action: () => addLinked([it.vid]) }]
+      : ["-", { label: `‘${link.t}’에서 빼기${it.cur ? " (다음 곡으로 넘어가요)" : ""}`, action: () => removeMany([it]) }];
     showMenu(e.clientX, e.clientY, [
       { label: "이 곡 재생", action: () => call("playQueue", { i: +row.dataset.i }).catch(fail) },
-      { label: "재생목록에 넣기…", action: () => addMenu(e.clientX, e.clientY, [row.dataset.vid], []) },
+      ...linkItems,
+      { label: "플레이리스트에 넣기…", action: () => addMenu(e.clientX, e.clientY, [row.dataset.vid], []) },
       { label: `‘${row.dataset.artist}’ 를 랜덤 가수에 넣기`, disabled: !row.dataset.artist, action: () => addArtistsToRandom([{ aid: row.dataset.aid, name: row.dataset.artist }]) },
     ]);
   }
@@ -432,7 +823,7 @@ body.addEventListener("contextmenu", (e) => {
     showMenu(e.clientX, e.clientY, [
       { label: "이 곡만 재생", action: () => playVideos([row.dataset.vid]) },
       { label: "이 곡부터 앨범 재생", disabled: !row.dataset.list, action: () => playList(row.dataset.list, row.dataset.vid) },
-      { label: "재생목록에 넣기…", action: () => addMenu(e.clientX, e.clientY, [row.dataset.vid], []) },
+      { label: "플레이리스트에 넣기…", action: () => addMenu(e.clientX, e.clientY, [row.dataset.vid], []) },
     ]);
   }
   if (tab === 3 && row.dataset.sid) trackMenu(e.clientX, e.clientY, row);
@@ -455,7 +846,7 @@ async function loadAlbums(force) {
   for (const a of r.out) (groups[a.sec] = groups[a.sec] || []).push(a);
   // Mac 판처럼 세로 목록: 작은 자켓 · 제목 · 종류/연도 · ▸ · ▶ — 누르면 바로 아래에 수록곡
   body.innerHTML = `<div class="mz-albums"><div class="mz-h">${esc(r.name)}</div>` + Object.entries(groups).map(([sec, list]) =>
-    `<div class="mz-sec">${esc(sec)}</div>${list.map((a) => `<div class="mz-album mz-row" data-album="${esc(a.id)}" data-title="${esc(a.t)}" title="눌러서 수록곡 보기 · ▶ 처음부터 재생 · 오른쪽 클릭: 재생목록에 넣기">
+    `<div class="mz-sec">${esc(sec)}</div>${list.map((a) => `<div class="mz-album mz-row" data-album="${esc(a.id)}" data-title="${esc(a.t)}" title="눌러서 수록곡 보기 · ▶ 처음부터 재생 · 오른쪽 클릭: 플레이리스트에 넣기">
       <span class="mz-acover"><img src="${esc(a.th)}" alt="" referrerpolicy="no-referrer"><input type="checkbox" class="pick" ${pickedAlbums.has(a.id) ? "checked" : ""} title="앨범 통째로 고르기"></span>
       <span class="mz-t"><b>${esc(a.t)}</b><small>${esc(a.sub)}</small></span>
       <span class="mz-chev">›</span>
@@ -490,7 +881,7 @@ async function toggleAlbum(id) {
   const total = r.out.reduce((a, x) => a + secsOf(x.d), 0);
   panel.innerHTML = `<div class="mz-note">${r.out.length}곡 · ${hms(total)} <small>— 곡을 누르면 그 곡부터 재생 · 번호 칸을 체크해서 골라 재생</small></div>` +
     r.out.map((x, k) => `<div class="mz-row" data-vid="${esc(x.v)}" data-list="${esc(r.list || "")}" data-title="${esc(x.t)}">
-      <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.v) ? "checked" : ""} title="골라서 재생 · 재생목록에 넣기"></span>
+      <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.v) ? "checked" : ""} title="골라서 재생 · 플레이리스트에 넣기"></span>
       <span class="mz-t"><b>${esc(trimAlbum(x.t, card.dataset.title))}</b>${x.a ? `<small>${esc(x.a)}</small>` : ""}</span>
       <span class="mz-d">${esc(x.d)}</span></div>`).join("");
 }
@@ -505,7 +896,7 @@ function trimAlbum(t, album) {
   return t;
 }
 
-/// 고른 곡만 재생: 한 곡이면 그 곡만, 여러 곡이면 '고른 곡 (도구함)' 재생목록을 새로 만들어 틀고 전에 만든 건 지움
+/// 고른 곡만 재생: 한 곡이면 그 곡만, 여러 곡이면 '고른 곡 (도구함)' 플레이리스트를 새로 만들어 틀고 전에 만든 건 지움
 /// (YouTube Music 은 곡 몇 개로 바로 재생 목록을 만드는 주소가 없어서)
 async function playVideos(vids) {
   vids = [...new Set(vids.filter(Boolean))];
@@ -536,7 +927,7 @@ async function playAlbum(id, title) {
   status("앨범 여는 중…");
   try {
     const list = await call("albumList", { id });
-    if (!list) throw "앨범 재생목록을 찾지 못했어요";
+    if (!list) throw "앨범 플레이리스트를 찾지 못했어요";
     await playList(list);
     status("");
     toast(`‘${title}’ 재생`);
@@ -546,49 +937,64 @@ function albumMenu(x, y, id, title) {
   showMenu(x, y, [
     { label: "처음부터 재생", action: () => playAlbum(id, title) },
     { label: openAlbums.has(id) ? "수록곡 접기" : "수록곡 보기", action: () => toggleAlbum(id) },
-    { label: "재생목록에 넣기…", action: () => addMenu(x, y, [], [id]) },
+    { label: "플레이리스트에 넣기…", action: () => addMenu(x, y, [], [id]) },
   ]);
 }
 
-// MARK: 재생목록 (내 계정 — 휴대폰 앱에도 그대로 보임)
+// MARK: 플레이리스트 (내 계정 — 휴대폰 앱에도 그대로 보임)
 
 let plSel = null;
 let plTracks = [];
 let plDelMode = false;
 const plDel = new Set();
 async function loadPlaylists(force) {
-  status("재생목록 읽는 중…");
+  status("플레이리스트 읽는 중…");
   const lists = await loadMyLists(force);
   status("");
   if (tab !== 3) return;
-  if (!myLists) { body.innerHTML = `<div class="mz-empty">재생목록을 읽지 못했어요<br><small>YouTube Music 창에서 로그인했는지 확인해 주세요</small></div>`; return; }
+  if (!myLists) { body.innerHTML = `<div class="mz-empty">플레이리스트를 읽지 못했어요<br><small>YouTube Music 창에서 로그인했는지 확인해 주세요</small></div>`; return; }
   if (plSel && !lists.some((l) => l.id === plSel)) plSel = null;
   body.innerHTML = `<div class="mz-pl">
     <div class="mz-pl-side">
       <div class="mz-pl-tools">
-        <button class="pl-open" id="plNew" title="새 재생목록 (비공개)">＋ 새로</button>
-        <button class="pl-open ${plDelMode ? "danger" : "ghost"}" id="plDel" title="재생목록 지우기 (여러 개 골라서)">${plDelMode ? `${plDel.size}개 지우기` : "지우기…"}</button>
+        <button class="pl-open" id="plNew" title="새 플레이리스트 (비공개)">＋ 새로</button>
+        <button class="pl-open ghost" id="plRename" title="고른 플레이리스트 이름 바꾸기" ${plSel && !plDelMode ? "" : "disabled"}>✏️ 이름</button>
+        <button class="pl-open ${plDelMode ? "danger" : "ghost"}" id="plDel" title="플레이리스트 지우기 (여러 개 골라서)">${plDelMode ? `${plDel.size}개 지우기` : "지우기…"}</button>
         ${plDelMode ? '<button class="pl-open ghost" id="plDelCancel">취소</button>' : ""}
         <button class="icon sm" id="plReload" title="새로 고침">↻</button>
       </div>
       <div class="mz-pl-list">${lists.map((l) => `<div class="mz-pl-item ${l.id === plSel ? "on" : ""}" data-pl="${esc(l.id)}">
         ${plDelMode ? `<input type="checkbox" class="del" ${plDel.has(l.id) ? "checked" : ""}>` : ""}
         ${l.th ? `<img src="${esc(l.th)}" alt="" referrerpolicy="no-referrer">` : '<span class="mz-noimg"></span>'}
-        <span class="mz-t"><b>${esc(l.t)}</b><small>${esc(l.sub)}</small></span></div>`).join("") || '<div class="mz-empty">재생목록이 없어요</div>'}</div>
+        <span class="mz-t"><b>${esc(l.t)}</b><small>${esc(l.sub)}</small></span></div>`).join("") || '<div class="mz-empty">플레이리스트가 없어요</div>'}</div>
     </div>
-    <div class="mz-pl-main" id="plMain">${plSel ? "" : '<div class="mz-empty">왼쪽에서 재생목록을 골라 주세요</div>'}</div></div>`;
+    <div class="mz-pl-main" id="plMain">${plSel ? "" : '<div class="mz-empty">왼쪽에서 플레이리스트를 골라 주세요</div>'}</div></div>`;
   $("#plNew").onclick = async () => {
-    const name = await ask("새 재생목록 이름", "", "예: 드라이브");
+    const name = await ask("새 플레이리스트 이름", "", "예: 드라이브");
     if (!name) return;
     status("만드는 중…");
     try { const id = await call("create", { name, vids: [] }); if (!id) throw "만들지 못했어요"; plSel = id; myLists = null; await loadPlaylists(true); toast(`‘${name}’을 만들었어요`); } catch (e) { fail(e); }
   };
   $("#plReload").onclick = () => loadPlaylists(true);
+  $("#plRename").onclick = async () => {
+    const l = lists.find((x) => x.id === plSel);
+    if (!l) { toast("이름을 바꿀 플레이리스트를 골라 주세요"); return; }
+    const name = await ask("플레이리스트 이름 바꾸기", l.t);
+    if (!name || name === l.t) return;
+    status("이름 바꾸는 중…");
+    try {
+      if (!(await call("rename", { pid: l.id, name }))) throw "이름을 바꾸지 못했어요";
+      status("");
+      renamed[l.id] = name; l.t = name;
+      toast(`‘${name}’으로 바꿨어요`);
+      loadPlaylists();
+    } catch (e) { fail(e); }
+  };
   $("#plDel").onclick = async () => {
     if (!plDelMode) { plDelMode = true; plDel.clear(); loadPlaylists(); return; }
-    if (!plDel.size) { toast("지울 재생목록을 골라 주세요"); return; }
+    if (!plDel.size) { toast("지울 플레이리스트를 골라 주세요"); return; }
     const names = lists.filter((l) => plDel.has(l.id)).map((l) => l.t);
-    if (!(await confirmBox(`재생목록 ${names.length}개를 지울까요?`, names.join(", ") + " — YouTube Music 계정에서도 지워지고 되돌릴 수 없어요.", "지우기"))) return;
+    if (!(await confirmBox(`플레이리스트 ${names.length}개를 지울까요?`, names.join(", ") + " — YouTube Music 계정에서도 지워지고 되돌릴 수 없어요.", "지우기"))) return;
     let ok = 0;
     for (const id of plDel) { status(`지우는 중… ${ok + 1}/${plDel.size}`); if (await call("del", { pid: id }).catch(() => false)) ok++; }
     toast(`${ok}개를 지웠어요${ok < plDel.size ? ` (${plDel.size - ok}개는 못 지움)` : ""}`);
@@ -608,6 +1014,7 @@ async function loadPlaylists(force) {
     }
     plSel = it.dataset.pl;
     body.querySelectorAll(".mz-pl-item").forEach((x) => x.classList.toggle("on", x === it));
+    $("#plRename").disabled = false;
     loadTracks();
   };
   if (plSel) loadTracks();
@@ -621,11 +1028,11 @@ async function loadTracks() {
   if (plSel !== l?.id || !$("#plMain")) return;
   const curT = Player.state().title;
   main.innerHTML = `<div class="mz-pl-head"><b>${esc(l?.t || "")}</b><small>${plTracks.length}곡</small><span class="mz-sp"></span>
-      <button class="pl-open" id="plPlay">▶ 재생</button><button class="pl-open ghost" id="plAddCur" title="지금 듣는 곡을 이 재생목록에">＋ 지금 곡</button></div>
+      <button class="pl-open" id="plPlay">▶ 재생</button><button class="pl-open ghost" id="plAddCur" title="지금 듣는 곡을 이 플레이리스트에">＋ 지금 곡</button></div>
     <div class="mz-pl-tracks">${plTracks.map((t, i) => `<div class="mz-row ${t.t === curT ? "cur" : ""}" data-k="${i}" data-sid="${esc(t.s)}">
       ${t.th ? `<img src="${esc(t.th)}" alt="" referrerpolicy="no-referrer">` : '<span class="mz-noimg"></span>'}
       <span class="mz-t"><b>${esc(t.t)}</b><small>${esc(t.a)}</small></span><span class="mz-d">${esc(t.d)}</span>
-      <button class="mz-x" title="재생목록에서 빼기">⊖</button></div>`).join("") || '<div class="mz-empty">비어 있어요 — ＋ 지금 곡 으로 넣어 보세요</div>'}</div>`;
+      <button class="mz-x" title="플레이리스트에서 빼기">⊖</button></div>`).join("") || '<div class="mz-empty">비어 있어요 — ＋ 지금 곡 으로 넣어 보세요</div>'}</div>`;
   $("#plPlay").onclick = () => { playList(plSel); toast(`‘${l?.t}’ 재생`); };
   $("#plAddCur").onclick = async () => {
     const v = await call("currentVideo").catch(() => "");
@@ -644,8 +1051,8 @@ function trackMenu(x, y, row) {
   const t = plTracks[+row.dataset.k];
   showMenu(x, y, [
     { label: "여기부터 재생", action: () => playList(plSel, t.v) },
-    { label: "다른 재생목록에도 넣기…", action: () => addMenu(x, y, [t.v], []) },
-    "-", { label: "이 재생목록에서 빼기", action: () => removeTrack(t) },
+    { label: "다른 플레이리스트에도 넣기…", action: () => addMenu(x, y, [t.v], []) },
+    "-", { label: "이 플레이리스트에서 빼기", action: () => removeTrack(t) },
   ]);
 }
 async function removeTrack(t) {
@@ -659,7 +1066,7 @@ async function removeTrack(t) {
   } catch (e) { fail(e); }
 }
 
-// MARK: 랜덤 재생목록 — 가수 고르기(비중 1~5) · 곡 수나 시간 · 인기곡 위주 · 새로 만들기 또는 덧붙이기
+// MARK: 랜덤 플레이리스트 — 가수 고르기(비중 1~5) · 곡 수나 시간 · 인기곡 위주 · 새로 만들기 또는 덧붙이기
 
 const R = { picks: [], mode: "count", amount: 30, unit: "min", popular: true, target: "new", name: "" };
 try { Object.assign(R, JSON.parse(localStorage.getItem("mzRandom") || "{}"), { picks: (JSON.parse(localStorage.getItem("mzRandom") || "{}").picks || []).map((p) => ({ ...p, songs: null })) }); } catch { /* 없음 */ }
@@ -667,15 +1074,15 @@ const saveR = () => { try { localStorage.setItem("mzRandom", JSON.stringify({ ..
 let searchHits = [];
 let genreCache = null; // 장르 목록 (한 번 읽으면 기억)
 let recHits = [];       // 장르 추천 가수 (지금 보여 주는 것)
-let recGenre = null;    // { g: 장르, pool: 모은 가수, shown: 보여 준 가수 id, usedLists: 읽은 재생목록 }
+let recGenre = null;    // { g: 장르, pool: 모은 가수, shown: 보여 준 가수 id, usedLists: 읽은 플레이리스트 }
 async function drawRandom() {
   const lists = myLists || [];
   body.innerHTML = `<div class="mz-rand">
-    <div class="mz-h">랜덤 재생목록</div>
-    <p class="mz-note">가수를 고르고(비중 1~5), 곡 수나 시간을 정하면 그 가수들의 인기곡에서 골라 재생목록으로 만들고 바로 재생해요.</p>
+    <div class="mz-h">랜덤 플레이리스트</div>
+    <p class="mz-note">가수를 고르고(비중 1~5), 곡 수나 시간을 정하면 그 가수들의 인기곡에서 골라 플레이리스트로 만들고 바로 재생해요.</p>
     <div class="mz-rand-search"><div class="mz-rand-row"><input type="search" id="rq" placeholder="가수 찾기 (이름 앞부분만 써도 돼요)"><button class="pl-open ghost" id="rFromQueue" title="지금 다음 트랙 목록에 있는 가수들을 한 번에">다음 트랙에서 가수 가져오기</button></div><div class="mz-hits" id="rhits"></div></div>
     <div class="mz-genre">
-      <button class="mz-gbtn" id="rGenreBtn" title="YouTube Music 의 장르별 대표 재생목록에서 많이 나오는 가수를 추천">${genreBtnLabel()}</button>
+      <button class="mz-gbtn" id="rGenreBtn" title="YouTube Music 의 장르별 대표 플레이리스트에서 많이 나오는 가수를 추천">${genreBtnLabel()}</button>
       <div class="mz-gpanel" id="rGenres" hidden></div>
       <div class="mz-recbox" id="rRec"></div>
     </div>
@@ -687,7 +1094,7 @@ async function drawRandom() {
       <label class="set-ck"><input type="checkbox" id="rpop" ${R.popular ? "checked" : ""}><span>인기곡 위주<small>많이 들은 곡이 더 자주 뽑혀요</small></span></label>
     </div>
     <div class="mz-rand-opts">
-      <select id="rtarget"><option value="new">새 재생목록</option>${lists.map((l) => `<option value="${esc(l.id)}" ${R.target === l.id ? "selected" : ""}>‘${esc(l.t)}’에 덧붙이기</option>`).join("")}</select>
+      <select id="rtarget"><option value="new">새 플레이리스트</option>${lists.map((l) => `<option value="${esc(l.id)}" ${R.target === l.id ? "selected" : ""}>‘${esc(l.t)}’에 덧붙이기</option>`).join("")}</select>
       <input type="text" id="rname" placeholder="이름 (비우면 자동)" value="${esc(R.name)}" ${R.target !== "new" ? "hidden" : ""}>
       <span class="mz-sp"></span>
       <button class="pl-open" id="rgo">${R.target === "new" ? "만들고 재생" : "덧붙이고 재생"}</button>
@@ -944,7 +1351,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     document.body.classList.toggle("compact", !big);
     Player.setSite(big ? "ytmusic" : null);
     $("#bigBtn").innerHTML = big ? ICON_SMALL : ICON_BIG;
-    $("#bigBtn").title = big ? "작게 보기" : "크게 보기 — 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 재생목록 · 랜덤 (YouTube Music)";
+    $("#bigBtn").title = big ? "작게 보기" : "크게 보기 — 큰 앨범 · 다음 트랙 · 가사 · 앨범 · 플레이리스트 · 랜덤 (YouTube Music)";
     lastH = 0;
     try {
       if (big) {
@@ -1090,7 +1497,7 @@ const ICON_UNLOCK = '<svg viewBox="0 0 16 16"><rect x="3" y="7" width="10" heigh
 function artistOf(byline) {
   return String(byline || "").split(" • ")[0].split(/\s*(?:,|&|feat\.|ft\.)\s*/i)[0].trim();
 }
-/// 랜덤 재생목록 가수에 넣기: 가수 페이지 ID 가 있으면 그대로, 없으면 이름으로 찾아 첫 가수 (비중 3, 이미 있으면 건너뜀)
+/// 랜덤 플레이리스트 가수에 넣기: 가수 페이지 ID 가 있으면 그대로, 없으면 이름으로 찾아 첫 가수 (비중 3, 이미 있으면 건너뜀)
 async function addArtistsToRandom(list) {
   let added = 0, missed = 0;
   for (const [i, a] of list.entries()) {
@@ -1129,9 +1536,9 @@ async function moreRec() {
   if (!st) return;
   const rec = $("#rRec");
   const fresh = () => st.pool.filter((a) => !st.shown.has(a.id) && !R.picks.some((p) => p.id === a.id));
-  // 남은 가수가 적으면 다른 재생목록을 더 읽어서 채움
+  // 남은 가수가 적으면 다른 플레이리스트를 더 읽어서 채움
   if (fresh().length < 8) {
-    rec.innerHTML = `<div class="mz-note">‘${esc(st.g.t)}’ 재생목록에서 가수 모으는 중…</div>`;
+    rec.innerHTML = `<div class="mz-note">‘${esc(st.g.t)}’ 플레이리스트에서 가수 모으는 중…</div>`;
     let r;
     try { r = await call("genreArtists", { id: st.g.id, params: st.g.params, lists: 8, max: 80, skip: st.usedLists }, 90); } catch (err) { rec.innerHTML = ""; fail(err); return; }
     if (recGenre !== st) return;
@@ -1140,7 +1547,7 @@ async function moreRec() {
       const have = st.pool.find((x) => x.id === a.id);
       if (have) have.n += a.n; else st.pool.push(a);
     }
-    // 장르 재생목록을 다 읽었는데도 다 보여 줬으면 처음부터 다시
+    // 장르 플레이리스트를 다 읽었는데도 다 보여 줬으면 처음부터 다시
     if (!fresh().length && st.pool.length) { st.shown.clear(); st.usedLists = []; }
   }
   const pick = sampleArtists(fresh(), 16);
@@ -1173,9 +1580,9 @@ function drawRec(st, pick) {
   if (!rec) return;
   rec.innerHTML = `<div class="mz-rechead"><b>‘${esc(st.g.t)}’ 추천 가수</b><small>${pick.length}명 · 모은 가수 ${st.pool.length}명</small><span class="mz-sp"></span>
       <button class="pl-open ghost" data-more="1" title="아직 안 보여 준 가수">↻ 다른 가수</button><button class="pl-open" data-rec="all">＋ 모두 넣기</button></div>
-    <div class="mz-recgrid">${pick.map((a, i) => `<button class="mz-recit" data-rec="${i}" title="눌러서 랜덤 가수에 넣기 · 이 장르 재생목록에 ${a.n}번 나옴">
+    <div class="mz-recgrid">${pick.map((a, i) => `<button class="mz-recit" data-rec="${i}" title="눌러서 랜덤 가수에 넣기 · 이 장르 플레이리스트에 ${a.n}번 나옴">
       <span class="mz-av" style="--h:${hueOf(a.name)}">${esc([...a.name.trim()][0] || "?")}</span>
-      <span class="mz-t"><b>${esc(a.name)}</b><small>재생목록에 ${a.n}번</small></span><span class="mz-plus">＋</span></button>`).join("")}</div>`;
+      <span class="mz-t"><b>${esc(a.name)}</b><small>플레이리스트에 ${a.n}번</small></span><span class="mz-plus">＋</span></button>`).join("")}</div>`;
   markRecAdded();
 }
 /// 이미 랜덤 가수에 들어간 추천은 ✓
