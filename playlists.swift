@@ -355,8 +355,19 @@ final class PlaylistPane: NSView {
                                        detail: "\(group.count)곡 · \(Self.total(group))")
                 h.onPlay = { [weak self] in self?.play(from: group[0]) }
                 h.onRemove = { [weak self] in self?.removeGroup(group) }
+                // 앨범 편집: 이 앨범의 전체 수록곡을 펼쳐 빠진 곡을 넣기 (앨범 정보가 있을 때만)
+                let key = group[0].setId
+                if !group[0].albumId.isEmpty {
+                    h.editing = editKey == key
+                    h.onEdit = { [weak self] in
+                        guard let self else { return }
+                        self.editKey = self.editKey == key ? nil : key
+                        self.show(self.tracks)
+                    }
+                }
                 doc.addSubview(h)
                 for k in i...j { addRow(ts[k], k, drag: false) }
+                if editKey == key, !group[0].albumId.isEmpty { addEditor(group) }
                 i = j + 1
             } else { addRow(ts[i], i, drag: true); i += 1 }
         }
@@ -379,7 +390,7 @@ final class PlaylistPane: NSView {
         let w = scroll.contentSize.width
         var y: CGFloat = 0
         for v in doc.subviews {
-            let h: CGFloat = v is AlbumGroupHead ? AlbumGroupHead.height : PlaylistRow.rowH
+            let h: CGFloat = v is AlbumGroupHead ? AlbumGroupHead.height : v is AlbumEditRow ? AlbumEditRow.height : PlaylistRow.rowH
             v.frame = NSRect(x: 0, y: y, width: w, height: h)
             v.needsLayout = true
             y += h
@@ -565,6 +576,67 @@ final class PlaylistPane: NSView {
         }
     }
 
+    // MARK: 앨범 편집 (앨범별로 묶어 볼 때 머리줄 ✎) — 전체 수록곡 중 빠진 곡을 그 앨범 묶음 끝에 넣기
+
+    /// 편집 중인 앨범 묶음 (그 묶음 첫 곡의 자리 ID)
+    private var editKey: String?
+    private var albumSongs: [String: [QueueItem]] = [:]
+    private var adding = Set<String>()
+
+    private func addEditor(_ group: [PlaylistTrack]) {
+        let aid = group[0].albumId
+        guard let songs = albumSongs[aid] else {
+            doc.addSubview(AlbumEditRow(note: "수록곡 불러오는 중…"))
+            music?.albumTracks(id: aid) { [weak self] _, ts in
+                guard let self else { return }
+                self.albumSongs[aid] = ts
+                self.show(self.tracks)
+            }
+            return
+        }
+        if songs.isEmpty { doc.addSubview(AlbumEditRow(note: "수록곡을 찾지 못했어요")); return }
+        // 이미 플레이리스트에 있는 곡: 곡 ID 가 같거나 (버전이 달라도) 제목이 같으면
+        func norm(_ t: String) -> String { t.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let haveV = Set(tracks.map(\.videoId)), haveT = Set(tracks.map { norm($0.title) })
+        let isIn = { (q: QueueItem) in haveV.contains(q.videoId) || haveT.contains(norm(q.title)) }
+        let missing = songs.filter { !isIn($0) && !$0.videoId.isEmpty }
+        let head = AlbumEditRow(note: missing.isEmpty ? "앨범 \(songs.count)곡이 모두 들어 있어요" : "앨범 \(songs.count)곡 중 \(missing.count)곡이 빠져 있어요 — ＋ 로 넣기",
+                                button: missing.isEmpty ? nil : "모두 넣기")
+        head.onButton = { [weak self] in self?.addToGroup(missing, group: group) }
+        doc.addSubview(head)
+        for (k, q) in songs.enumerated() {
+            let r = AlbumEditRow(number: k + 1, song: q, state: isIn(q) ? .have : adding.contains(q.videoId) ? .working : .add)
+            r.onButton = { [weak self] in self?.addToGroup([q], group: group) }
+            doc.addSubview(r)
+        }
+    }
+
+    /// 곡들을 플레이리스트에 넣고 그 앨범 묶음 바로 뒤(다음 묶음 앞)로 옮김 (앨범 순서대로)
+    private func addToGroup(_ songs: [QueueItem], group: [PlaylistTrack]) {
+        let id = Self.selectedId
+        let vids = songs.map(\.videoId).filter { !$0.isEmpty && !adding.contains($0) }
+        guard !vids.isEmpty else { return }
+        vids.forEach { adding.insert($0) }
+        show(tracks)
+        // 묶음 마지막 곡 뒤에 오는 곡 (없으면 맨 끝)
+        let lastSid = group.last?.setId ?? ""
+        let before: String? = tracks.firstIndex(where: { $0.setId == lastSid }).flatMap { $0 + 1 < tracks.count ? tracks[$0 + 1].setId : nil }
+        music?.addToPlaylistIds(id, videoIds: vids) { [weak self] m in
+            guard let self else { return }
+            guard let m else { vids.forEach { self.adding.remove($0) }; self.toast?("넣지 못했어요"); self.show(self.tracks); return }
+            let sids = vids.compactMap { m[$0] }.filter { !$0.isEmpty }
+            @MainActor func move(_ i: Int) {
+                guard i < sids.count, before != nil else {
+                    vids.forEach { self.adding.remove($0) }
+                    if Self.selectedId == id { self.loadTracks() }
+                    return
+                }
+                self.music?.moveInPlaylist(id, setId: sids[i], before: before) { _ in move(i + 1) }
+            }
+            move(0)
+        }
+    }
+
     @objc private func toggleGroup() {
         Self.groupByAlbum.toggle()
         syncGroupBtn()
@@ -740,8 +812,11 @@ final class AlbumGroupHead: NSView {
     static let height: CGFloat = 30
     var onPlay: (() -> Void)?
     var onRemove: (() -> Void)?
+    /// ✎ 앨범 편집 (앨범 정보가 있을 때만 보임)
+    var onEdit: (() -> Void)? { didSet { edit.isHidden = onEdit == nil } }
+    var editing = false { didSet { edit.contentTintColor = editing ? .launcherAccent : .secondaryLabelColor } }
     private let name: NSTextField, info: NSTextField
-    private let play = NSButton(), minus = NSButton()
+    private let play = NSButton(), minus = NSButton(), edit = NSButton()
     override var isFlipped: Bool { true }
     init(title: String, detail: String) {
         name = NSTextField(labelWithString: title)
@@ -753,13 +828,15 @@ final class AlbumGroupHead: NSView {
         info.font = .systemFont(ofSize: 11)
         info.textColor = .secondaryLabelColor
         for v in [name, info] { addSubview(v) }
-        for (b, sym, tip, act) in [(play, "play.circle", "이 앨범부터 재생", #selector(playTapped)),
+        for (b, sym, tip, act) in [(edit, "square.and.pencil", "앨범 편집 — 이 앨범의 전체 수록곡을 보고 빠진 곡 넣기", #selector(editTapped)),
+                                   (play, "play.circle", "이 앨범부터 재생", #selector(playTapped)),
                                    (minus, "minus.circle", "이 앨범 곡을 모두 플레이리스트에서 빼기 (되돌리기 가능)", #selector(removeTapped))] {
             b.image = NSImage(systemSymbolName: sym, accessibilityDescription: tip)
             b.isBordered = false; b.toolTip = tip; b.target = self; b.action = act
             b.contentTintColor = b === minus ? .systemRed : .secondaryLabelColor
             addSubview(b)
         }
+        edit.isHidden = true
     }
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
@@ -767,8 +844,10 @@ final class AlbumGroupHead: NSView {
         let w = bounds.width
         minus.frame = NSRect(x: w - 30, y: 6, width: 20, height: 20)
         play.frame = NSRect(x: w - 54, y: 6, width: 20, height: 20)
+        edit.frame = NSRect(x: w - 78, y: 6, width: 20, height: 20)
         info.sizeToFit()
-        info.frame = NSRect(x: play.frame.minX - 6 - info.frame.width, y: 9, width: info.frame.width, height: 15)
+        let left = edit.isHidden ? play.frame.minX : edit.frame.minX
+        info.frame = NSRect(x: left - 6 - info.frame.width, y: 9, width: info.frame.width, height: 15)
         name.frame = NSRect(x: 8, y: 8, width: max(40, info.frame.minX - 16), height: 17)
     }
     override func draw(_ dirtyRect: NSRect) {
@@ -776,5 +855,73 @@ final class AlbumGroupHead: NSView {
         NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 3), xRadius: 6, yRadius: 6).fill()
     }
     @objc private func playTapped() { onPlay?() }
+    @objc private func editTapped() { onEdit?() }
     @objc private func removeTapped() { onRemove?() }
+}
+
+/// 앨범 편집 줄: 안내(＋ 모두 넣기) 또는 수록곡 한 곡 (번호 · 제목 · 시간 · ✓ 들어 있음 / ＋ 넣기)
+@MainActor
+final class AlbumEditRow: NSView {
+    static let height: CGFloat = 28
+    enum State { case have, add, working }
+    var onButton: (() -> Void)?
+    private let btn = NSButton()
+    override var isFlipped: Bool { true }
+    private var labels: [NSTextField] = []
+    private var state: State?
+
+    /// 안내 줄 (button 이 있으면 오른쪽에 글자 단추)
+    init(note: String, button: String? = nil) {
+        super.init(frame: .zero)
+        let l = NSTextField(labelWithString: note)
+        l.font = .systemFont(ofSize: 11); l.textColor = .secondaryLabelColor; l.lineBreakMode = .byTruncatingTail
+        addSubview(l); labels = [l]
+        if let b = button {
+            btn.title = b; btn.bezelStyle = .rounded; btn.controlSize = .small; btn.font = .systemFont(ofSize: 11)
+            btn.target = self; btn.action = #selector(tapped)
+            addSubview(btn)
+        }
+    }
+    /// 수록곡 한 곡
+    init(number: Int, song q: QueueItem, state: State) {
+        self.state = state
+        super.init(frame: .zero)
+        let n = NSTextField(labelWithString: "\(number)")
+        n.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular); n.textColor = .tertiaryLabelColor; n.alignment = .right
+        let t = NSTextField(labelWithString: q.title)
+        t.font = .systemFont(ofSize: 12); t.lineBreakMode = .byTruncatingTail
+        t.textColor = state == .have ? .secondaryLabelColor : .labelColor
+        let d = NSTextField(labelWithString: q.duration)
+        d.font = .monospacedDigitSystemFont(ofSize: 10.5, weight: .regular); d.textColor = .tertiaryLabelColor; d.alignment = .right
+        for v in [n, t, d] { addSubview(v) }
+        labels = [n, t, d]
+        btn.isBordered = false
+        btn.image = NSImage(systemSymbolName: state == .have ? "checkmark.circle.fill" : state == .working ? "ellipsis.circle" : "plus.circle.fill", accessibilityDescription: nil)
+        btn.contentTintColor = state == .have ? .systemGreen : .launcherAccent
+        btn.toolTip = state == .have ? "이미 들어 있어요" : state == .working ? "넣는 중…" : "이 플레이리스트의 앨범 묶음 끝에 넣기"
+        btn.isEnabled = state == .add
+        btn.target = self; btn.action = #selector(tapped)
+        addSubview(btn)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func layout() {
+        super.layout()
+        let w = bounds.width
+        if state == nil {
+            btn.sizeToFit()
+            btn.frame = NSRect(x: w - 12 - btn.frame.width, y: 3, width: btn.frame.width, height: 22)
+            labels[0].frame = NSRect(x: 30, y: 6, width: (btn.superview == nil ? w - 12 : btn.frame.minX - 6) - 30, height: 15)
+        } else {
+            labels[0].frame = NSRect(x: 14, y: 6, width: 22, height: 14)
+            btn.frame = NSRect(x: w - 32, y: 4, width: 20, height: 20)
+            labels[2].frame = NSRect(x: btn.frame.minX - 48, y: 6, width: 42, height: 14)
+            labels[1].frame = NSRect(x: 42, y: 5, width: labels[2].frame.minX - 48, height: 16)
+        }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        // 펼친 편집 칸: 왼쪽에 옅은 세로 줄
+        NSColor.launcherAccent.withAlphaComponent(0.35).setFill()
+        NSRect(x: 10, y: 0, width: 2, height: bounds.height).fill()
+    }
+    @objc private func tapped() { onButton?() }
 }

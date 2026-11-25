@@ -300,8 +300,26 @@ final class BigPlayerView: NSView {
         })
         return m
     }
+    /// '플레이리스트에 넣기 ▾': 창 밖 메뉴 대신 창 안 고르기 판 (버튼 바로 위 · 목록이 길면 판 안에서 스크롤)
     private func showAddMenu(from b: NSView, vids: [String], albums: [String]) {
-        addMenu(vids: vids, albums: albums).popUp(positioning: nil, at: NSPoint(x: 0, y: b.bounds.height + 4), in: b)
+        if plPane.playlists.isEmpty { plPane.reload(); toast("플레이리스트 불러오는 중… 잠시 뒤 다시 눌러 주세요"); return }
+        let lists = plPane.playlists
+        let o = PickListOverlay(title: "플레이리스트에 넣기", items: lists.map { ($0.title, $0.sub) }, newTitle: "＋ 새 플레이리스트…")
+        o.frame = bounds
+        o.onPick = { [weak self, weak o] i in
+            o?.removeFromSuperview()
+            guard let self else { return }
+            if i >= 0, i < lists.count { self.add(to: lists[i].id, title: lists[i].title, vids: vids, albums: albums); return }
+            PlaylistPane.askName { name in
+                self.music?.createPlaylist(name) { id in
+                    guard let id else { self.toast("만들지 못했어요"); return }
+                    self.add(to: id, title: name, vids: vids, albums: albums, fresh: true)
+                }
+            }
+        }
+        addSubview(o)
+        o.place(anchor: b.convert(b.bounds, to: self), top: tabs.frame.maxY + 6, rightLimit: bounds.maxX - 8)
+        window?.makeFirstResponder(o)
     }
     private func add(to id: String, title: String, vids: [String], albums: [String], fresh: Bool = false) {
         // 지금 듣는 내 플레이리스트면 다음 트랙 끝에도 붙임 (곡만 · 앨범은 플레이리스트에만)
@@ -1109,9 +1127,15 @@ final class BigPlayerView: NSView {
             // 고르기 모드: 자켓 위 동그라미를 눌러야 앨범 통째로 고름 (줄의 나머지는 펼치기 · 접기)
             row.onCheck = { [weak self] in
                 guard let self else { return }
-                if self.pickedAlbums.contains(a.id) { self.pickedAlbums.remove(a.id) } else { self.pickedAlbums.insert(a.id) }
+                if self.pickedAlbums.contains(a.id) { self.pickedAlbums.remove(a.id) } else {
+                    self.pickedAlbums.insert(a.id)
+                    // 앨범째 골랐으면 따로 고른 그 앨범 곡은 앨범에 합침 (두 번 들어가지 않게)
+                    if let vids = self.albumTracks[a.id]?.tracks.map(\.videoId) { self.pickedTracks.removeAll { vids.contains($0) } }
+                }
                 row.check = self.pickedAlbums.contains(a.id)
                 self.syncBar()
+                // 펼친 수록곡 체크도 같이
+                if self.expanded.contains(a.id) { self.drawAlbums() }
             }
             row.expanded = expanded.contains(a.id)
             row.onPlay = { [weak self] in self?.playAlbumEntry(a) }
@@ -1138,9 +1162,21 @@ final class BigPlayerView: NSView {
                 tr = QueueRow(item: t, width: 320) { [weak self] in
                     guard let self else { return }
                     if self.selecting {
-                        if let i = self.pickedTracks.firstIndex(of: t.videoId) { self.pickedTracks.remove(at: i) } else { self.pickedTracks.append(t.videoId) }
-                        tr.check = self.pickedTracks.contains(t.videoId)
+                        let vids = got.tracks.map(\.videoId)
+                        if self.pickedAlbums.contains(a.id) {
+                            // 앨범째 고른 상태에서 한 곡을 빼면: 앨범 대신 나머지 곡들을 고른 상태로
+                            self.pickedAlbums.remove(a.id)
+                            for v in vids where v != t.videoId && !self.pickedTracks.contains(v) { self.pickedTracks.append(v) }
+                        } else {
+                            if let i = self.pickedTracks.firstIndex(of: t.videoId) { self.pickedTracks.remove(at: i) } else { self.pickedTracks.append(t.videoId) }
+                            // 수록곡을 하나씩 다 고르면 앨범째 고른 것으로
+                            if !vids.isEmpty, vids.allSatisfy({ self.pickedTracks.contains($0) }) {
+                                self.pickedTracks.removeAll { vids.contains($0) }
+                                self.pickedAlbums.insert(a.id)
+                            }
+                        }
                         self.syncBar()
+                        self.drawAlbums()
                         return
                     }
                     // 이 곡부터 앨범 재생
@@ -1150,7 +1186,7 @@ final class BigPlayerView: NSView {
                 }
                 tr.translatesAutoresizingMaskIntoConstraints = true
                 tr.number = k + 1
-                if selecting { tr.check = pickedTracks.contains(t.videoId) }
+                if selecting { tr.check = pickedTracks.contains(t.videoId) || pickedAlbums.contains(a.id) }
                 tr.makeMenu = { [weak self] in
                     let m = NSMenu()
                     m.addItem(MenuAction("이 곡만 재생") { self?.playVideos([t.videoId], title: t.title) })
@@ -1714,4 +1750,122 @@ final class SelectBar: NSView {
 final class WheelScrollView: NSScrollView {
     var onWheel: (() -> Void)?
     override func scrollWheel(with event: NSEvent) { onWheel?(); super.scrollWheel(with: event) }
+}
+
+/// 창 안에 띄우는 고르기 판 (플레이리스트에 넣기 등): 판 바깥을 누르거나 esc 면 닫힘
+@MainActor
+final class PickListOverlay: NSView {
+    var onPick: ((Int) -> Void)?   // 고른 줄 번호, -1 = 새로 만들기
+    private let panel = NSVisualEffectView()
+    private let scroll = NSScrollView()
+    private let doc = FlippedView()
+    private let head: NSTextField
+    private let items: [(String, String)]
+    private let newTitle: String?
+    private static let rowH: CGFloat = 32, headH: CGFloat = 28, footH: CGFloat = 34
+    override var isFlipped: Bool { true }
+    override var acceptsFirstResponder: Bool { true }
+
+    init(title: String, items: [(String, String)], newTitle: String?) {
+        self.items = items; self.newTitle = newTitle
+        head = NSTextField(labelWithString: title)
+        super.init(frame: .zero)
+        panel.material = .menu
+        panel.blendingMode = .withinWindow
+        panel.state = .active
+        panel.wantsLayer = true
+        panel.layer?.cornerRadius = 10
+        panel.layer?.borderWidth = 0.5
+        panel.layer?.borderColor = NSColor.separatorColor.cgColor
+        addSubview(panel)
+        head.font = .systemFont(ofSize: 11, weight: .semibold)
+        head.textColor = .secondaryLabelColor
+        panel.addSubview(head)
+        scroll.drawsBackground = false
+        scroll.hasVerticalScroller = true
+        scroll.autohidesScrollers = true
+        scroll.documentView = doc
+        panel.addSubview(scroll)
+        for (i, it) in items.enumerated() { doc.addSubview(PickListRow(title: it.0, sub: it.1) { [weak self] in self?.onPick?(i) }) }
+        if let n = newTitle {
+            let r = PickListRow(title: n, sub: "", accent: true) { [weak self] in self?.onPick?(-1) }
+            r.identifier = NSUserInterfaceItemIdentifier("new")
+            panel.addSubview(r)
+        }
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    /// anchor(누른 단추) 바로 위에, 오른쪽 끝을 맞춰서 · 위로는 top 까지만 (넘치면 판 안에서 스크롤)
+    func place(anchor: NSRect, top: CGFloat, rightLimit: CGFloat) {
+        let w: CGFloat = 280
+        let want = Self.headH + CGFloat(items.count) * Self.rowH + (newTitle == nil ? 6 : Self.footH)
+        let bottom = anchor.minY - 6
+        let h = max(120, min(want, bottom - top))
+        let x = max(8, min(anchor.maxX, rightLimit) - w)
+        panel.frame = NSRect(x: x, y: bottom - h, width: w, height: h)
+        head.frame = NSRect(x: 12, y: 8, width: w - 24, height: 15)
+        let footH = newTitle == nil ? 6 : Self.footH
+        scroll.frame = NSRect(x: 4, y: Self.headH, width: w - 8, height: h - Self.headH - footH)
+        var y: CGFloat = 0
+        for v in doc.subviews { v.frame = NSRect(x: 0, y: y, width: scroll.contentSize.width, height: Self.rowH); y += Self.rowH }
+        doc.frame = NSRect(x: 0, y: 0, width: scroll.contentSize.width, height: max(y, scroll.contentSize.height))
+        if let n = panel.subviews.first(where: { $0.identifier?.rawValue == "new" }) {
+            n.frame = NSRect(x: 4, y: h - footH + 1, width: w - 8, height: Self.rowH)
+        }
+    }
+    override func draw(_ dirtyRect: NSRect) {
+        // 판 바깥은 살짝 어둡게
+        NSColor.black.withAlphaComponent(0.12).setFill()
+        bounds.fill()
+    }
+    override func mouseDown(with event: NSEvent) {
+        if !panel.frame.contains(convert(event.locationInWindow, from: nil)) { removeFromSuperview() }
+    }
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 { removeFromSuperview() } else { super.keyDown(with: event) }
+    }
+    override func scrollWheel(with event: NSEvent) { }   // 뒤 목록이 굴러가지 않게
+}
+
+/// 고르기 판 한 줄: 이름 · 부제, 마우스를 올리면 밝아짐, 누르면 고름
+@MainActor
+final class PickListRow: NSView {
+    private let action: () -> Void
+    private var hover = false { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+    init(title: String, sub: String, accent: Bool = false, action: @escaping () -> Void) {
+        self.action = action
+        super.init(frame: .zero)
+        let t = NSTextField(labelWithString: title)
+        t.font = .systemFont(ofSize: 12.5, weight: accent ? .semibold : .regular)
+        t.textColor = accent ? .launcherAccent : .labelColor
+        t.lineBreakMode = .byTruncatingTail
+        t.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(t)
+        let s = NSTextField(labelWithString: sub)
+        s.font = .systemFont(ofSize: 10.5)
+        s.textColor = .tertiaryLabelColor
+        s.lineBreakMode = .byTruncatingTail
+        s.alignment = .right
+        s.translatesAutoresizingMaskIntoConstraints = false
+        s.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addSubview(s)
+        NSLayoutConstraint.activate([
+            t.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10), t.centerYAnchor.constraint(equalTo: centerYAnchor),
+            s.leadingAnchor.constraint(greaterThanOrEqualTo: t.trailingAnchor, constant: 8),
+            s.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10), s.centerYAnchor.constraint(equalTo: centerYAnchor),
+            s.widthAnchor.constraint(lessThanOrEqualToConstant: 110),
+        ])
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    override func mouseEntered(with event: NSEvent) { hover = true }
+    override func mouseExited(with event: NSEvent) { hover = false }
+    override func mouseDown(with event: NSEvent) { }
+    override func mouseUp(with event: NSEvent) { if bounds.contains(convert(event.locationInWindow, from: nil)) { action() } }
+    override func draw(_ dirtyRect: NSRect) {
+        guard hover else { return }
+        NSColor.labelColor.withAlphaComponent(0.09).setFill()
+        NSBezierPath(roundedRect: bounds.insetBy(dx: 2, dy: 1), xRadius: 6, yRadius: 6).fill()
+    }
 }
