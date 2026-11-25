@@ -22,6 +22,9 @@ final class YTWebView: WKWebView {
     override func mouseEntered(with e: NSEvent) { if !mouseOff { super.mouseEntered(with: e) } }
     override func mouseExited(with e: NSEvent) { if !mouseOff { super.mouseExited(with: e) } }
     override func cursorUpdate(with e: NSEvent) { if !mouseOff { super.cursorUpdate(with: e) } }
+    /// 페이지를 직접 눌렀을 때 (자동 PIP 다시 켜기용)
+    var onUserClick: (() -> Void)?
+    override func mouseDown(with e: NSEvent) { if !mouseOff { onUserClick?() }; super.mouseDown(with: e) }
 }
 
 /// 예전 이름 (도구함 다른 곳에서 YouTube 창을 이 이름으로 부름)
@@ -54,6 +57,9 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
     }
     /// 이미 자동으로 작은 창에 띄운 영상 (큰 창으로 돌아온 뒤 같은 영상으로 또 들어가지 않게)
     private var autoDoneFor: String?
+    /// 작은 창에서 큰 창으로 직접 돌아왔으면, 페이지에서 영상을 직접 누를 때까지 자동 PIP 쉼
+    /// (쇼츠가 다음 영상으로 넘어가며 바로 다시 작은 창이 되던 문제)
+    private var autoPaused = false
 
     /// 주소에서 영상 ID (YouTube watch?v=… · shorts/… , Netflix watch/숫자)
     static func videoID(_ u: URL?) -> String? {
@@ -279,7 +285,7 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
 
     /// 완전히 끄기 (메모리 정리)
     func quit() {
-        if inPiP { togglePiP() }
+        if inPiP { leaveNativePiP {}; setPiP(false) }
         if inMini { exitMini(showMain: false) }
         webView?.pauseAllMediaPlayback()
         startStateWatch(false)
@@ -295,6 +301,15 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
     // MARK: PIP
 
     func togglePiP() {
+        // macOS 기본 PIP 대신 늘 도구함 작은 창 (단추 자리 · 재생바 · 화질을 마음대로)
+        if inMini { exitMini(showMain: true) } else { enterMini() }
+    }
+    /// macOS 기본 PIP 로 들어가 있으면 빠져나옴 (페이지가 직접 켠 경우 포함)
+    private func leaveNativePiP(_ done: @escaping () -> Void) {
+        let js = "if (document.pictureInPictureElement) { await document.exitPictureInPicture(); } const v = document.querySelector('video'); if (v && v.webkitPresentationMode === 'picture-in-picture') v.webkitSetPresentationMode('inline'); return 1;"
+        webView?.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { _ in MainActor.assumeIsolated { done() } }
+    }
+    func toggleNativePiP() {
         guard let wv = webView else { show(); return }
         wv.callAsyncJavaScript(Self.toggleJS, arguments: [:], in: nil, in: .page) { [weak self] result in
             MainActor.assumeIsolated {
@@ -315,7 +330,14 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
     }
 
     func received(_ body: String) {
-        if body == "pip:1" { setPiP(true) } else if body == "pip:0" { setPiP(false) }
+        if body == "pip:1" {
+            // 어디서 켜졌든 macOS 기본 PIP 는 바로 끄고 도구함 작은 창으로
+            leaveNativePiP { [weak self] in
+                guard let self else { return }
+                self.setPiP(false)
+                if !self.inMini { self.enterMini() }
+            }
+        } else if body == "pip:0" { setPiP(false) }
         else if body == "shortEnd" { shortEnded() }
         else if body.hasPrefix("ar:"), let r = Double(body.dropFirst(3)) {
             if inMini { setAspect(r) }
@@ -323,7 +345,7 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
             if site == .youtube && bestQuality { applyBestSoon() }
             applySavedSoon()
             // 자동 PIP: 새로 누른 영상이 재생 준비되면 작은 창으로
-            if autoPiP, !inMini, let id = Self.videoID(webView?.url), id != autoDoneFor {
+            if autoPiP, !autoPaused, !inMini, let id = Self.videoID(webView?.url), id != autoDoneFor {
                 autoDoneFor = id
                 enterMini()
             }
@@ -485,7 +507,7 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
 
     func enterMini() {
         guard let wv = webView, !inMini else { if webView == nil { show() }; return }
-        if inPiP { togglePiP() }
+        if inPiP { leaveNativePiP {}; setPiP(false) }
         applyMiniCSS(true) { [weak self] ar in
             guard let self else { return }
             guard ar != 0 else {      // 0 = 영상 없음, -1 = 아직 크기 모름 (일단 16:9)
@@ -550,6 +572,12 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
     func exitMini(showMain: Bool) {
         guard inMini, let wv = webView, let content = mainContent else { return }
         inMini = false
+        if showMain {
+            // 직접 큰 창으로 돌아옴 → 페이지를 직접 누를 때까지 자동 PIP 쉼
+            autoPaused = true
+            autoDoneFor = Self.videoID(wv.url)
+            (wv as? YTWebView)?.onUserClick = { [weak self] in self?.autoPaused = false }
+        }
         wv.mouseOff = false
         startTimePoll(false)
         applyMiniCSS(false) { _ in }
@@ -1111,8 +1139,8 @@ final class MiniOverlay: NSView {
         }
         let close = pill("xmark", "닫기 (영상 멈춤)", size: 12) { [unowned self] in onClose?() }
         let expand = pill("arrow.up.left.and.arrow.down.right", "큰 창으로", size: 12) { [unowned self] in onExpand?() }
-        close.autoresizingMask = [.minYMargin]
-        expand.autoresizingMask = [.minXMargin, .minYMargin]
+        close.autoresizingMask = [.minXMargin, .minYMargin]
+        expand.autoresizingMask = [.minYMargin]
 
         // 아래 재생바: [▶︎] 1:23 ━━━●━━━ 4:56  (끌어서 원하는 곳으로)
         bar.wantsLayer = true
@@ -1209,8 +1237,9 @@ final class MiniOverlay: NSView {
         guard controls.count == 5 else { return }
         layoutGrip()
         controls[3].setFrameOrigin(NSPoint(x: bounds.width - 84, y: bounds.height - 46))
-        controls[0].setFrameOrigin(NSPoint(x: 16, y: bounds.height - 46))
-        controls[1].setFrameOrigin(NSPoint(x: bounds.width - 46, y: bounds.height - 46))
+        // 왼쪽 위: 크게 (큰 창으로) · 오른쪽 위: ✕ 닫기 (그 왼쪽에 화질)
+        controls[1].setFrameOrigin(NSPoint(x: 16, y: bounds.height - 46))
+        controls[0].setFrameOrigin(NSPoint(x: bounds.width - 46, y: bounds.height - 46))
         let h: CGFloat = 48
         bar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
         playButton.setFrameOrigin(NSPoint(x: 14, y: 15))

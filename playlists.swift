@@ -759,7 +759,6 @@ final class PlaylistPane: NSView {
         }
     }
 
-    /// 겹친 상자: 보기 고르기 메뉴 (곡만 · 앨범별 · 재생 중인 앨범만 펼치기 · 모두 접기 / 펼치기)
     /// ⇄ 다른 앨범 버전을 이 앨범 버전으로: 이 앨범 묶음에 넣고 원래 버전은 뺌 (되돌리기로 원래 버전 되살림)
     private func swapVersions(_ pairs: [(QueueItem, [PlaylistTrack])], group: [PlaylistTrack]) {
         guard !pairs.isEmpty else { return }
@@ -767,20 +766,12 @@ final class PlaylistPane: NSView {
         removeGroup(pairs.flatMap(\.1))
     }
 
+    /// 보기 단추: 누를 때마다 곡만 → 앨범별 → 앨범별 · 재생 중인 앨범만 펼치기 → 곡만 …
     @objc private func toggleGroup() {
-        let m = NSMenu()
-        func item(_ t: String, on: Bool, _ f: @escaping () -> Void) { let i = MenuAction(t, f); i.state = on ? .on : .off; m.addItem(i) }
-        let g = Self.groupByAlbum, a = Self.autoExpand
-        item("곡만 보기 (끌어서 순서 바꾸기)", on: !g) { [weak self] in Self.groupByAlbum = false; self?.regroup() }
-        item("앨범별로 묶어 보기", on: g && !a) { [weak self] in Self.groupByAlbum = true; Self.autoExpand = false; self?.regroup() }
-        item("앨범별 · 재생 중인 앨범만 펼치기", on: g && a) { [weak self] in Self.groupByAlbum = true; Self.autoExpand = true; self?.autoFlip = []; self?.regroup() }
-        m.addItem(.separator())
-        // 모두 접기 · 펼치기 (재생 중인 앨범만 펼치기는 끔)
-        let keys = Set(tracks.map { Self.collapseKey($0) })
-        let all = MenuAction("모두 접기") { [weak self] in Self.groupByAlbum = true; Self.autoExpand = false; Self.collapsed.formUnion(keys); self?.regroup() }
-        let none = MenuAction("모두 펼치기") { [weak self] in Self.groupByAlbum = true; Self.autoExpand = false; Self.collapsed.subtract(keys); self?.regroup() }
-        m.addItem(all); m.addItem(none)
-        m.popUp(positioning: nil, at: NSPoint(x: 0, y: groupBtn.bounds.height + 2), in: groupBtn)
+        if !Self.groupByAlbum { Self.groupByAlbum = true; Self.autoExpand = false }
+        else if !Self.autoExpand { Self.autoExpand = true; autoFlip = [] }
+        else { Self.groupByAlbum = false; Self.autoExpand = false }
+        regroup()
     }
     private func regroup() { syncGroupBtn(); show(tracks) }
     /// 모두 접기 ↔ 모두 펼치기 (하나라도 펼쳐져 있으면 접기) — 재생 중인 앨범만 펼치기는 끔
@@ -793,14 +784,18 @@ final class PlaylistPane: NSView {
     }
 
     private func syncGroupBtn() {
+        // 보기 단추 아이콘: 곡만(목록) · 앨범별(겹친 상자) · 재생 중만 펼치기(채운 상자 · 강조색)
+        let mode = !Self.groupByAlbum ? 0 : Self.autoExpand ? 2 : 1
+        groupBtn.image = NSImage(systemSymbolName: ["list.bullet", "square.stack.3d.up", "square.stack.3d.up.fill"][mode], accessibilityDescription: nil)
+        groupBtn.contentTintColor = mode == 2 ? .launcherAccent : nil
         foldBtn.isHidden = !Self.groupByAlbum
         let keys = Set(tracks.map { Self.collapseKey($0) })
         let allClosed = !Self.autoExpand && !keys.isEmpty && keys.isSubset(of: Self.collapsed)
         foldBtn.image = NSImage(systemSymbolName: allClosed ? "rectangle.expand.vertical" : "rectangle.compress.vertical", accessibilityDescription: nil)
         foldBtn.toolTip = allClosed ? "모두 펼치기" : "모두 접기"
         needsLayout = true
-        groupBtn.contentTintColor = Self.groupByAlbum ? .launcherAccent : nil
-        groupBtn.toolTip = !Self.groupByAlbum ? "보기: 곡만 — 누르면 앨범별로 묶어 보기 등 고르기" : Self.autoExpand ? "보기: 앨범별 · 재생 중인 앨범만 펼치기" : "보기: 앨범별로 묶어 보기"
+        groupBtn.toolTip = ["보기: 곡만 (끌어서 순서 바꾸기) — 누르면 앨범별", "보기: 앨범별로 묶어 보기 — 누르면 재생 중인 앨범만 펼치기",
+                            "보기: 앨범별 · 재생 중인 앨범만 펼치기 — 누르면 곡만"][mode]
     }
     /// 곡들 길이 합 '1:02:03' · '23:45'
     static func total(_ ts: [PlaylistTrack]) -> String {

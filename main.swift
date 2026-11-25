@@ -643,8 +643,25 @@ enum WindowDrag {
                 moving = true
                 EdgeDock.dock(for: w)?.beginWatch()   // 끄는 동안 붙을 자리 보여 주기 (도구함 창 · 떼어 낸 플레이어)
             }
-            w.setFrameOrigin(NSPoint(x: (origin.x + m.x - start.x).rounded(), y: (origin.y + m.y - start.y).rounded()))
+            let want = NSPoint(x: (origin.x + m.x - start.x).rounded(), y: (origin.y + m.y - start.y).rounded())
+            w.setFrameOrigin(want)
+            // 진단: 끄는 동안 마우스가 간 거리 · 창이 간 거리 (설정값 dragDebug 가 켜져 있을 때만)
+            if UserDefaults.standard.bool(forKey: "dragDebug") {
+                let got = w.frame.origin
+                DragLog.add(String(format: "move mouse=(%.0f,%.0f) want=(%.0f,%.0f) got=(%.0f,%.0f) diff=(%.0f,%.0f)",
+                                   m.x - start.x, m.y - start.y, want.x - origin.x, want.y - origin.y, got.x - origin.x, got.y - origin.y, got.x - want.x, got.y - want.y))
+            }
         }
+    }
+}
+
+/// 끌기 진단 기록 (~/MyLauncher/drag-debug.txt)
+@MainActor enum DragLog {
+    static func add(_ line: String) {
+        let u = URL(fileURLWithPath: NSHomeDirectory() + "/MyLauncher/drag-debug.txt")
+        let t = String(format: "%.3f ", Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 1000))
+        if let h = try? FileHandle(forWritingTo: u) { h.seekToEndOfFile(); h.write((t + line + "\n").data(using: .utf8)!); try? h.close() }
+        else { try? (t + line + "\n").write(to: u, atomically: true, encoding: .utf8) }
     }
 }
 
@@ -854,7 +871,13 @@ final class EdgeResizer: NSView {
         w.trackEvents(matching: [.leftMouseDragged, .leftMouseUp], timeout: .infinity, mode: .eventTracking) { [weak self] ev, stop in
             guard let self, let ev, ev.type != .leftMouseUp else { stop.pointee = true; return }
             let m = NSEvent.mouseLocation
+            let f0 = w.frame
             self.onDrag?(self.vertical ? start.y - m.y : m.x - start.x)
+            if UserDefaults.standard.bool(forKey: "dragDebug") {
+                let f = w.frame
+                DragLog.add(String(format: "edge%@ mouse=(%.0f,%.0f) frame=(x%.0f y%.0f w%.0f h%.0f) step=(w%+.0f h%+.0f)", self.vertical ? "V" : "H",
+                                   m.x - start.x, m.y - start.y, f.minX, f.minY, f.width, f.height, f.width - f0.width, f.height - f0.height))
+            }
         }
         NSCursor.pop()
     }
@@ -905,6 +928,11 @@ final class FrameResizer: NSView {
             guard let self, let ev, ev.type != .leftMouseUp else { stop.pointee = true; return }
             let m = NSEvent.mouseLocation
             self.onDrag?(m.x - start.x, m.y - start.y)
+            if UserDefaults.standard.bool(forKey: "dragDebug") {
+                let f = w.frame
+                DragLog.add(String(format: "corner mouse=(%.0f,%.0f) at=(%.0f,%.0f) frame=(x%.0f y%.0f w%.0f h%.0f) gap=(%.0f,%.0f)", m.x - start.x, m.y - start.y, m.x, m.y,
+                                   f.minX, f.minY, f.width, f.height, m.x - (self.edges.contains(.left) ? f.minX : f.maxX), m.y - f.minY))
+            }
         }
         NSCursor.pop()
         OnScreen.fix(w)
@@ -1209,6 +1237,395 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.frame.size = NSSize(width: 24, height: 24)
         return b
     }()
+    lazy var playerSiteButtons: [NSView] = makePlayerSiteButtons()
+    /// 플레이어 창 높이 (앱 창과 따로): 0 다른 창 뒤(바탕화면) · 1 일반 창처럼 · 2 다른 창 위 · -1 도구함 설정 따라감
+    var playerLevelChoice: Int {
+        get { d.object(forKey: "playerLevelChoice") as? Int ?? -1 }
+        set { d.set(newValue, forKey: "playerLevelChoice") }
+    }
+    var playerLevel: NSWindow.Level {
+        let c = playerLevelChoice
+        if c >= 0, c < widgetLevels.count { return widgetLevels[c].1 }
+        return widget ? widgetLevels[widgetLevel].1 : .floating
+    }
+    /// 고르는 칸: (아이콘, 이름) — macOS 창 메뉴처럼 그림으로
+    static let levelChoices: [(String, String)] = [
+        ("square.2.layers.3d.bottom.filled", "다른 창 뒤"),
+        ("square.2.layers.3d", "일반 창처럼"),
+        ("square.2.layers.3d.top.filled", "다른 창 위"),
+    ]
+    lazy var pinButton: ActionButton = {
+        let b = ActionButton(title: "", symbol: "square.2.layers.3d") { [unowned self] b in showLevelPicker(from: b) }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
+        return b
+    }()
+    /// 플레이어 창 투명도 (0.4 ~ 1)
+    var playerAlpha: CGFloat {
+        get { let v = d.double(forKey: "playerAlpha"); return v >= 0.4 && v <= 1 ? CGFloat(v) : 1 }
+        set { d.set(Double(newValue), forKey: "playerAlpha") }
+    }
+    lazy var alphaButton: ActionButton = {
+        let b = ActionButton(title: "", symbol: "circle.lefthalf.filled") { [unowned self] b in showAlphaPicker(from: b) }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
+        b.contentTintColor = .secondaryLabelColor
+        return b
+    }()
+    /// 조작할 때 투명도 (마우스를 올렸을 때 · 뒤쪽 클릭이면 ⌘ 를 누를 때) — 평소는 playerAlpha
+    var playerAlphaActive: CGFloat {
+        get { let v = d.double(forKey: "playerAlphaActive"); return v >= 0.4 && v <= 1 ? CGFloat(v) : 1 }
+        set { d.set(Double(newValue), forKey: "playerAlphaActive") }
+    }
+    /// 지금 조작 중인지 (마우스가 창 위 · 뒤쪽 클릭이면 ⌘ 도)
+    private var playerActive: Bool {
+        guard let p = playerPanel, p.isVisible else { return false }
+        let inside = NSMouseInRect(NSEvent.mouseLocation, p.frame, false)
+        return inside && (!playerClickThrough || NSEvent.modifierFlags.contains(.command))
+    }
+    /// 창을 뚫고 뒤쪽 클릭 (⌘ 를 누르고 있는 동안만 플레이어를 조작 — ⌥-클릭은 macOS 가 앞에 쓰던 앱을 숨겨서 ⌘ 로)
+    var playerClickThrough: Bool {
+        get { d.bool(forKey: "playerClickThrough") }
+        set { d.set(newValue, forKey: "playerClickThrough"); applyClickThrough() }
+    }
+    private var clickTimer: Timer?
+    /// 켜져 있으면 0.1초마다 ⌘ 를 보고 마우스를 받을지 정함 (권한 없이 키 상태만 읽음)
+    /// 뒤쪽 클릭 · 평소/조작할 때 투명도가 필요할 때만 0.1초마다 확인
+    func applyClickThrough() {
+        clickTimer?.invalidate(); clickTimer = nil
+        if !playerClickThrough { playerPanel?.ignoresMouseEvents = false }
+        guard playerClickThrough || abs(playerAlpha - playerAlphaActive) > 0.01 else { playerPanel?.alphaValue = playerAlpha; return }
+        var shown: CGFloat = -1
+        let update = { [weak self] in
+            guard let self, let p = self.playerPanel else { return }
+            if self.playerClickThrough {
+                let pass = !NSEvent.modifierFlags.contains(.command)
+                if p.ignoresMouseEvents != pass { p.ignoresMouseEvents = pass }
+            }
+            // 조작할 때 ↔ 평소 투명도 (부드럽게)
+            let want = self.playerActive ? self.playerAlphaActive : self.playerAlpha
+            if abs(want - shown) > 0.005 {
+                shown = want
+                NSAnimationContext.runAnimationGroup { c in c.duration = 0.18; p.animator().alphaValue = want }
+            }
+        }
+        update()
+        let t = Timer(timeInterval: 0.1, repeats: true) { _ in MainActor.assumeIsolated { update() } }
+        RunLoop.main.add(t, forMode: .common)
+        clickTimer = t
+    }
+    /// 작은 판: 투명도 밀대 두 개 (평소 · 조작할 때) + 창을 뚫고 뒤쪽 클릭
+    func showAlphaPicker(from b: NSView) {
+        let W: CGFloat = 250, H: CGFloat = 150
+        let v = NSView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        let t = NSTextField(labelWithString: "플레이어 창 투명도")
+        t.font = .systemFont(ofSize: 11, weight: .semibold); t.textColor = .secondaryLabelColor
+        t.frame = NSRect(x: 12, y: H - 22, width: W - 24, height: 15)
+        v.addSubview(t)
+        // 줄 하나: 이름 · 밀대 · %
+        func row(_ name: String, y: CGFloat, value: CGFloat, set: @escaping (CGFloat) -> Void) {
+            let l = NSTextField(labelWithString: name)
+            l.font = .systemFont(ofSize: 11); l.textColor = .labelColor
+            l.frame = NSRect(x: 12, y: y + 2, width: 70, height: 15)
+            v.addSubview(l)
+            let pct = NSTextField(labelWithString: "\(Int((value * 100).rounded()))%")
+            pct.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium); pct.alignment = .right
+            pct.frame = NSRect(x: W - 48, y: y + 2, width: 36, height: 15)
+            v.addSubview(pct)
+            let sl = ActionSlider(value: Double(value), min: 0.4, max: 1) { x in
+                set(CGFloat(x)); pct.stringValue = "\(Int((x * 100).rounded()))%"
+            }
+            sl.controlSize = .small
+            sl.frame = NSRect(x: 82, y: y, width: W - 82 - 52, height: 20)
+            v.addSubview(sl)
+        }
+        row("평소", y: H - 50, value: playerAlpha) { [unowned self] x in
+            playerAlpha = x; applyClickThrough(); if !playerActive { playerPanel?.alphaValue = x }
+        }
+        row("조작할 때", y: H - 76, value: playerAlphaActive) { [unowned self] x in
+            playerAlphaActive = x; applyClickThrough(); if playerActive { playerPanel?.alphaValue = x }
+        }
+        let note = NSTextField(labelWithString: "마우스를 올리면 '조작할 때', 떼면 '평소'로 바뀌어요")
+        note.font = .systemFont(ofSize: 10); note.textColor = .tertiaryLabelColor
+        note.frame = NSRect(x: 12, y: H - 96, width: W - 24, height: 14)
+        v.addSubview(note)
+        // 창을 뚫고 뒤쪽 클릭 (투명하게 겹쳐 두고 뒤 창으로 일할 때)
+        let ct = NSButton(checkboxWithTitle: "창을 뚫고 뒤쪽 클릭", target: nil, action: nil)
+        ct.font = .systemFont(ofSize: 12)
+        ct.state = playerClickThrough ? .on : .off
+        ct.frame = NSRect(x: 10, y: 28, width: W - 20, height: 18)
+        let ctAction = ActionTarget { [unowned self, weak ct] in playerClickThrough = ct?.state == .on }
+        ct.target = ctAction; ct.action = #selector(ActionTarget.fire)
+        objc_setAssociatedObject(ct, "act", ctAction, .OBJC_ASSOCIATION_RETAIN)
+        v.addSubview(ct)
+        let hint = NSTextField(labelWithString: "켜 두면 ⌘(command) 를 누르고 있는 동안만 이 창을 조작해요")
+        hint.font = .systemFont(ofSize: 10); hint.textColor = .tertiaryLabelColor
+        hint.frame = NSRect(x: 28, y: 10, width: W - 36, height: 14)
+        v.addSubview(hint)
+        let vc = NSViewController(); vc.view = v
+        let pop = NSPopover()
+        pop.contentViewController = vc
+        pop.behavior = .transient
+        pop.show(relativeTo: b.bounds, of: b, preferredEdge: .maxY)
+    }
+    func syncPinButton() {
+        let c = playerLevelChoice >= 0 ? playerLevelChoice : (widget ? widgetLevel : 2)
+        pinButton.image = NSImage(systemSymbolName: Self.levelChoices[c].0, accessibilityDescription: Self.levelChoices[c].1)
+        pinButton.contentTintColor = c == 2 ? .launcherAccent : .secondaryLabelColor
+        pinButton.toolTip = "플레이어 창 위치: \(Self.levelChoices[c].1) — 누르면 고르기"
+    }
+    /// 작은 판: [다른 창 뒤] [일반 창처럼] [다른 창 위]
+    /// 작은 판: 창 위치 세 칸 + 배치 프리셋 (누르면 적용 · ⋯ 로 덮어쓰기 / 자동으로 쓸 앱 / 이름 / 지우기)
+    func showLevelPicker(from b: NSView) {
+        let cur = playerLevelChoice >= 0 ? playerLevelChoice : (widget ? widgetLevel : 2)
+        let vc = NSViewController()
+        let list = playerPresets
+        let rowH: CGFloat = 28
+        let W: CGFloat = 228, H: CGFloat = 92 + 26 + CGFloat(list.count) * rowH + 34
+        let v = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        let t = NSTextField(labelWithString: "플레이어 창 위치")
+        t.font = .systemFont(ofSize: 11, weight: .semibold); t.textColor = .secondaryLabelColor
+        t.frame = NSRect(x: 12, y: 9, width: W - 24, height: 15)
+        v.addSubview(t)
+        let pop = NSPopover()
+        for (i, c) in Self.levelChoices.enumerated() {
+            let btn = ActionButton(title: "", symbol: c.0) { [unowned self] _ in
+                playerLevelChoice = i
+                syncPinButton()
+                if let p = playerPanel { p.level = playerLevel; p.orderFrontRegardless() }
+                pop.close()
+            }
+            btn.symbolConfiguration = .init(pointSize: 20, weight: .regular)
+            btn.isBordered = false
+            btn.wantsLayer = true
+            btn.layer?.cornerRadius = 8
+            btn.layer?.backgroundColor = (i == cur ? NSColor.launcherAccent.withAlphaComponent(0.25) : NSColor.labelColor.withAlphaComponent(0.07)).cgColor
+            btn.contentTintColor = i == cur ? .launcherAccent : .labelColor
+            btn.toolTip = c.1
+            btn.frame = NSRect(x: 12 + CGFloat(i) * 70, y: 30, width: 64, height: 36)
+            v.addSubview(btn)
+            let l = NSTextField(labelWithString: c.1)
+            l.font = .systemFont(ofSize: 10); l.alignment = .center; l.textColor = i == cur ? .launcherAccent : .secondaryLabelColor
+            l.frame = NSRect(x: 12 + CGFloat(i) * 70, y: 70, width: 64, height: 14)
+            v.addSubview(l)
+        }
+        // 배치 프리셋
+        let sep = NSBox(frame: NSRect(x: 12, y: 92, width: W - 24, height: 1)); sep.boxType = .separator
+        v.addSubview(sep)
+        let pt = NSTextField(labelWithString: "배치 프리셋 · 앱이 앞에 오면 자동")
+        pt.font = .systemFont(ofSize: 11, weight: .semibold); pt.textColor = .secondaryLabelColor
+        pt.frame = NSRect(x: 12, y: 99, width: W - 24, height: 15)
+        v.addSubview(pt)
+        var y: CGFloat = 118
+        for pr in list {
+            let row = ActionButton(title: "", symbol: nil) { [unowned self] _ in applyPreset(pr); pop.close() }
+            row.isBordered = false
+            row.wantsLayer = true
+            row.layer?.cornerRadius = 6
+            row.layer?.backgroundColor = (autoActive == pr.id ? NSColor.launcherAccent.withAlphaComponent(0.2) : NSColor.labelColor.withAlphaComponent(0.06)).cgColor
+            row.toolTip = "누르면 이 배치로" + (pr.apps.isEmpty ? "" : " · 자동: " + pr.apps.map { appName($0) }.joined(separator: ", "))
+            row.frame = NSRect(x: 10, y: y, width: W - 46, height: rowH - 4)
+            v.addSubview(row)
+            let name = NSTextField(labelWithString: pr.name)
+            name.font = .systemFont(ofSize: 12); name.lineBreakMode = .byTruncatingTail
+            name.frame = NSRect(x: 18, y: y + 4, width: W - 64 - CGFloat(min(3, pr.apps.count)) * 16, height: 16)
+            v.addSubview(name)
+            // 자동으로 쓰는 앱 아이콘 (최대 3)
+            for (k, id) in pr.apps.prefix(3).enumerated() {
+                let iv = NSImageView(image: appIcon(id))
+                iv.frame = NSRect(x: W - 54 - CGFloat(k + 1) * 16, y: y + 4, width: 15, height: 15)
+                v.addSubview(iv)
+            }
+            let more = ActionButton(title: "", symbol: "ellipsis.circle") { [unowned self] b in
+                presetMenu(pr) { pop.close() }.popUp(positioning: nil, at: NSPoint(x: 0, y: b.bounds.height), in: b)
+            }
+            more.isBordered = false
+            more.contentTintColor = .secondaryLabelColor
+            more.toolTip = "덮어쓰기 · 자동으로 쓸 앱 · 이름 · 지우기"
+            more.frame = NSRect(x: W - 34, y: y + 2, width: 22, height: 20)
+            v.addSubview(more)
+            y += rowH
+        }
+        let save = ActionButton(title: "＋ 지금 배치 저장", symbol: nil) { [unowned self] _ in
+            pop.close()
+            PlaylistPane.askName(title: "배치 프리셋 이름", initial: "배치 \(playerPresets.count + 1)", button: "저장") { [unowned self] name in
+                var all = playerPresets
+                all.append(capturePreset(name: name))
+                playerPresets = all
+            }
+        }
+        save.bezelStyle = .rounded; save.controlSize = .small; save.font = .systemFont(ofSize: 11)
+        save.frame = NSRect(x: 10, y: y + 4, width: W - 20, height: 24)
+        v.addSubview(save)
+        vc.view = v
+        pop.contentViewController = vc
+        pop.behavior = .transient
+        pop.show(relativeTo: b.bounds, of: b, preferredEdge: .maxY)
+    }
+
+    // MARK: 배치 프리셋 (플레이어 창 자리 · 크기 · 크게/작게 · 위치 · 투명도 · 뒤쪽 클릭) — 앱이 앞에 오면 자동
+
+    struct PlayerPreset: Codable, Equatable {
+        var id = UUID().uuidString
+        var name: String
+        var apps: [String] = []          // 이 앱(번들 ID)이 앞에 오면 자동
+        var x: CGFloat, top: CGFloat     // 창 왼쪽 · 위 끝 (높이가 바뀌어도 위 끝 기준)
+        var width: CGFloat
+        var big: Bool
+        var bigH: CGFloat
+        var level: Int
+        var alpha: CGFloat, alphaActive: CGFloat
+        var clickThrough: Bool
+    }
+    var playerPresets: [PlayerPreset] {
+        get { (d.data(forKey: "playerPresets")).flatMap { try? JSONDecoder().decode([PlayerPreset].self, from: $0) } ?? [] }
+        set { d.set(try? JSONEncoder().encode(newValue), forKey: "playerPresets") }
+    }
+    func capturePreset(name: String) -> PlayerPreset {
+        let f = playerPanel?.frame ?? .zero
+        return PlayerPreset(name: name, x: f.minX, top: f.maxY, width: detachedWidth ?? f.width, big: BigPlayerView.enabled,
+                            bigH: BigPlayerView.userHeight, level: playerLevelChoice, alpha: playerAlpha, alphaActive: playerAlphaActive,
+                            clickThrough: playerClickThrough)
+    }
+    func applyPreset(_ p: PlayerPreset) {
+        if BigPlayerView.enabled != p.big { BigPlayerView.enabled = p.big; playerBar.big = p.big }
+        detachedWidth = p.width; d.set(Double(p.width), forKey: "detachedWidth")
+        if p.big { BigPlayerView.userHeight = p.bigH }
+        playerLevelChoice = p.level
+        playerAlpha = p.alpha; playerAlphaActive = p.alphaActive
+        playerClickThrough = p.clickThrough
+        refresh()
+        if let w = playerPanel {
+            w.setFrameOrigin(NSPoint(x: p.x, y: p.top - w.frame.height))
+            w.level = playerLevel
+            w.alphaValue = playerAlpha
+        }
+        syncPinButton()
+        applyClickThrough()
+    }
+    /// 자동으로 바꿔 둔 프리셋 · 그 전의 배치 (연결 안 된 앱으로 돌아가면 되돌림)
+    var autoActive: String?
+    private var autoBase: PlayerPreset?
+    private var presetWatch: NSObjectProtocol?
+    func startPresetWatch() {
+        guard presetWatch == nil else { return }
+        presetWatch = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
+            let id = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier ?? ""
+            MainActor.assumeIsolated { self?.appActivated(id) }
+        }
+    }
+    private func appActivated(_ id: String) {
+        guard !id.isEmpty, id != Bundle.main.bundleIdentifier, playerPanel?.isVisible == true else { return }
+        if let pr = playerPresets.first(where: { $0.apps.contains(id) }) {
+            guard autoActive != pr.id else { return }
+            if autoBase == nil { autoBase = capturePreset(name: "원래") }
+            autoActive = pr.id
+            applyPreset(pr)
+        } else if let base = autoBase {
+            autoBase = nil; autoActive = nil
+            applyPreset(base)
+        }
+    }
+    /// ⋯ 메뉴: 지금 배치로 덮어쓰기 · 자동으로 쓸 앱 · 이름 바꾸기 · 지우기
+    func presetMenu(_ pr: PlayerPreset, close: @escaping () -> Void) -> NSMenu {
+        let m = NSMenu()
+        func update(_ f: (inout PlayerPreset) -> Void) {
+            var all = playerPresets
+            guard let i = all.firstIndex(where: { $0.id == pr.id }) else { return }
+            f(&all[i]); playerPresets = all
+        }
+        m.addItem(MenuAction("지금 배치로 덮어쓰기") { [unowned self] in
+            let now = capturePreset(name: pr.name)
+            update { $0.x = now.x; $0.top = now.top; $0.width = now.width; $0.big = now.big; $0.bigH = now.bigH
+                     $0.level = now.level; $0.alpha = now.alpha; $0.alphaActive = now.alphaActive; $0.clickThrough = now.clickThrough }
+            close()
+        })
+        // 자동으로 쓸 앱: 켜져 있는 앱 + 이미 고른 앱
+        let apps = NSMenuItem(title: "이 앱이 앞에 오면 자동", action: nil, keyEquivalent: "")
+        let sub = NSMenu()
+        var ids = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.compactMap(\.bundleIdentifier)
+            .filter { $0 != Bundle.main.bundleIdentifier }
+        for a in pr.apps where !ids.contains(a) { ids.append(a) }
+        for id in ids.sorted(by: { appName($0).localizedCompare(appName($1)) == .orderedAscending }) {
+            let i = MenuAction(appName(id)) { [unowned self] in
+                update { p in if let k = p.apps.firstIndex(of: id) { p.apps.remove(at: k) } else { p.apps.append(id) } }
+                // 같은 앱은 프리셋 하나에만 (다른 프리셋에선 뺌)
+                var all = playerPresets
+                for k in all.indices where all[k].id != pr.id { all[k].apps.removeAll { $0 == id } }
+                playerPresets = all
+                close()
+            }
+            i.state = pr.apps.contains(id) ? .on : .off
+            let ic = appIcon(id); ic.size = NSSize(width: 16, height: 16); i.image = ic
+            sub.addItem(i)
+        }
+        apps.submenu = sub
+        m.addItem(apps)
+        m.addItem(MenuAction("이름 바꾸기…") { [unowned self] in
+            close()
+            PlaylistPane.askName(title: "프리셋 이름 바꾸기", initial: pr.name, button: "바꾸기") { [unowned self] n in update { $0.name = n }; _ = self }
+        })
+        m.addItem(.separator())
+        m.addItem(MenuAction("지우기") { [unowned self] in
+            playerPresets = playerPresets.filter { $0.id != pr.id }
+            if autoActive == pr.id { autoActive = nil }
+            close()
+        })
+        return m
+    }
+    func appName(_ id: String) -> String {
+        if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) { return FileManager.default.displayName(atPath: u.path).replacingOccurrences(of: ".app", with: "") }
+        return id
+    }
+    func appIcon(_ id: String) -> NSImage {
+        if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) { return NSWorkspace.shared.icon(forFile: u.path) }
+        return NSImage(systemSymbolName: "app", accessibilityDescription: nil) ?? NSImage()
+    }
+    /// 플레이어 창 맨 위 손잡이 줄 오른쪽 끝 단추: Netflix · YouTube · YouTube Music(이 창 접기)
+    func makePlayerSiteButtons() -> [NSView] {
+        let red = NSColor(red: 0.9, green: 0.04, blue: 0.08, alpha: 1)
+        let nf = ActionButton(title: "", symbol: nil) { _ in VideoWindow.netflix.show() }
+        nf.isBordered = false
+        // N 도 그림으로 (글자면 다른 아이콘보다 떠 보였음) — 다른 아이콘과 같은 14 칸 가운데
+        nf.image = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { r in
+            let a = NSAttributedString(string: "N", attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .heavy), .foregroundColor: red])
+            let sz = a.size()
+            a.draw(at: NSPoint(x: (r.width - sz.width) / 2, y: (r.height - sz.height) / 2))
+            return true
+        }
+        nf.imagePosition = .imageOnly
+        nf.toolTip = "Netflix 열기 (영상을 작은 창으로 띄울 수 있어요)"
+        let yt = ActionButton(title: "", symbol: "play.rectangle.fill") { _ in
+            YouTubeWindow.shared.show(YouTubeWindow.shared.isOpen ? nil : YouTubeWindow.clipboardLink())
+        }
+        yt.isBordered = false
+        yt.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+        yt.contentTintColor = .systemRed
+        yt.toolTip = "YouTube 열기 (영상을 PIP 로 띄울 수 있어요)"
+        // 쇼츠: 세로로 긴 빨간 칸 안에 ▶ (가로 모양 YouTube 단추와 구분) — 누르면 쇼츠 피드로
+        let sh = ActionButton(title: "", symbol: nil) { _ in YouTubeWindow.shared.show(URL(string: "https://www.youtube.com/shorts")) }
+        sh.isBordered = false
+        sh.image = NSImage(size: NSSize(width: 14, height: 14), flipped: false) { r in
+            let box = NSRect(x: r.midX - 4.5, y: r.minY + 0.5, width: 9, height: 13)
+            NSColor.systemRed.setFill()
+            NSBezierPath(roundedRect: box, xRadius: 2.5, yRadius: 2.5).fill()
+            let tri = NSBezierPath()
+            tri.move(to: NSPoint(x: box.midX - 1.8, y: box.midY + 2.6))
+            tri.line(to: NSPoint(x: box.midX - 1.8, y: box.midY - 2.6))
+            tri.line(to: NSPoint(x: box.midX + 2.6, y: box.midY))
+            tri.close()
+            NSColor.white.setFill(); tri.fill()
+            return true
+        }
+        sh.imagePosition = .imageOnly
+        sh.toolTip = "YouTube 쇼츠 열기"
+        let ym = ActionButton(title: "", symbol: nil) { [unowned self] _ in togglePlayerWindow() }
+        ym.isBordered = false
+        ym.image = Self.ytMusicIcon(14)
+        ym.imagePosition = .imageOnly
+        ym.toolTip = "플레이어 창 접기 (음악은 계속 나와요 · 메뉴 막대 🧰 에서 다시 열기)"
+        return [nf, yt, sh, ym]
+    }
     func syncMusicItem() {
         let open = showPlayer && playerDetached && !playerHidden
         // 열려 있으면 또렷하게, 닫혀 있으면 흐리게
@@ -1584,9 +2001,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         v.isLocked = { [unowned self] in locked }
         v.addSubview(searchField)
         v.addSubview(finderButton)
-        v.addSubview(musicButton)
-        v.addSubview(youtubeButton)
-        v.addSubview(netflixButton)
+        // Netflix · YouTube · YouTube Music 단추는 플레이어 창 위쪽 줄로 옮김
         v.addSubview(mailButton)
         v.addSubview(bulkButton)
         v.addSubview(lockButton)
@@ -1622,14 +2037,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     // ⧉ 떼어 낸 창: 플레이어 · 가사 줄
     enum Part { case player, lyrics }
-    var playerDetached = UserDefaults.standard.bool(forKey: "playerDetached") || UserDefaults.standard.bool(forKey: "lyricsDetached")
-    var lyricsDetached = UserDefaults.standard.bool(forKey: "lyricsDetached") || UserDefaults.standard.bool(forKey: "playerDetached")
+    /// 플레이어 · 가사 줄은 늘 따로 (도구함 창에 다시 합치지 않음 — 위쪽 줄 ≡ 로 크게 ↔ 작게만)
+    var playerDetached = true
+    var lyricsDetached = true
     var playerPanel: NSWindow?
     var lyricsPanel: NSWindow?
 
     /// 플레이어와 가사 줄은 늘 함께 떼어 내고 함께 합침 (어느 쪽 ⧉ 를 눌러도)
     func toggleDetach(_ part: Part) {
-        let on = !(playerDetached || lyricsDetached)
+        // 늘 따로: 합치기는 안 함 (예전 설정 값만 정리)
+        guard !(playerDetached && lyricsDetached) else { return }
+        let on = true
         playerDetached = on; lyricsDetached = on
         d.set(on, forKey: "playerDetached"); d.set(on, forKey: "lyricsDetached")
         playerBar.detached = on
@@ -1693,7 +2111,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             fx.addSubview(g)
             return g
         }()
-        grip.frame = NSRect(x: 0, y: size.height - handle, width: size.width, height: handle)
+        // 플레이어는 위에 자체 여백(6)이 있어서, 손잡이 줄을 그만큼 아래로 넓혀 단추 · 막대가 창 위 끝과 내용 위 끝의 딱 가운데에 오게
+        let stripH: CGFloat = part == .player ? handle + 6 : handle
+        let stripMid = size.height - stripH / 2
+        grip.frame = NSRect(x: 0, y: size.height - stripH, width: size.width, height: stripH)
+        // 맨 위 손잡이 줄 왼쪽 끝: 📌 다른 창 위에 두기
+        if part == .player {
+            if pinButton.superview !== fx { fx.addSubview(pinButton) }
+            syncPinButton()
+            pinButton.frame = NSRect(x: 16, y: stripMid - 9, width: 22, height: 18)
+            // 바로 옆: 투명도
+            if alphaButton.superview !== fx { fx.addSubview(alphaButton) }
+            alphaButton.toolTip = "플레이어 창 투명도 (평소 \(Int((playerAlpha * 100).rounded()))% · 조작할 때 \(Int((playerAlphaActive * 100).rounded()))%) — 누르면 조절"
+            alphaButton.frame = NSRect(x: pinButton.frame.maxX + 2, y: pinButton.frame.minY, width: 22, height: 18)
+            if clickTimer == nil { p.alphaValue = playerAlpha; applyClickThrough() }
+            alphaButton.contentTintColor = playerClickThrough ? .launcherAccent : .secondaryLabelColor
+        }
+        // 맨 위 손잡이 줄 오른쪽 끝: 다른 프로그램 열기 (Netflix · YouTube · YouTube Music 접기) — 재생 단추와 따로
+        if part == .player {
+            for (i, b) in playerSiteButtons.enumerated() {
+                if b.superview !== fx { fx.addSubview(b) }
+                let n = CGFloat(playerSiteButtons.count)
+                // 오른쪽 끝 여백은 왼쪽(창 위치 단추)과 같게, 세 칸 같은 폭 · 같은 가운데 높이
+                b.frame = NSRect(x: size.width - 16 - (n - CGFloat(i)) * 24, y: stripMid - 9, width: 22, height: 18)
+            }
+        }
         if view.superview !== fx { fx.addSubview(view) }
         view.frame = NSRect(x: 0, y: belowH + bottomPad, width: width, height: height)
         view.needsLayout = true
@@ -1714,11 +2156,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             detachedBottom.frame = NSRect(x: 6, y: 0, width: size.width - 12, height: 6)
             fx.addSubview(detachedBottom)
         }
+        // 아래 두 모서리 (대각선) — 가장자리 손잡이보다 위에
+        for (r, x) in zip(detachedCorners, [0, size.width - 14] as [CGFloat]) {
+            r.removeFromSuperview()
+            r.frame = NSRect(x: x, y: 0, width: 14, height: 14)
+            fx.addSubview(r)
+        }
         Theme.chrome(fx, radius: Theme.playerRadius)
-        if widget { hoverRaise(fx) }
+        // 맨 위 줄 단추는 플레이어 위로 (아래쪽 몇 칸이 플레이어 여백과 겹쳐도 눌리게)
+        if part == .player { for b in [pinButton, alphaButton] + playerSiteButtons where b.superview === fx { b.removeFromSuperview(); fx.addSubview(b) } }
+        if widget { hoverRaise(fx, base: { [unowned self] in part == .player ? playerLevel : widgetLevels[widgetLevel].1 }) }
         // 마우스를 올려 잠깐 맨 앞으로 나와 있는 중이면 그대로 둠
         if !(p.level == .floating && NSMouseInRect(NSEvent.mouseLocation, p.frame, false)) {
-            p.level = widget ? widgetLevels[widgetLevel].1 : .floating
+            p.level = part == .player ? playerLevel : (widget ? widgetLevels[widgetLevel].1 : .floating)
         }
         p.collectionBehavior = widget ? [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone] : []
         // 화면 끝에 접어 둔 상태면 다시 띄우지 않음
@@ -1728,7 +2178,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     lazy var lyrics: LyricsController = {
         let c = LyricsController(music: music)
         c.model.onStripToggle = { [unowned self] in refresh() }   // 가사 줄 펼치기/접기 → 창 높이 다시
-        c.model.onDetach = { [unowned self] in toggleDetach(.lyrics) }
+        c.model.onDetach = nil   // 늘 따로라 합치기 단추 없음
+        // 작게 보기 다음 곡 줄을 누르면 크게 보기
+        c.model.onNextTap = { [unowned self] in
+            if !BigPlayerView.enabled { BigPlayerView.enabled = true; playerBar.big = true; refresh() }
+        }
         c.model.stripDetached = lyricsDetached
         return c
     }()
@@ -1743,6 +2197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         b.big = BigPlayerView.enabled
         b.detached = playerDetached
+        DispatchQueue.main.async { [unowned self] in startPresetWatch() }
         return b
     }()
     lazy var bigPlayer: BigPlayerView = {
@@ -1844,6 +2299,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     lazy var detachedLeft = detachedResizer(left: true)
     lazy var detachedRight = detachedResizer(left: false)
+    /// 아래 두 모서리: 대각선으로 끌어 폭 · 높이를 한 번에 (높이는 크게 보기일 때만 — 작게 보기는 내용에 맞춤)
+    lazy var detachedCorners: [FrameResizer] = [true, false].map { detachedCorner(left: $0) }
+    private func detachedCorner(left: Bool) -> FrameResizer {
+        let r = FrameResizer(left ? [.bottom, .left] : [.bottom, .right])
+        r.onBegin = { [unowned self] in
+            let f = playerPanel?.frame ?? .zero
+            widthStart = (f.width, f.minX, f.maxX)
+            bigHStart = BigPlayerView.userHeight
+        }
+        r.onDrag = { [unowned self] dx, dy in
+            var changed = false
+            let w = max(Self.minWidth, (widthStart.w + (left ? -dx : dx)).rounded())
+            if abs(w - (detachedWidth ?? widthStart.w)) >= 3 { detachedWidth = w; d.set(Double(w), forKey: "detachedWidth"); changed = true }
+            if BigPlayerView.enabled {
+                let room = (playerPanel.flatMap { p in (p.screen ?? NSScreen.main).map { p.frame.minY - $0.visibleFrame.minY } } ?? 0)
+                let maxH = BigPlayerView.userHeight + max(0, room)
+                let h = max(BigPlayerView.height, min(maxH, (bigHStart - dy).rounded()))
+                if abs(h - BigPlayerView.userHeight) >= 2 { BigPlayerView.userHeight = h; changed = true }
+            }
+            guard changed else { return }
+            refresh()
+            if left, let p = playerPanel { p.setFrameOrigin(NSPoint(x: widthStart.right - p.frame.width, y: p.frame.minY)) }
+        }
+        r.onReset = { [unowned self] in
+            detachedWidth = nil; d.removeObject(forKey: "detachedWidth")
+            UserDefaults.standard.removeObject(forKey: "bigPlayerH")
+            refresh()
+        }
+        return r
+    }
     /// 도구함 창 테두리 · 모서리 (왼 · 오른 · 위 · 네 모서리, 아래는 손잡이 줄)
     lazy var frameResizers: [FrameResizer] = [
         [.left], [.right], [.top], [.top, .left], [.top, .right], [.bottom, .left], [.bottom, .right],
@@ -2108,11 +2593,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func toggleWidgetAction() { setWidget(!widget) }
 
     /// 카드에 '마우스 올리면 잠깐 맨 앞' 판을 깔기
-    func hoverRaise(_ v: NSView) {
+    func hoverRaise(_ v: NSView, base: (() -> NSWindow.Level)? = nil) {
         let h = v.subviews.first { $0 is HoverRaise } as? HoverRaise ?? {
             let h = HoverRaise(frame: v.bounds)
             h.autoresizingMask = [.width, .height]
-            h.base = { [unowned self] in widgetLevels[widgetLevel].1 }
+            h.base = base ?? { [unowned self] in widgetLevels[widgetLevel].1 }
             v.addSubview(h, positioned: .below, relativeTo: v.subviews.first)
             return h
         }()
@@ -2124,7 +2609,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         d.set(l, forKey: "widgetLevel")
         window.level = widgetLevels[l].1
         window.orderFrontRegardless()
-        if let p = playerPanel, p.isVisible { p.level = widgetLevels[l].1; p.orderFrontRegardless() }   // 떼어 낸 플레이어도 같이
+        if let p = playerPanel, p.isVisible { p.level = playerLevel; p.orderFrontRegardless() }   // 떼어 낸 플레이어도 같이 (📌 면 항상 위 그대로)
         buildStatusMenu()
     }
 
@@ -3299,7 +3784,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             var dw = detachedWidth.map { max(Self.minWidth, $0) } ?? max(300, w)
             let big = BigPlayerView.enabled
             if big { dw = max(dw, BigPlayerView.minWidth) }   // 크게 보기: 앨범 · 목록이 나란히 들어갈 폭
-            PlayerBar.narrow = dw < 340
+            // 작게 보기는 두 줄 (위: 사진 · 제목 · 재생기 단추 / 아래: 재생 단추) — 한 줄이면 제목이 많이 잘렸음
+            PlayerBar.narrow = !big || dw < 340
             if !big { bigPlayer.removeFromSuperview() }
             // 크게 보기면 가사 줄은 안 씀 (가사 탭이 따로 있음) — 전에 붙어 있던 걸 떼어 냄 (겹쳐 보였음)
             else if let sv = lyrics.stripView.superview, sv === playerPanel?.contentView { lyrics.stripView.removeFromSuperview() }
@@ -3330,12 +3816,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let fb = finderButton.frame.size
         finderButton.setFrameOrigin(NSPoint(x: w - fb.width - 8, y: (barRowH - fb.height) / 2))
         // ♪ 플레이어 창 열기 · 닫기 (Finder 바로 왼쪽)
-        musicButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
-        youtubeButton.setFrameOrigin(NSPoint(x: musicButton.frame.minX - 26, y: (barRowH - 24) / 2))
-        netflixButton.setFrameOrigin(NSPoint(x: youtubeButton.frame.minX - 26, y: (barRowH - 24) / 2))
-        // 앱 목록 접기 버튼은 탭 줄 왼쪽으로 옮김
-        // ✉︎ 메일 (연결 전이면 누르면 설정으로)
-        mailButton.setFrameOrigin(NSPoint(x: netflixButton.frame.minX - 26, y: (barRowH - 24) / 2))
+        // ✉︎ 메일 (연결 전이면 누르면 설정으로) — Netflix · YouTube · YouTube Music 단추는 플레이어 창으로 옮김
+        mailButton.setFrameOrigin(NSPoint(x: finderButton.frame.minX - 26, y: (barRowH - 24) / 2))
         bulkButton.setFrameOrigin(NSPoint(x: mailButton.frame.minX - 26, y: (barRowH - 24) / 2))
         updateLockButton()
         lockButton.setFrameOrigin(NSPoint(x: bulkButton.frame.minX - 26, y: (barRowH - 24) / 2))
@@ -3417,7 +3899,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(Item("YouTube 창 열기") { yt.show() })
         if yt.isOpen {
             m.addItem(Item(yt.inMini ? "    큰 창으로 돌아가기" : "    작은 창으로 보기 (PIP)") { yt.toggleMini() })
-            m.addItem(Item(yt.inPiP ? "    macOS PIP 끄기" : "    macOS PIP 로 보기 (구석 고정)") { yt.togglePiP() })
+            m.addItem(Item(yt.inMini ? "    작은 창 닫고 큰 창으로" : "    작은 창으로 보기 (PIP)") { yt.togglePiP() })
             m.addItem(Item("    YouTube 끄기") { yt.quit() })
         }
         do {
@@ -3437,6 +3919,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
         pl.state = playerEnabled ? .on : .off
         m.addItem(pl)
+        if playerEnabled {
+            // 플레이어 창의 YouTube Music 단추로 접었으면 여기서 다시 열기
+            let open = showPlayer && playerDetached && !playerHidden
+            m.addItem(Item(open ? "    플레이어 창 접기" : "    플레이어 창 열기") { [unowned self] in togglePlayerWindow() })
+            let ct = Item("    플레이어 창을 뚫고 뒤쪽 클릭 (⌘ 누르면 조작)") { [unowned self] in playerClickThrough.toggle(); refresh() }
+            ct.state = playerClickThrough ? .on : .off
+            m.addItem(ct)
+        }
         let ac = Item("도구함 창 자동 접기 (화면 끝에 붙였을 때)") { EdgeDock.shared.autoCollapse.toggle() }
         ac.state = EdgeDock.shared.autoCollapse ? .on : .off
         m.addItem(ac)
@@ -4008,4 +4498,27 @@ final class QuickCell: NSView {
         NSApp.activate(ignoringOtherApps: true)
         onClick?(self)
     }
+}
+
+/// 움직이는 대로 바로 알려 주는 밀대
+@MainActor
+final class ActionSlider: NSSlider {
+    private let onChange: (Double) -> Void
+    init(value: Double, min: Double, max: Double, _ onChange: @escaping (Double) -> Void) {
+        self.onChange = onChange
+        super.init(frame: .zero)
+        minValue = min; maxValue = max; doubleValue = value
+        isContinuous = true
+        target = self; action = #selector(changed)
+    }
+    required init?(coder: NSCoder) { fatalError() }
+    @objc private func changed() { onChange(doubleValue) }
+}
+
+/// 닫힘 하나로 단추 동작 (target · action 대신)
+@MainActor
+final class ActionTarget: NSObject {
+    private let run: () -> Void
+    init(_ run: @escaping () -> Void) { self.run = run }
+    @objc func fire() { run() }
 }

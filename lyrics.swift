@@ -144,6 +144,10 @@ final class LyricsModel: ObservableObject {
     @Published var config: TranslationSession.Configuration?
     @Published var note = ""
     var onSeek: ((Double) -> Void)?
+    /// 작게 보기 가사 칸 아래 한 줄: 다음 곡 (제목 — 가수 · 시간 (+N곡)), 비면 안 보임
+    @Published var nextLine = ""
+    /// 다음 곡 줄을 누르면 (크게 보기 열기)
+    var onNextTap: (() -> Void)?
 
     // 재생 위치 (1초마다 들어오는 값 사이를 시계로 메움)
     private var position: Double = 0
@@ -541,6 +545,8 @@ struct FontSizeButtons: View {
 struct LyricsStrip: View {
     @ObservedObject var model: LyricsModel
     static let collapsedHeight: CGFloat = 30
+    /// 다음 곡 한 줄 높이
+    static let nextH: CGFloat = 20
     /// 펼쳤을 때 높이: 지금 줄 + 번역 + 다음 줄이 들어가도록 글자 크기에 맞춤
     static func expandedHeight(_ scale: Double, pron: Bool = false) -> CGFloat {
         // 지금 줄(15pt) + 발음 · 번역 · 다음 줄(12pt) 의 실제 줄 높이 + 아래 여백
@@ -568,13 +574,15 @@ struct LyricsStrip: View {
                 }
                 Spacer(minLength: 4)
                 if model.stripExpanded { PronMenu(model: model); FontSizeButtons(model: model) }
-                Button { model.onDetach?() } label: {
-                    Image(systemName: model.stripDetached ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle")
-                        .font(.system(size: 11, weight: .semibold))
+                if model.onDetach != nil {   // 플레이어가 늘 따로면 합치기 단추 없음
+                    Button { model.onDetach?() } label: {
+                        Image(systemName: model.stripDetached ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle")
+                            .font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .help(model.stripDetached ? "도구함 창으로 합치기" : "가사 줄만 따로 떼어 내기")
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .help(model.stripDetached ? "도구함 창으로 합치기" : "가사 줄만 따로 떼어 내기")
                 Button { model.onOpenFull?() } label: {
                     Text("전체 가사").font(.system(size: 11))
                 }
@@ -592,6 +600,23 @@ struct LyricsStrip: View {
                 }
                 .frame(height: Self.expandedHeight(model.fontScale, pron: model.showsPron) - Self.collapsedHeight)
                 .clipped()
+                // 다음 곡 한 줄 (누르면 크게 보기)
+                if !model.nextLine.isEmpty {
+                    Button { model.onNextTap?() } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "forward.end.fill").font(.system(size: 8))
+                            Text("다음 곡").font(.system(size: 10, weight: .semibold))
+                            Text(model.nextLine).font(.system(size: 11)).lineLimit(1).truncationMode(.tail)
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("누르면 크게 보기 (다음 트랙 전체)")
+                    .padding(.horizontal, 16)
+                    .frame(height: Self.nextH)
+                }
             }
         }
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(0.05)).padding(.horizontal, 8).padding(.vertical, 2))
@@ -849,7 +874,10 @@ final class LyricsController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) {
         if (notification.object as? NSWindow) === sidePanel { onSideDetach?(false) }
     }
-    var stripHeight: CGFloat { model.stripExpanded ? LyricsStrip.expandedHeight(model.fontScale, pron: model.showsPron) : LyricsStrip.collapsedHeight }
+    var stripHeight: CGFloat {
+        model.stripExpanded ? LyricsStrip.expandedHeight(model.fontScale, pron: model.showsPron) + (model.nextLine.isEmpty ? 0 : LyricsStrip.nextH) : LyricsStrip.collapsedHeight
+    }
+    private var ticks = 0
 
     init(music: YTMusic) {
         self.music = music
@@ -903,6 +931,30 @@ final class LyricsController: NSObject, NSWindowDelegate {
     private func refresh() {
         guard let music, music.isActive else { return }
         music.fetchLyrics { [weak self] l in self?.model.update(l, player: music.state) }
+        // 작게 보기: 다음 곡 한 줄 (6초마다 다음 트랙을 읽음 · 크게 보기면 안 씀)
+        ticks += 1
+        if ticks % 3 == 1 {
+            if BigPlayerView.enabled { setNext(""); return }
+            music.loadQueue { [weak self] items in
+                let main = items.filter { !$0.auto }
+                guard let c = main.firstIndex(where: { $0.current }), c + 1 < main.count else {
+                    // 목록 끝이면 자동재생으로 붙은 첫 곡
+                    if let a = items.first(where: { $0.auto && !$0.current }) { self?.setNext("\(a.title) — \(a.artist.components(separatedBy: " • ").first ?? a.artist) · 자동재생") }
+                    else { self?.setNext("") }
+                    return
+                }
+                let n = main[c + 1], left = main.count - c - 2
+                let who = n.artist.components(separatedBy: " • ").first ?? n.artist
+                self?.setNext("\(n.title) — \(who)\(n.duration.isEmpty ? "" : " · \(n.duration)")\(left > 0 ? "  (+\(left)곡)" : "")")
+            }
+        }
+    }
+    /// 다음 곡 줄이 생기거나 없어지면 창 높이도 다시
+    private func setNext(_ t: String) {
+        guard t != model.nextLine else { return }
+        let changed = t.isEmpty != model.nextLine.isEmpty
+        model.nextLine = t
+        if changed { model.onStripToggle?() }
     }
 }
 

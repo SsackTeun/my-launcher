@@ -90,7 +90,7 @@ final class PlayerBar: NSView {
     static var fontScale: CGFloat = 1
     /// 글자가 커지면 곡 정보 줄이 높아지는 만큼 플레이어도 높아짐
     static var extra: CGFloat { max(0, (fontScale - 1) * 36) }
-    static var height: CGFloat { compact ? 52 + extra * 0.5 + (narrow ? 30 : 0) : 118 + extra }
+    static var height: CGFloat { compact ? 52 + extra * 0.5 + (narrow ? 44 : 0) : 118 + extra }
     /// 좁은 도구함 창: 한 줄 플레이어를 두 줄로 (위: 사진 · 제목 · 떼어 내기 / 아래: 재생 단추들)
     static var narrow = false
     /// 한 줄 플레이어 (옵션, 처음엔 켬): [사진 · 제목/아티스트 · ⏮ ▶ ⏭ · 가사 · 목록 · 떼어 내기] + 얇은 재생바
@@ -116,6 +116,12 @@ final class PlayerBar: NSView {
     var onDetach: (() -> Void)?
     var detached = false { didSet { updateDetachIcon() } }
     private var detachBtn: ActionButton!
+    /// 떼어 낸 플레이어 창 위쪽 줄 오른쪽 끝: 재생기 단추들 (Netflix · YouTube · YouTube Music 접기) — 합치기 단추 자리
+    var siteButtons: [NSView] = [] {
+        didSet { oldValue.forEach { $0.removeFromSuperview() }; siteButtons.forEach { addSubview($0) }; needsLayout = true }
+    }
+    /// 재생기 단추 자리만큼 오른쪽을 비움 (합치기 단추 한 칸은 그 단추들이 씀)
+    private var siteReserve: CGFloat { siteButtons.isEmpty || (PlayerBar.compact && PlayerBar.narrow) ? 0 : CGFloat(siteButtons.count) * 24 - 22 }
     private func updateDetachIcon() {
         detachBtn?.image = NSImage(systemSymbolName: detached ? "rectangle.on.rectangle.slash" : "rectangle.on.rectangle", accessibilityDescription: nil)
         detachBtn?.toolTip = detached ? "도구함 창으로 합치기" : "플레이어만 따로 떼어 내기"
@@ -293,18 +299,23 @@ final class PlayerBar: NSView {
     }
     /// 한 줄 플레이어 배치
     private func layoutCompact() {
-        let w = bounds.width
+        let w = bounds.width - siteReserve
         let pad: CGFloat = 10
         let fs = PlayerBar.fontScale
         let ex = PlayerBar.extra * 0.5
         let rowH: CGFloat = 32 + ex
         artView.frame = NSRect(x: pad, y: 6, width: rowH, height: rowH)
-        if PlayerBar.narrow { layoutNarrow(w: w, pad: pad, fs: fs, rowH: rowH); return }
+        if PlayerBar.narrow {
+            // 두 줄: 윗줄(사진 · 제목)을 더 크게
+            let big = 46 + ex
+            artView.frame = NSRect(x: pad, y: 6, width: big, height: big)
+            layoutNarrow(w: w, pad: pad, fs: fs, rowH: big); return
+        }
         // 오른쪽부터: [떼어 내기] [목록] [가사] [🔈 볼륨] [🔁 반복] · [⏭] [▶] [⏮]
         let y0 = 6 + (rowH - 24) / 2
         detachBtn.frame = NSRect(x: w - pad - 22, y: y0 + 1, width: 22, height: 22)
         queueBtn.frame = NSRect(x: detachBtn.frame.minX - 24, y: y0, width: 24, height: 24)
-        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX - 24, y: y0, width: 24, height: 24)
+        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX, y: y0, width: 0, height: 24)   // 💬 가사 창 단추는 뺌 (가사 칸 · 가사 탭 · 전체 가사로)
         // 스피커: 누르면 볼륨 팝업, 위에서 휠을 굴리면 바로 조절
         mute.frame = NSRect(x: lyricsBtn.frame.minX - 24, y: y0, width: 24, height: 24)
         rep.frame = NSRect(x: mute.frame.minX - 24, y: y0, width: 24, height: 24)
@@ -336,24 +347,25 @@ final class PlayerBar: NSView {
     private func layoutNarrow(w: CGFloat, pad: CGFloat, fs: CGFloat, rowH: CGFloat) {
         // 1줄: 사진 · 제목/아티스트 · 떼어 내기
         detachBtn.frame = NSRect(x: w - pad - 22, y: 6 + (rowH - 22) / 2, width: 22, height: 22)
-        let textX = artView.frame.maxX + 8
+        let textX = artView.frame.maxX + 10
         let textW = max(40, detachBtn.frame.minX - textX - 6)
-        titleBtn.font = .boldSystemFont(ofSize: 12 * fs)
-        bylineLabel.font = .systemFont(ofSize: 10.5 * fs)
-        let th = ceil(17 * fs), bh = ceil(14 * fs)
+        titleBtn.font = .boldSystemFont(ofSize: 14 * fs)
+        bylineLabel.font = .systemFont(ofSize: 11.5 * fs)
+        let th = ceil(19 * fs), bh = ceil(16 * fs)
         let ty = 6 + (rowH - th - bh) / 2
         titleBtn.frame = NSRect(x: textX - 2, y: ty, width: textW, height: th)
         bylineLabel.frame = NSRect(x: textX, y: ty + th, width: textW, height: bh)
-        // 2줄: [⏮ ▶ ⏭] ……… [🔁 🔈 가사 목록]
-        let y2 = 6 + rowH + 2
-        prev.frame = NSRect(x: pad - 2, y: y2, width: 28, height: 24)
-        play.frame = NSRect(x: prev.frame.maxX, y: y2 - 4, width: 32, height: 32)
-        next.frame = NSRect(x: play.frame.maxX, y: y2, width: 28, height: 24)
-        queueBtn.frame = NSRect(x: w - pad - 24, y: y2, width: 24, height: 24)
-        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX - 24, y: y2, width: 24, height: 24)
+        // 2줄: ……… [⏮ ▶ ⏭] (가운데) ……… [🔁 🔈 목록]
+        let y2 = 6 + rowH + 4
+        play.frame = NSRect(x: bounds.midX - 16, y: y2 - 4, width: 32, height: 32)
+        prev.frame = NSRect(x: play.frame.minX - 30, y: y2, width: 28, height: 24)
+        next.frame = NSRect(x: play.frame.maxX + 2, y: y2, width: 28, height: 24)
+        // 아랫줄은 창 폭 그대로 (재생기 단추 자리는 윗줄만)
+        queueBtn.frame = NSRect(x: bounds.width - pad - 24, y: y2, width: 24, height: 24)
+        lyricsBtn.frame = NSRect(x: queueBtn.frame.minX, y: y2, width: 0, height: 24)
         mute.frame = NSRect(x: lyricsBtn.frame.minX - 24, y: y2, width: 24, height: 24)
         rep.frame = NSRect(x: mute.frame.minX - 24, y: y2, width: 24, height: 24)
-        progress.frame = NSRect(x: pad, y: y2 + 26, width: w - pad * 2, height: 10)
+        progress.frame = NSRect(x: pad, y: y2 + 26, width: bounds.width - pad * 2, height: 10)
         for v in [like, dislike, shuffle, openBtn] as [NSView?] { v?.isHidden = true }
         rep.isHidden = limited || (!has.isEmpty && !has.contains("repeat"))
         mute.isHidden = limited
@@ -371,6 +383,20 @@ final class PlayerBar: NSView {
     override func layout() {
         super.layout()
         layoutMain()
+        lyricsBtn.isHidden = true
+        // 재생기 단추 (합치기 단추는 숨김 — 플레이어는 늘 따로)
+        //   두 줄(작게 보기): 아랫줄 왼쪽 (가운데 재생 단추와 균형) / 한 줄 · 크게 보기: 위쪽 줄 오른쪽 끝
+        detachBtn.isHidden = detached || !siteButtons.isEmpty   // 떼어 낸 플레이어는 늘 따로라 합치기 단추 없음
+        if PlayerBar.compact && PlayerBar.narrow && !(detached && big) {
+            var sx: CGFloat = 8
+            for b in siteButtons { b.frame = NSRect(x: sx, y: next.frame.midY - 12, width: 24, height: 24); sx += 24 }
+            // 윗줄 제목은 오른쪽 끝까지
+            let right = bounds.width - 10
+            for v in [titleBtn, bylineLabel] as [NSView] { v.frame.size.width = max(40, right - v.frame.minX) }
+        } else {
+            var sx = detachBtn.frame.minX
+            for b in siteButtons { b.frame = NSRect(x: sx, y: detachBtn.frame.midY - 12, width: 24, height: 24); sx += 24 }
+        }
         // 크게 보기: 재생 버튼은 아래(앨범 밑)로 옮겨 가서 여기선 숨기고, 제목을 그만큼 길게
         let moved: [NSView] = [prev, play, next, rep, mute, progress, timeLabel]
         if detached && big {
@@ -395,7 +421,7 @@ final class PlayerBar: NSView {
     private var bigHid = false
     private func layoutMain() {
         if PlayerBar.compact { layoutCompact(); return }
-        let w = bounds.width
+        let w = bounds.width - siteReserve
         let pad: CGFloat = 12
         // 1줄: 사진 · 제목/아티스트 · 좋아요/싫어요
         artView.frame = NSRect(x: pad, y: 8, width: 44, height: 44)

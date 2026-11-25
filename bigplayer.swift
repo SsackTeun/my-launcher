@@ -162,19 +162,19 @@ final class BigPlayerView: NSView {
             addSubview(b)
             return b
         }
-        let prev = btn("backward.fill", "이전 곡", 15, "prev")
-        playBtn = btn("play.fill", "재생 / 일시정지", 17, "playPause")
-        let next = btn("forward.fill", "다음 곡", 15, "next")
-        repBtn = btn("repeat", "반복", 14, "repeat")
+        let prev = btn("backward.fill", "이전 곡", 13, "prev")
+        playBtn = btn("play.fill", "재생 / 일시정지", 15, "playPause")
+        let next = btn("forward.fill", "다음 곡", 13, "next")
+        repBtn = btn("repeat", "반복", 12, "repeat")
         spkBtn = ScrollButton(title: "", symbol: "speaker.wave.2.fill") { [weak self] b in self?.onVolume?(b) }
         spkBtn.isBordered = false
-        spkBtn.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
+        spkBtn.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
         spkBtn.toolTip = "볼륨 (누르면 조절 · 휠로 바로 조절)"
         spkBtn.onScroll = { [weak self] d in self?.onNudge?(d) }
         addSubview(spkBtn)
         eqBtn = ActionButton(title: "", symbol: "slider.vertical.3") { [weak self] b in self?.showEQ(from: b) }
         eqBtn.isBordered = false
-        eqBtn.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
+        eqBtn.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
         eqBtn.toolTip = "이퀄라이저"
         addSubview(eqBtn)
         ctl = [prev, playBtn, next, repBtn, spkBtn, eqBtn]
@@ -466,11 +466,15 @@ final class BigPlayerView: NSView {
         let py = art.frame.maxY + Self.controlsH - pillH - 2
         pill.frame = NSRect(x: art.frame.minX, y: py, width: art.frame.width, height: pillH)
         pill.layer?.cornerRadius = pillH / 2
-        var bx = art.frame.midX - total / 2
-        for b in ctl {
-            b.frame = NSRect(x: bx, y: py + (pillH - 28) / 2, width: cell, height: 28)
-            bx += cell + gap
-        }
+        // ⏮ ▶ ⏭ 은 가운데, 🔁 🔈 EQ 는 오른쪽 끝으로
+        _ = total
+        let cy = py + (pillH - 28) / 2
+        let mainCtl = Array(ctl.prefix(3)), sideCtl = Array(ctl.dropFirst(3))
+        var bx = art.frame.midX - (cell * 3 + gap * 2) / 2
+        for b in mainCtl { b.frame = NSRect(x: bx, y: cy, width: cell, height: 28); bx += cell + gap }
+        let sc: CGFloat = 26
+        var rx = art.frame.maxX - 6 - sc * CGFloat(sideCtl.count)
+        for b in sideCtl { b.frame = NSRect(x: rx, y: cy, width: sc, height: 28); rx += sc }
         let x = art.frame.maxX + 14
         let w = max(120, bounds.width - x - pad)
         tabs.sizeToFit()
