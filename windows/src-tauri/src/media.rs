@@ -84,7 +84,7 @@ pub struct Now {
 }
 
 /// 재생기 순서 (‹ › 로 넘길 때)
-const ORDER: [&str; 3] = ["ytmusic", "yt-video", "netflix"];
+const ORDER: [&str; 4] = ["ytmusic", "yt-video", "yt-shorts", "netflix"];
 static SITES: Mutex<Vec<(String, Now)>> = Mutex::new(Vec::new());
 /// 지금 보여 주는 재생기
 static ACTIVE: Mutex<String> = Mutex::new(String::new());
@@ -170,6 +170,7 @@ fn site_name(label: &str) -> &'static str {
     match label {
         "ytmusic" => "YouTube Music",
         "yt-video" => "YouTube",
+        "yt-shorts" => "YouTube 쇼츠",
         "netflix" => "Netflix",
         _ => "",
     }
@@ -587,7 +588,7 @@ mod site_tests {
         // YouTube Music 재생 중
         assert!(site_update("ytmusic", now("song", false), false).is_empty());
         let p = site_update("ytmusic", now("song", true), false);
-        assert_eq!(p, vec!["yt-video", "netflix"], "music starting counts as a start even without s=1");
+        assert_eq!(p, vec!["yt-video", "yt-shorts", "netflix"], "music starting counts as a start even without s=1");
         // Netflix 첫 화면의 소리 없는 예고편: 재생 중이 아님 → 아무것도 안 멈춤
         assert!(site_update("netflix", now("", false), false).is_empty());
         // Netflix 에서 소리 나게 재생 시작 ('시작' 알림이 빠졌어도) → YouTube Music 멈춤, Netflix 로 넘어감

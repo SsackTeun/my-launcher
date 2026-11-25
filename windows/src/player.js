@@ -165,7 +165,7 @@ const Player = (() => {
   // MARK: 조작
 
   /// 재생기 이름 · 여는 주소
-  const SITES = { ytmusic: ["YouTube Music", "https://music.youtube.com"], "yt-video": ["YouTube", "https://www.youtube.com"], netflix: ["Netflix", "https://www.netflix.com"] };
+  const SITES = { ytmusic: ["YouTube Music", "https://music.youtube.com"], "yt-video": ["YouTube", "https://www.youtube.com"], "yt-shorts": ["YouTube 쇼츠", "https://www.youtube.com/shorts"], netflix: ["Netflix", "https://www.netflix.com"] };
 
   async function control(action, value) {
     // 도구함 재생기(YouTube Music · YouTube · Netflix)는 그 페이지에서 조작 — 숨긴 창이어도 됨
@@ -181,7 +181,8 @@ const Player = (() => {
   }
   function openSite(label) {
     const [name, url] = SITES[label];
-    return invoke("open_window", { label, url, title: name, width: label === "ytmusic" ? 1100 : 1100, height: label === "ytmusic" ? 760 : 720 }).catch((e) => toast(String(e)));
+    const [w, h] = label === "yt-shorts" ? [420, 780] : label === "ytmusic" ? [1100, 760] : [1100, 720];
+    return invoke("open_window", { label, url, title: name, width: w, height: h }).catch((e) => toast(String(e)));
   }
 
   function seek(sec) { st.position = sec; polledAt = Date.now(); control("seek", sec); notify(); }

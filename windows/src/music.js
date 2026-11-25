@@ -1980,8 +1980,8 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     }
     if (e.target.closest("#hubShorts")) {
       hub.hidden = true;
-      await invoke("open_window", { label: "yt-video", url: "https://www.youtube.com/shorts", title: "YouTube", width: 1100, height: 720 }).catch(() => {});
-      invoke("web_eval", { label: "yt-video", js: "if (!location.pathname.startsWith('/shorts')) location.href = 'https://www.youtube.com/shorts'" }).catch(() => {});
+      // 쇼츠는 YouTube 창과 따로 (보던 YouTube 창이 쇼츠로 바뀌지 않게), 세로 영상이라 휴대폰 크기
+      await invoke("open_window", { label: "yt-shorts", url: "https://www.youtube.com/shorts", title: "YouTube 쇼츠", width: 420, height: 780 }).catch(() => {});
       return;
     }
     if (e.target.closest("#lineBtn")) { setConfig("lyricsLine", !(cfg.lyricsLine !== false)); return; }

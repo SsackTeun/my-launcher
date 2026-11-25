@@ -273,7 +273,7 @@ pub fn is_pip(label: &str) -> bool {
 
 /// YouTube · Netflix 창을 닫으면 (Mac 판처럼) 영상을 멈추고 숨기기만 — 다시 열면 보던 그대로
 pub fn close_requested(app: &tauri::AppHandle, label: &str) -> bool {
-    if label != "yt-video" && label != "netflix" {
+    if label != "yt-video" && label != "yt-shorts" && label != "netflix" {
         return false;
     }
     if let Some(w) = app.get_webview_window(label) {
