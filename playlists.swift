@@ -191,9 +191,10 @@ final class PlaylistPane: NSView {
     private let renameBtn = NSButton()
     private let delBtn = NSButton()
     private let groupBtn = NSButton()
+    /// 목록 위: 전체 곡 수 · 시간 (앨범별이면 앨범 수도)
+    private let countLabel = NSTextField(labelWithString: "")
     /// 앨범별로 볼 때만: 모두 접기 · 펼치기 / 재생 중인 앨범만 펼치기
     private let foldBtn = NSButton()
-    private let autoBtn = NSButton()
     /// 앨범별로 묶어 보기 (이어진 같은 앨범 곡들 위에 머리줄)
     static var groupByAlbum: Bool {
         get { UserDefaults.standard.bool(forKey: "plGroupAlbum") }
@@ -229,8 +230,7 @@ final class PlaylistPane: NSView {
                                    (renameBtn, "pencil", "이 플레이리스트 이름 바꾸기", #selector(renameList)),
                                    (delBtn, "trash", "플레이리스트 지우기 (여러 개 골라서)", #selector(deleteList)),
                                    (groupBtn, "square.stack.3d.up", "앨범별로 묶어 보기", #selector(toggleGroup)),
-                                   (foldBtn, "rectangle.compress.vertical", "모두 접기", #selector(foldAll)),
-                                   (autoBtn, "play.square.stack", "재생 중인 앨범만 펼치기", #selector(toggleAuto))] {
+                                   (foldBtn, "rectangle.compress.vertical", "모두 접기", #selector(foldAll))] {
             b.image = NSImage(systemSymbolName: sym, accessibilityDescription: tip)
             b.isBordered = false; b.toolTip = tip; b.target = self; b.action = act
             b.symbolConfiguration = .init(pointSize: 16, weight: .regular)
@@ -243,6 +243,10 @@ final class PlaylistPane: NSView {
         undoBtn.target = self; undoBtn.action = #selector(undo)
         undoBtn.isHidden = true
         addSubview(undoBtn)
+        countLabel.font = .systemFont(ofSize: 11)
+        countLabel.textColor = .secondaryLabelColor
+        countLabel.lineBreakMode = .byTruncatingTail
+        addSubview(countLabel)
         scroll.documentView = doc
         scroll.hasVerticalScroller = false
         scroll.drawsBackground = false
@@ -263,12 +267,12 @@ final class PlaylistPane: NSView {
         renameBtn.frame = NSRect(x: delBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         newBtn.frame = NSRect(x: renameBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         groupBtn.frame = NSRect(x: newBtn.frame.minX - 26, y: 2, width: 24, height: 24)
-        autoBtn.frame = NSRect(x: groupBtn.frame.minX - 26, y: 2, width: 24, height: 24)
-        foldBtn.frame = NSRect(x: autoBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        foldBtn.frame = NSRect(x: groupBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         playBtn.frame = NSRect(x: (Self.groupByAlbum ? foldBtn.frame.minX : groupBtn.frame.minX) - 26, y: 2, width: 24, height: 24)
         undoBtn.frame = NSRect(x: playBtn.frame.minX - uw, y: 5, width: uw - 6, height: 18)
         picker.frame = NSRect(x: 4, y: 2, width: max(80, playBtn.frame.minX - uw - 10), height: 24)
-        scroll.frame = NSRect(x: 0, y: 32, width: w, height: bounds.height - 32)
+        countLabel.frame = NSRect(x: 10, y: 31, width: w - 20, height: 15)
+        scroll.frame = NSRect(x: 0, y: 48, width: w, height: bounds.height - 48)
         status.frame = NSRect(x: 0, y: scroll.frame.midY - 9, width: w, height: 18)
         stack()
     }
@@ -299,8 +303,9 @@ final class PlaylistPane: NSView {
     /// 곡이 바뀌면 '지금 재생 중' 표시를 옮김
     private var lastVid = ""
     func tickPlaying() {
+        // 곡 ID 가 잠깐 비는 때가 있어서(그때마다 다시 그려 접힘 · 펼침이 깜빡였음) 빈 값은 무시
         let v = music?.state?.videoId ?? ""
-        guard v != lastVid, dragRow == nil else { return }
+        guard !v.isEmpty, v != lastVid, dragRow == nil else { return }
         lastVid = v
         autoFlip = []
         if !tracks.isEmpty { show(tracks) }
@@ -350,7 +355,10 @@ final class PlaylistPane: NSView {
         tracks = ts
         doc.subviews.forEach { $0.removeFromSuperview() }
         let playingHere = music?.state?.listId == Self.selectedId
-        let nowVid = music?.state?.videoId ?? ""
+        let nowVid = { let v = music?.state?.videoId ?? ""; return v.isEmpty ? lastVid : v }()
+        // 지금 곡: 곡 ID 가 같거나 (버전이 달라 ID 가 다르면) 이 플레이리스트를 듣는 중이고 제목이 같은 곡
+        let nowTitle = music?.state?.title ?? ""
+        let isNow = { (t: PlaylistTrack) in t.videoId == nowVid || (playingHere && !nowTitle.isEmpty && t.title == nowTitle) }
         let grouped = Self.groupByAlbum
         if grouped {
             // 앨범별: 같은 앨범은 떨어져 있어도 한 묶음 (처음 나온 자리 순서), 묶음 안은 플레이리스트 순서
@@ -384,7 +392,7 @@ final class PlaylistPane: NSView {
                 let ck = Self.collapseKey(group[0])
                 if Self.autoExpand {
                     // 재생 중인 앨범만 펼치기: 지금 곡이 든 묶음만 펼침 (머리줄을 누르면 곡이 바뀔 때까지 반대로)
-                    let playing = playingHere && group.contains { $0.videoId == nowVid }
+                    let playing = group.contains(where: isNow)
                     h.collapsed = playing == autoFlip.contains(ck)
                     h.onToggle = { [weak self] in
                         guard let self else { return }
@@ -399,6 +407,7 @@ final class PlaylistPane: NSView {
                         self.show(self.tracks)
                     }
                 }
+                h.playing = group.contains(where: isNow)
                 doc.addSubview(h)
                 if !h.collapsed {
                     for k in idx { addRow(ts[k], k, drag: false) }
@@ -408,7 +417,7 @@ final class PlaylistPane: NSView {
         } else { for (k, t) in ts.enumerated() { addRow(t, k, drag: true) } }
         func addRow(_ t: PlaylistTrack, _ k: Int, drag: Bool) {
             let r = PlaylistRow(t, index: k)
-            if playingHere && t.videoId == nowVid { r.markPlaying() }
+            if isNow(t) { r.markPlaying() }
             r.onPlay = { [weak self] in self?.play(from: t) }
             r.onRemove = { [weak self] in self?.remove(t) }
             // 묶어 볼 땐 끌어서 옮기기 끔 (머리줄이 섞여 자리 계산이 어긋남)
@@ -416,6 +425,8 @@ final class PlaylistPane: NSView {
             doc.addSubview(r)
         }
         if grouped { syncGroupBtn() }
+        let albums = Set(ts.map { $0.albumId.isEmpty ? "n:" + $0.album : $0.albumId }).count
+        countLabel.stringValue = ts.isEmpty ? "" : "\(ts.count)곡 · \(Self.total(ts))" + (grouped ? " · 앨범 \(albums)개" : "")
         status.stringValue = ts.isEmpty ? "빈 플레이리스트예요\n다음 트랙 · 앨범에서 곡을 넣어 보세요" : ""
         status.isHidden = !ts.isEmpty
         stack()
@@ -780,12 +791,9 @@ final class PlaylistPane: NSView {
         Self.autoExpand = false
         regroup()
     }
-    @objc private func toggleAuto() { Self.autoExpand.toggle(); autoFlip = []; regroup() }
+
     private func syncGroupBtn() {
         foldBtn.isHidden = !Self.groupByAlbum
-        autoBtn.isHidden = !Self.groupByAlbum
-        autoBtn.contentTintColor = Self.autoExpand ? .launcherAccent : nil
-        autoBtn.toolTip = Self.autoExpand ? "재생 중인 앨범만 펼치는 중 — 누르면 끔" : "재생 중인 앨범만 펼치기 (나머지는 접음)"
         let keys = Set(tracks.map { Self.collapseKey($0) })
         let allClosed = !Self.autoExpand && !keys.isEmpty && keys.isSubset(of: Self.collapsed)
         foldBtn.image = NSImage(systemSymbolName: allClosed ? "rectangle.expand.vertical" : "rectangle.compress.vertical", accessibilityDescription: nil)
@@ -884,6 +892,7 @@ final class PlaylistRow: NSView {
         playing = true
         num.stringValue = "🔊"
         t.font = .boldSystemFont(ofSize: QueueRow.titleSize)
+        t.textColor = .launcherAccent
         needsDisplay = true
     }
 
@@ -932,7 +941,8 @@ final class PlaylistRow: NSView {
     override func mouseExited(with event: NSEvent) { hovering = false }
     override func draw(_ dirtyRect: NSRect) {
         if playing {
-            NSColor.systemRed.withAlphaComponent(0.10).setFill()
+            // 지금 곡: 앨범 머리줄과 같은 강조색
+            NSColor.launcherAccent.withAlphaComponent(0.16).setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2), xRadius: 6, yRadius: 6).fill()
         }
         guard hovering else { return }
@@ -966,6 +976,15 @@ final class AlbumGroupHead: NSView {
     /// 접힘 (▸) / 펼침 (▾) — 머리줄을 누르면 바뀜
     var collapsed = false { didSet { chev.image = NSImage(systemSymbolName: collapsed ? "chevron.right" : "chevron.down", accessibilityDescription: nil) } }
     var onToggle: (() -> Void)?
+    /// 지금 재생 중인 곡이 든 앨범: 강조색 바탕 · 이름 · 🔊
+    var playing = false {
+        didSet {
+            name.textColor = playing ? .launcherAccent : .labelColor
+            chev.contentTintColor = playing ? .launcherAccent : .secondaryLabelColor
+            if playing { name.stringValue = "🔊 " + name.stringValue }
+            needsDisplay = true
+        }
+    }
     /// 흩어진 앨범이면 '모으기' (실제 순서도 한데 모음)
     var onGather: (() -> Void)? { didSet { gatherBtn.isHidden = onGather == nil } }
     private let gatherBtn = NSButton(title: "모으기", target: nil, action: nil)
@@ -985,7 +1004,7 @@ final class AlbumGroupHead: NSView {
         for v in [name, info] { addSubview(v) }
         for (b, sym, tip, act) in [(edit, "square.and.pencil", "앨범 편집 — 이 앨범의 전체 수록곡을 보고 빠진 곡 넣기", #selector(editTapped)),
                                    (play, "play.circle", "이 앨범부터 재생", #selector(playTapped)),
-                                   (minus, "minus.circle", "이 앨범 곡을 모두 플레이리스트에서 빼기 (되돌리기 가능)", #selector(removeTapped))] {
+                                   (minus, "minus.circle", "이 앨범 곡을 모두 플레이리스트에서 빼기 — 두 번 눌러요 (되돌리기 가능)", #selector(removeTapped))] {
             b.image = NSImage(systemSymbolName: sym, accessibilityDescription: tip)
             b.isBordered = false; b.toolTip = tip; b.target = self; b.action = act
             b.contentTintColor = b === minus ? .systemRed : .secondaryLabelColor
@@ -1024,13 +1043,36 @@ final class AlbumGroupHead: NSView {
         name.frame = NSRect(x: 24, y: 8, width: max(40, info.frame.minX - 32), height: 17)
     }
     override func draw(_ dirtyRect: NSRect) {
-        NSColor.labelColor.withAlphaComponent(0.06).setFill()
+        (playing ? NSColor.launcherAccent.withAlphaComponent(0.16) : NSColor.labelColor.withAlphaComponent(0.06)).setFill()
         NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 3), xRadius: 6, yRadius: 6).fill()
     }
     @objc private func playTapped() { onPlay?() }
     @objc private func editTapped() { onEdit?() }
     @objc private func gatherTapped() { onGather?() }
-    @objc private func removeTapped() { onRemove?() }
+    /// ⊖ 두 번 누르기: 한 번 누르면 '한 번 더 누르면 빼요' (3초), 그 안에 다시 누르면 앨범째 뺌 — 묻는 창 없이 실수 방지
+    private var armed = false
+    private var armTimer: Timer?
+    private var infoText = ""
+    @objc private func removeTapped() {
+        if armed { disarm(); onRemove?(); return }
+        armed = true
+        infoText = info.stringValue
+        info.stringValue = "한 번 더 누르면 빼요"
+        info.textColor = .systemRed
+        minus.image = NSImage(systemSymbolName: "minus.circle.fill", accessibilityDescription: nil)
+        needsLayout = true
+        armTimer?.invalidate()
+        armTimer = Timer.scheduledTimer(withTimeInterval: 3, repeats: false) { [weak self] _ in MainActor.assumeIsolated { self?.disarm() } }
+    }
+    private func disarm() {
+        guard armed else { return }
+        armed = false
+        armTimer?.invalidate()
+        info.stringValue = infoText
+        info.textColor = .secondaryLabelColor
+        minus.image = NSImage(systemSymbolName: "minus.circle", accessibilityDescription: nil)
+        needsLayout = true
+    }
 }
 
 /// 앨범 편집 줄: 안내(＋ 모두 넣기) 또는 수록곡 한 곡 (번호 · 제목 · 시간 · ✓ 들어 있음 / ＋ 넣기)
