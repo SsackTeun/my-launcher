@@ -608,3 +608,32 @@ body.host .settings { flex: 1; min-height: 0; }
 .mz-add { flex: 0 0 auto; width: 26px; height: 26px; border-radius: 50%; border: 0; padding: 0; background: transparent; color: var(--accent); font-size: 15px; cursor: pointer; }
 .mz-add:hover { background: var(--hover); }
 .mz-add.done { color: #34c759; cursor: default; }
+
+/* 크게 보기 왼쪽 아래 가사 칸: 지금 줄 · 다음 줄 (줄 수는 ‘가사 ▾’ 로) */
+.lyside { flex: 1 1 auto; min-height: 0; overflow: hidden; display: flex; flex-direction: column; gap: 6px; padding: 8px 12px; border-radius: 10px; background: var(--panel); font-size: var(--lfs, 13px); }
+body.compact .lyside { display: none; }
+.ls-head { display: flex; align-items: center; gap: 6px; }
+.ls-head select { border: 0; background: transparent; color: var(--sub); font-size: 11px; font-weight: 600; padding: 0; cursor: pointer; }
+.ls-msg { color: var(--faint); font-size: 12px; margin: auto; }
+.ls-lines { display: flex; flex-direction: column; gap: 5px; min-height: 0; overflow: hidden; }
+.ls-lines > div { cursor: pointer; line-height: 1.3; }
+.ls-cur { font-weight: 700; font-size: 14px; color: var(--text); }
+.ls-cur .ly-sub { font-weight: 400; font-size: 11px; color: var(--accent); }
+.ls-next { font-size: 12px; color: var(--sub); }
+.ls-past { font-size: 12px; color: var(--faint); }
+/* 다음 트랙 위 줄: ⓘ 자동재생 [스위치] */
+.mz-auto { display: inline-flex; align-items: center; gap: 4px; margin-right: 6px; font-size: 11px; color: var(--sub); white-space: nowrap; }
+.mz-qbtn.mz-info { width: 16px; font-size: 12px; }
+.mz-switch { position: relative; display: inline-block; width: 28px; height: 16px; cursor: pointer; }
+.mz-switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+.mz-switch i { position: absolute; inset: 0; border-radius: 8px; background: var(--line); transition: background .15s; }
+.mz-switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.3); }
+.mz-switch input:checked + i { background: var(--accent); }
+.mz-switch input:checked + i::after { transform: translateX(12px); }
+.menu .tipbox { max-width: 260px; padding: 8px 10px; font-size: 12px; line-height: 1.5; color: var(--text); }
+/* 플레이리스트 앨범별 머리줄 */
+.mz-ahead { display: flex; align-items: center; gap: 8px; margin: 6px 2px 2px; padding: 4px 8px; border-radius: 7px; background: var(--panel); font-size: 12px; }
+.mz-ahead b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.mz-ahead small { color: var(--sub); white-space: nowrap; }
+.mz-ahead .mz-x { visibility: visible; }
+.mz-ahead .mz-aplay { width: 24px; height: 24px; }

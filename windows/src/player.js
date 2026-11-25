@@ -354,6 +354,42 @@ const Player = (() => {
     });
   }
 
+  /// 크게 보기 왼쪽 아래 빈칸: 지금 줄부터 n줄 (기본 2: 지금 · 다음, 0: 칸 가득 — 앞 줄부터), 지금 줄에만 발음 · 번역
+  function renderSide(el, n) {
+    if (!el) return;
+    const i = currentIndex();
+    const sig = [lyr.key, lyr.status, lyr.lines.length, lyr.trans.length, lyr.pron.length, cfg.pron, n, i].join("|");
+    if (sig === el._sig) return;
+    el._sig = sig;
+    const opts = [[2, "가사 · 2줄 (지금 · 다음)"], [4, "가사 · 4줄"], [8, "가사 · 8줄"], [0, "가사 · 칸 가득"]];
+    const head = `<div class="ls-head"><select data-s="count" title="보여 줄 가사 줄 수">${opts.map(([v, t]) => `<option value="${v}" ${v === n ? "selected" : ""}>${t}</option>`).join("")}</select>
+      <span class="mz-sp"></span><button class="icon sm" data-s="detach" title="이 가사 칸만 떼어 내서 따로 띄우기">${PI.detach}</button></div>`;
+    if (!st.has || lyr.status || !lyr.lines.length) { el.innerHTML = head + `<div class="ls-msg">${esc(!st.has ? "재생 중인 곡이 없어요" : lyr.status || "가사 불러오는 중…")}</div>`; return; }
+    const blank = (k) => !(lyr.lines[k].text || "").trim();
+    const synced = lyr.synced;
+    let start = 0;
+    if (synced && i >= 0) {
+      if (n > 0) start = i;
+      else { start = i - 1; while (start > 0 && blank(start)) start--; start = Math.max(0, start); }
+    }
+    const shown = [];
+    for (let k = start; k < lyr.lines.length && shown.length < (n > 0 ? n : 14); k++) if (!blank(k) || k === i) shown.push(k);
+    el.innerHTML = head + `<div class="ls-lines">${shown.map((k) => {
+      const cur = synced && k === i;
+      const cls = cur ? "ls-cur" : synced && k < i ? "ls-past" : "ls-next";
+      const sub = cur || !synced ? [pronOf(k), lyr.trans[k]].filter(Boolean).map((x) => `<div class="ly-sub">${esc(x)}</div>`).join("") : "";
+      return `<div class="${cls}" data-t="${lyr.lines[k].t}">${esc(lyr.lines[k].text || "♪")}${sub}</div>`;
+    }).join("")}</div>`;
+  }
+  function bindSide(el, handlers = {}) {
+    el.addEventListener("change", (e) => { if (e.target.dataset?.s === "count") handlers.count?.(+e.target.value); });
+    el.addEventListener("click", (e) => {
+      if (e.target.closest('[data-s="detach"]')) { handlers.detach?.(); return; }
+      const l = e.target.closest(".ls-lines [data-t]");
+      if (l && lyr.synced && +l.dataset.t >= 0) seek(+l.dataset.t);
+    });
+  }
+
   /// 전체 가사 (가사 창)
   function renderFull(el) {
     if (!el) return;
@@ -369,7 +405,8 @@ const Player = (() => {
         ? `<div class="lf-head has-tools"><div class="lf-ttl"><b>${esc(st.title)}</b><span>${esc(st.artist)}</span></div><div class="dt-tools lf-tools">
             <button class="icon sm" data-lf="smaller" title="글자 작게">A−</button><button class="icon sm" data-lf="bigger" title="글자 크게">A+</button>
             <select data-lf="trans" title="번역 (가사 글자가 Google 번역으로 보내져요)">${LANGS.map(([c, n]) => `<option value="${c}" ${c === (cfg.transLang || "") ? "selected" : ""}>${esc(n)}</option>`).join("")}</select>
-            <select data-lf="pron" title="발음 (가사 글자가 Google 번역으로 보내져요)">${[["off", "발음 끔"], ["hangul", "한글 발음"], ["roman", "로마자"]].map(([c, n]) => `<option value="${c}" ${c === (cfg.pron || "off") ? "selected" : ""}>${n}</option>`).join("")}</select></div></div>`
+            <select data-lf="pron" title="발음 (가사 글자가 Google 번역으로 보내져요)">${[["off", "발음 끔"], ["hangul", "한글 발음"], ["roman", "로마자"]].map(([c, n]) => `<option value="${c}" ${c === (cfg.pron || "off") ? "selected" : ""}>${n}</option>`).join("")}</select>
+            <button class="icon sm" data-lf="window" title="가사를 따로 창으로 띄우기">${PI.detach}</button></div></div>`
         : `<div class="lf-head"><b>${esc(st.title)}</b><span>${esc(st.artist)}</span></div>`;
       el.innerHTML = head +
         (lyr.lines.length ? lyr.lines.map((l, k) => {
@@ -396,6 +433,7 @@ const Player = (() => {
     el.addEventListener("click", (e) => {
       const a = e.target.closest("[data-lf]")?.dataset.lf;
       if (a === "smaller" || a === "bigger") { setConfig("lyricsFont", Math.max(10, Math.min(32, (cfg.lyricsFont || 15) + (a === "bigger" ? 1 : -1)))); return; }
+      if (a === "window") { openLyricsWindow(); return; }
       const l = e.target.closest(".lf-line");
       if (l && lyr.synced && +l.dataset.t >= 0) seek(+l.dataset.t);
     });
@@ -431,6 +469,6 @@ const Player = (() => {
     artFallback: () => thumb || st.art || "",
     on: (f) => subs.push(f),
     state: () => st,
-    renderPlayer, tickPlayer, bindPlayer, renderLine, bindLine, renderFull, bindFull,
+    renderPlayer, tickPlayer, bindPlayer, renderLine, bindLine, renderFull, bindFull, renderSide, bindSide,
   };
 })();
