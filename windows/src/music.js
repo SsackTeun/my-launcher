@@ -1210,24 +1210,19 @@ function drawTracks() {
         const keys = new Set(plTracks.map(groupKey)), allClosed = !plAuto && keys.size && [...keys].every((k) => plCollapsed.has(k));
         return `<button class="pl-open ghost" id="plFold" title="${allClosed ? "모두 펼치기" : "모두 접기"}">${allClosed ? "모두 펼치기" : "모두 접기"}</button>`;
       })() : ""}
-      <button class="pl-open ${plGroup ? "" : "ghost"}" id="plGroup" title="보기 고르기: 곡만 · 앨범별 · 재생 중인 앨범만 펼치기 · 모두 접기 / 펼치기">${plGroup ? (plAuto ? "앨범별 · 재생 중만 ▾" : "앨범별 ▾") : "곡만 ▾"}</button>
+      <button class="pl-open ${plGroup ? "" : "ghost"}" id="plGroup" title="${!plGroup ? "보기: 곡만 — 누르면 앨범별" : plAuto ? "보기: 앨범별 · 재생 중인 앨범만 펼치기 — 누르면 곡만" : "보기: 앨범별 — 누르면 재생 중인 앨범만 펼치기"}">${plGroup ? (plAuto ? "앨범별 · 재생 중만" : "앨범별") : "곡만"}</button>
       <button class="pl-open" id="plPlay">▶ 재생</button><button class="pl-open ghost" id="plAddCur" title="지금 듣는 곡을 이 플레이리스트에">＋ 지금 곡</button></div>
     <div class="mz-pl-tracks">${rows || '<div class="mz-empty">비어 있어요 — ＋ 지금 곡 으로 넣어 보세요</div>'}</div>`;
   main.querySelector(".mz-pl-tracks").scrollTop = keep;
   $("#plPlay").onclick = () => { playList(plSel); toast(`‘${l?.t}’ 재생`); };
-  $("#plGroup").onclick = (e) => {
-    const r = e.target.getBoundingClientRect();
-    const keys = new Set(plTracks.map(groupKey));
-    const set = (g, a) => { plGroup = g; plAuto = a; plFlip.clear(); saveCollapsed(); drawTracks(); };
-    showMenu(r.left, r.bottom + 4, [
-      { label: "곡만 보기", checked: !plGroup, action: () => set(false, plAuto) },
-      { label: "앨범별로 묶어 보기", checked: plGroup && !plAuto, action: () => set(true, false) },
-      { label: "앨범별 · 재생 중인 앨범만 펼치기", checked: plGroup && plAuto, action: () => set(true, true) },
-      "-",
-      { label: "모두 접기", action: () => { keys.forEach((k) => plCollapsed.add(k)); set(true, false); } },
-      { label: "모두 펼치기", action: () => { keys.forEach((k) => plCollapsed.delete(k)); set(true, false); } },
-    ]);
+  // 보기 단추: 누를 때마다 곡만 → 앨범별 → 앨범별 · 재생 중인 앨범만 펼치기 → 곡만 …
+  $("#plGroup").onclick = () => {
+    if (!plGroup) { plGroup = true; plAuto = false; }
+    else if (!plAuto) { plAuto = true; plFlip.clear(); }
+    else { plGroup = false; plAuto = false; }
+    saveCollapsed(); drawTracks();
   };
+
   if (undo) $("#plUndo").onclick = undoTracks;
   if (plGroup) {
     $("#plFold").onclick = () => {
