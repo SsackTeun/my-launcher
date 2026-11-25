@@ -798,7 +798,39 @@ window.addEventListener("pointerup", async () => {
 });
 body.addEventListener("wheel", () => { if (tab === 0) touched(); }, { passive: true });
 
+/// 앨범과 펼친 수록곡 체크 맞추기: 앨범째 고르면 수록곡도 모두 체크, 한 곡을 빼면 나머지 곡만, 곡을 다 고르면 앨범째
+function syncAlbumPick(id) {
+  const panel = body.querySelector(`.mz-tracks[data-for="${CSS.escape(id)}"]`);
+  const card = body.querySelector(`.mz-album[data-album="${CSS.escape(id)}"] input.pick`);
+  if (card) card.checked = pickedAlbums.has(id);
+  panel?.querySelectorAll(".mz-row[data-vid] input.pick").forEach((c) => { c.checked = pickedAlbums.has(id) || picked.has(c.closest("[data-vid]").dataset.vid); });
+}
 body.addEventListener("change", (e) => {
+  const c0 = e.target.closest("input.pick");
+  const panel = c0?.closest(".mz-tracks[data-for]");
+  if (c0 && panel) {
+    // 펼친 수록곡 체크
+    const id = panel.dataset.for, vid = c0.closest("[data-vid]").dataset.vid;
+    const vids = [...panel.querySelectorAll(".mz-row[data-vid]")].map((r) => r.dataset.vid);
+    if (pickedAlbums.has(id)) { pickedAlbums.delete(id); for (const v of vids) if (v !== vid) picked.add(v); }
+    else {
+      c0.checked ? picked.add(vid) : picked.delete(vid);
+      if (vids.length && vids.every((v) => picked.has(v))) { vids.forEach((v) => picked.delete(v)); pickedAlbums.add(id); }
+    }
+    syncAlbumPick(id);
+    body.classList.toggle("picking", picked.size + pickedAlbums.size > 0);
+    drawBar();
+    return;
+  }
+  if (c0 && c0.closest(".mz-album[data-album]")) {
+    // 앨범째 체크: 따로 고른 그 앨범 곡은 앨범에 합침
+    const id = c0.closest("[data-album]").dataset.album;
+    if (c0.checked) { pickedAlbums.add(id); (albumTrackCache.get(id)?.out || []).forEach((x) => picked.delete(x.v)); } else pickedAlbums.delete(id);
+    syncAlbumPick(id);
+    body.classList.toggle("picking", picked.size + pickedAlbums.size > 0);
+    drawBar();
+    return;
+  }
   if (e.target.id === "qAuto") {
     const on = e.target.checked;
     try { localStorage.setItem("mzAutoplay", on ? "1" : "0"); } catch { /* 없음 */ }
@@ -929,7 +961,7 @@ async function toggleAlbum(id) {
   const total = r.out.reduce((a, x) => a + secsOf(x.d), 0);
   panel.innerHTML = `<div class="mz-note">${r.out.length}곡 · ${hms(total)} <small>— 곡을 누르면 그 곡부터 재생 · 번호 칸을 체크해서 골라 재생</small></div>` +
     r.out.map((x, k) => `<div class="mz-row" data-vid="${esc(x.v)}" data-list="${esc(r.list || "")}" data-title="${esc(x.t)}">
-      <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.v) ? "checked" : ""} title="골라서 재생 · 플레이리스트에 넣기"></span>
+      <span class="mz-num">${k + 1}<input type="checkbox" class="pick" ${picked.has(x.v) || pickedAlbums.has(id) ? "checked" : ""} title="골라서 재생 · 플레이리스트에 넣기"></span>
       <span class="mz-t"><b>${esc(trimAlbum(x.t, card.dataset.title))}</b>${x.a ? `<small>${esc(x.a)}</small>` : ""}</span>
       <span class="mz-d">${esc(x.d)}</span></div>`).join("");
 }
@@ -1094,6 +1126,8 @@ async function loadPlaylists(force) {
 let plGroup = false; // 앨범별로 묶어 보기
 try { plGroup = localStorage.getItem("mzPlGroup") === "1"; } catch { /* 없음 */ }
 let plUndo = null;   // { pid, entries: [{ t, after }], label } — 방금 뺀 곡 · 앨범 되돌리기
+let plEdit = null;   // 앨범 편집 중인 묶음 (그 묶음 첫 곡의 자리 ID)
+const plAdding = new Set(); // 넣는 중인 곡 ID
 
 async function loadTracks() {
   const main = $("#plMain");
@@ -1124,8 +1158,9 @@ function drawTracks() {
       while (j + 1 < plTracks.length && plTracks[j + 1].al === plTracks[i].al && plTracks[j + 1].alid === plTracks[i].alid) j++;
       const g = plTracks.slice(i, j + 1);
       rows += `<div class="mz-ahead" data-g="${i}:${j}"><b title="${esc(plTracks[i].al)}">${esc(plTracks[i].al || "앨범 정보 없음 (영상 등)")}</b><small>${g.length}곡 · ${hms(g.reduce((a, x) => a + secsOf(x.d), 0))}</small>
-        <span class="mz-sp"></span><button class="mz-aplay" data-gplay="1" title="이 앨범부터 재생">▶</button><button class="mz-x" data-gx="1" title="이 앨범 곡을 모두 플레이리스트에서 빼기 (되돌리기 가능)">⊖</button></div>`;
+        <span class="mz-sp"></span>${plTracks[i].alid ? `<button class="mz-aplay ${plEdit === plTracks[i].s ? "on" : ""}" data-gedit="1" title="앨범 편집 — 이 앨범의 전체 수록곡을 보고 빠진 곡 넣기">✎</button>` : ""}<button class="mz-aplay" data-gplay="1" title="이 앨범부터 재생">▶</button><button class="mz-x" data-gx="1" title="이 앨범 곡을 모두 플레이리스트에서 빼기 (되돌리기 가능)">⊖</button></div>`;
       rows += g.map((t, k) => row(t, i + k)).join("");
+      if (plEdit === plTracks[i].s && plTracks[i].alid) rows += albumEditor(i, j);
       i = j + 1;
     }
   } else rows = plTracks.map(row).join("");
@@ -1148,15 +1183,56 @@ function drawTracks() {
     if (h) {
       const [i, j] = h.dataset.g.split(":").map(Number);
       if (e.target.closest("[data-gplay]")) playList(plSel, plTracks[i].v);
+      if (e.target.closest("[data-gedit]")) { plEdit = plEdit === plTracks[i].s ? null : plTracks[i].s; drawTracks(); }
       if (e.target.closest("[data-gx]")) removeTracks(plTracks.slice(i, j + 1), plTracks[i].al ? `‘${plTracks[i].al.slice(0, 12)}’` : `${j - i + 1}곡`);
       return;
     }
+    const ed = e.target.closest("[data-eadd]");
+    if (ed) { const [i, j, k] = ed.dataset.eadd.split(":").map(Number); const songs = albumTrackCache.get(plTracks[i].alid)?.out || [];
+      addToGroup(k < 0 ? songs.filter((x) => !inPlaylist(x)) : [songs[k]], i, j); return; }
     const row = e.target.closest("[data-k]");
     if (!row) return;
     const t = plTracks[+row.dataset.k];
     if (e.target.closest(".mz-x")) { removeTrack(t); return; }
     playList(plSel, t.v);
   };
+}
+// 앨범 편집: 전체 수록곡 중 빠진 곡을 ＋ 로 그 앨범 묶음 끝에 (이미 있는 곡은 ✓ — 곡 ID 가 같거나 제목이 같으면)
+const normT = (t) => String(t || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+function inPlaylist(x) { return plTracks.some((t) => t.v === x.v || normT(t.t) === normT(x.t)); }
+function albumEditor(i, j) {
+  const aid = plTracks[i].alid;
+  const got = albumTrackCache.get(aid);
+  if (!got) {
+    call("albumTracks", { id: aid }, 30).then((r) => { albumTrackCache.set(aid, r); if (tab === 3) drawTracks(); }).catch(() => {});
+    return `<div class="mz-aedit"><span class="mz-note">수록곡 불러오는 중…</span></div>`;
+  }
+  const songs = got.out || [];
+  if (!songs.length) return `<div class="mz-aedit"><span class="mz-note">수록곡을 찾지 못했어요</span></div>`;
+  const missing = songs.filter((x) => !inPlaylist(x));
+  return `<div class="mz-aedit"><span class="mz-note">${missing.length ? `앨범 ${songs.length}곡 중 ${missing.length}곡이 빠져 있어요 — ＋ 로 넣기` : `앨범 ${songs.length}곡이 모두 들어 있어요`}</span><span class="mz-sp"></span>
+      ${missing.length ? `<button class="pl-open ghost" data-eadd="${i}:${j}:-1">모두 넣기</button>` : ""}</div>` +
+    songs.map((x, k) => {
+      const have = inPlaylist(x), busy = plAdding.has(x.v);
+      return `<div class="mz-aedit song ${have ? "have" : ""}"><span class="mz-num">${k + 1}</span><span class="mz-t"><b>${esc(trimAlbum(x.t, plTracks[i].al))}</b></span><span class="mz-d">${esc(x.d)}</span>
+        ${have ? '<span class="mz-add done" title="이미 들어 있어요">✓</span>' : busy ? '<span class="mz-add" title="넣는 중…">…</span>' : `<button class="mz-add" data-eadd="${i}:${j}:${k}" title="이 플레이리스트의 앨범 묶음 끝에 넣기">＋</button>`}</div>`;
+    }).join("");
+}
+/// 곡들을 플레이리스트에 넣고 그 앨범 묶음 바로 뒤(다음 묶음 앞)로 옮김 (앨범 순서대로)
+async function addToGroup(songs, i, j) {
+  const pid = plSel;
+  const vids = songs.map((x) => x.v).filter((v) => v && !plAdding.has(v));
+  if (!vids.length) return;
+  vids.forEach((v) => plAdding.add(v));
+  drawTracks();
+  const before = j + 1 < plTracks.length ? plTracks[j + 1].s : null;
+  try {
+    const m = await call("addIds", { pid, vids }, 30);
+    if (!m) throw "넣지 못했어요";
+    if (before) for (const v of vids) if (m[v]) await call("moveBefore", { pid, sid: m[v], before }, 30).catch(() => {});
+  } catch (e) { fail(e); }
+  vids.forEach((v) => plAdding.delete(v));
+  if (plSel === pid) loadTracks();
 }
 function trackMenu(x, y, row) {
   const t = plTracks[+row.dataset.k];
