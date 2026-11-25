@@ -437,6 +437,99 @@ fn web_pip_state(label: String) -> bool {
     web::is_pip(&label)
 }
 
+// MARK: 가림막 — 게임 확성기 같은 화면 한 곳을 덮는 항상 위 상자 (cover-<id> 창, cover.html)
+// 잠그면 클릭이 통과해 아래 창이 눌림. 자리 · 크기 · 색은 화면 쪽(localStorage 'covers')이 기억
+
+static COVER_LOCKED: AtomicBool = AtomicBool::new(true);
+static COVER_HIDDEN: AtomicBool = AtomicBool::new(false);
+
+#[derive(Clone, Serialize)]
+struct CoverState {
+    locked: bool,
+    hidden: bool,
+}
+
+fn cover_now() -> CoverState {
+    CoverState { locked: COVER_LOCKED.load(Ordering::Relaxed), hidden: COVER_HIDDEN.load(Ordering::Relaxed) }
+}
+
+fn open_cover(app: &tauri::AppHandle, id: &str, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    let label = format!("cover-{id}");
+    if app.get_webview_window(&label).is_some() {
+        return Ok(());
+    }
+    WebviewWindowBuilder::new(app, &label, WebviewUrl::App("cover.html".into()))
+        .title("가림막")
+        .inner_size(w.max(24.0), h.max(16.0))
+        .min_inner_size(24.0, 16.0)
+        .position(x, y)
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .skip_taskbar(true)
+        .always_on_top(true)
+        .resizable(true)
+        .focused(false)
+        .visible(!COVER_HIDDEN.load(Ordering::Relaxed))
+        .build()
+        .map_err(|e| e.to_string())?;
+        // 트레이에 '가림막 잠금 · 숨기기' 가 보이게
+        refresh_tray(app);
+        Ok(())
+}
+
+fn set_cover(app: &tauri::AppHandle, locked: Option<bool>, hidden: Option<bool>) -> CoverState {
+    if let Some(l) = locked {
+        COVER_LOCKED.store(l, Ordering::Relaxed);
+    }
+    if let Some(h) = hidden {
+        COVER_HIDDEN.store(h, Ordering::Relaxed);
+    }
+    let st = cover_now();
+    let _ = app.emit("cover-state", st.clone());
+    refresh_tray(app);
+    st
+}
+
+/// 새 가림막: 주 모니터 가운데에, 바로 옮기고 크기를 맞출 수 있게 잠금을 풀어 둠
+fn add_cover(app: &tauri::AppHandle) -> Result<(), String> {
+    let (mut x, mut y) = (400.0, 300.0);
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let s = m.size().to_logical::<f64>(m.scale_factor());
+        let p = m.position().to_logical::<f64>(m.scale_factor());
+        x = p.x + s.width / 2.0 - 160.0;
+        y = p.y + s.height / 2.0 - 60.0;
+    }
+    let id = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0).to_string();
+    set_cover(app, Some(false), Some(false));
+    for w in app.webview_windows().values() {
+        if w.label().starts_with("cover-") {
+            let _ = w.show();
+        }
+    }
+    open_cover(app, &id, x, y, 320.0, 120.0)
+}
+
+#[tauri::command]
+fn cover_open(app: tauri::AppHandle, id: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+    open_cover(&app, &id, x, y, w, h)
+}
+
+#[tauri::command]
+fn cover_add(app: tauri::AppHandle) -> Result<(), String> {
+    add_cover(&app)
+}
+
+#[tauri::command]
+fn cover_state() -> CoverState {
+    cover_now()
+}
+
+#[tauri::command]
+fn cover_set(app: tauri::AppHandle, locked: Option<bool>, hidden: Option<bool>) -> CoverState {
+    set_cover(&app, locked, hidden)
+}
+
 // MARK: 트레이 (Mac 판 메뉴 막대 🧰)
 
 fn show_main(app: &tauri::AppHandle) {
@@ -470,6 +563,14 @@ fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         menu.append(&MenuItem::with_id(app, "ytmusic-quit", "YouTube Music 끄기", true, None::<&str>)?)?;
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
+    let covers = app.webview_windows().keys().any(|l| l.starts_with("cover-"));
+    menu.append(&MenuItem::with_id(app, "cover-add", "가림막 추가", true, None::<&str>)?)?;
+    if covers {
+        let st = cover_now();
+        menu.append(&CheckMenuItem::with_id(app, "cover-lock", "가림막 잠금 (클릭이 아래 창으로 통과)", true, st.locked, None::<&str>)?)?;
+        menu.append(&CheckMenuItem::with_id(app, "cover-hide", "가림막 숨기기", true, st.hidden, None::<&str>)?)?;
+    }
+    menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&CheckMenuItem::with_id(app, "autostart", "로그인 시 자동 실행", true, desk::autostart(None), None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "checkupdate", format!("업데이트 확인 (지금 {})", app.package_info().version), true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "restart", "도구함 다시 시작", true, None::<&str>)?)?;
@@ -630,6 +731,15 @@ pub fn run() {
                             desk::autostart(Some(!desk::autostart(None)));
                             refresh_tray(app);
                         }
+                        "cover-add" => {
+                            let _ = add_cover(app);
+                        }
+                        "cover-lock" => {
+                            set_cover(app, Some(!COVER_LOCKED.load(Ordering::Relaxed)), None);
+                        }
+                        "cover-hide" => {
+                            set_cover(app, None, Some(!COVER_HIDDEN.load(Ordering::Relaxed)));
+                        }
                         "ytmusic-show" => {
                             if let Some(w) = app.get_webview_window("ytmusic") {
                                 let _ = w.show();
@@ -678,7 +788,7 @@ pub fn run() {
         .on_window_event(|w, e| {
             if let tauri::WindowEvent::Destroyed = e {
                 web::forget(w.label());
-                if w.label() == "ytmusic" {
+                if w.label() == "ytmusic" || w.label().starts_with("cover-") {
                     let h = w.app_handle().clone();
                     // 창이 다 없어진 뒤에 메뉴를 다시 만듦
                     std::thread::spawn(move || {
@@ -704,6 +814,10 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            cover_open,
+            cover_add,
+            cover_state,
+            cover_set,
             update::update_info,
             update::check_update,
             update::self_update,

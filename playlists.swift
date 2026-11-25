@@ -452,14 +452,20 @@ final class PlaylistPane: NSView {
                 // 빠진 곡 보기 (✎ 켠 앨범만): 이 앨범에서 플레이리스트에 없는 곡을 묶음 안 제자리에 흐리게
                 let gk = Self.collapseKey(group[0])
                 let ghostOn = !group[0].albumId.isEmpty && Self.ghostOn.contains(gk)
-                let G: AlbumGhosts? = ghostOn ? ghosts(group) : nil
-                var detail = "\(group.count)곡 · \(Self.total(group))"
-                if let G {
-                    detail += G.loading ? " · 수록곡 읽는 중…" : G.songs.isEmpty ? " · 수록곡을 찾지 못했어요"
-                        : !G.missing.isEmpty ? " · \(G.missing.count)곡 빠짐" : !G.swap.isEmpty ? " · 다른 앨범 버전 \(G.swap.count)곡" : " · 앨범 \(G.songs.count)곡 모두 있어요"
+                // 앨범 정보가 있으면 늘 수록곡 수를 읽어 '앨범 9곡 중 7곡' (✎ 를 안 눌러도) — 빠진 곡 줄은 ✎ 켠 앨범만
+                let G: AlbumGhosts? = group[0].albumId.isEmpty ? nil : ghosts(group)
+                let known = G.map { !$0.loading && !$0.songs.isEmpty } ?? false
+                var detail = "\(group.count)곡"
+                if let G, known {
+                    detail = G.missing.isEmpty ? "앨범 \(G.songs.count)곡 모두" : "앨범 \(G.songs.count)곡 중 \(G.songs.count - G.missing.count)곡"
+                }
+                detail += " · \(Self.total(group))"
+                if ghostOn, let G {
+                    detail += G.loading ? " · 수록곡 읽는 중…" : G.songs.isEmpty ? " · 수록곡을 찾지 못했어요" : !G.swap.isEmpty ? " · 다른 앨범 버전 \(G.swap.count)곡" : ""
                 }
                 let h = AlbumGroupHead(title: group[0].album.isEmpty ? "앨범 정보 없음 (영상 등)" : group[0].album, detail: detail)
-                if let G, !G.loading {
+                h.toolTip = "플레이리스트에 든 이 앨범 곡 \(group.count)개 — 누르면 접거나 펼쳐요"
+                if ghostOn, let G, !G.loading {
                     if !G.missing.isEmpty {
                         h.setBulk("＋ 모두 넣기", tip: "빠진 곡 \(G.missing.count)개를 앨범 순서 자리에 모두 넣기") { [weak self] in self?.addToGroup(G.missing, group: group, anchor: G.anchor) }
                     } else if !G.swap.isEmpty {
@@ -503,7 +509,7 @@ final class PlaylistPane: NSView {
                 doc.addSubview(h)
                 if !h.collapsed {
                     // 빠진 곡: 앨범 순서에서 바로 앞 곡 뒤에 (앞 곡이 없으면 묶음 맨 위)
-                    let gh = G.flatMap { $0.loading ? nil : $0 }
+                    let gh = ghostOn ? G.flatMap { $0.loading ? nil : $0 } : nil
                     if let gh { addGhosts(after: "", gh, group: group) }
                     for k in idx {
                         addRow(ts[k], k, drag: false)
@@ -779,6 +785,22 @@ final class PlaylistPane: NSView {
     }
     private var albumSongs: [String: [QueueItem]] = [:]
     private var albumLoading = Set<String>()
+    private var albumQueue: [String] = []
+    private var albumBusy = false
+    /// 앨범 수록곡을 하나씩 차례로 읽음 (앨범이 많은 플레이리스트에서 요청이 몰리지 않게), 다 읽으면 한 번 다시 그림
+    private func pumpAlbums() {
+        guard !albumBusy, !albumQueue.isEmpty else { return }
+        let aid = albumQueue.removeFirst()
+        albumBusy = true
+        music?.albumTracks(id: aid) { [weak self] _, ts in
+            guard let self else { return }
+            self.albumBusy = false
+            self.albumLoading.remove(aid)
+            self.albumSongs[aid] = ts
+            if self.albumQueue.isEmpty { self.show(self.tracks) }
+            self.pumpAlbums()
+        }
+    }
 
     /// 앨범의 빠진 곡 · 다른 앨범 버전으로 들어 있는 곡, 각 곡이 들어갈 자리 (anchor: 곡 ID → 바로 앞 곡의 자리 ID, "" = 묶음 맨 위)
     struct AlbumGhosts {
@@ -795,12 +817,8 @@ final class PlaylistPane: NSView {
         guard let songs = albumSongs[aid] else {
             if !albumLoading.contains(aid) {
                 albumLoading.insert(aid)
-                music?.albumTracks(id: aid) { [weak self] _, ts in
-                    guard let self else { return }
-                    self.albumLoading.remove(aid)
-                    self.albumSongs[aid] = ts
-                    self.show(self.tracks)
-                }
+                albumQueue.append(aid)
+                pumpAlbums()
             }
             return AlbumGhosts(loading: true)
         }

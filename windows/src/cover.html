@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>가림막</title>
+  <!-- 가림막: 게임 확성기 같은 화면 한 곳을 덮는 항상 위 상자 (cover-<id> 창)
+       잠금 풀림: 끌어서 옮기기 · 오른쪽 아래 손잡이로 크기 · 색 · 투명도 · 잠그기 · 지우기
+       잠금: 아무것도 안 보이고 클릭이 아래 창으로 통과 (트레이 🧰 · 플레이어 ☰ 에서 풀기) -->
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font: 12px "Segoe UI", "Malgun Gothic", sans-serif; user-select: none; }
+    #box { position: fixed; inset: 0; border-radius: 6px; background: var(--c, rgb(30, 31, 34)); }
+    body.edit #box { outline: 2px dashed rgba(142, 203, 255, .9); outline-offset: -2px; cursor: move; }
+    #bar { position: fixed; left: 4px; right: 4px; top: 4px; display: none; align-items: center; gap: 4px; flex-wrap: wrap;
+           padding: 3px 5px; border-radius: 8px; background: rgba(20, 20, 24, .88); color: #eee; }
+    body.edit #bar { display: flex; }
+    #hint { position: fixed; left: 8px; bottom: 6px; right: 26px; display: none; color: rgba(255, 255, 255, .75); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; text-shadow: 0 1px 2px #000; }
+    body.edit #hint { display: block; }
+    .sw { width: 16px; height: 16px; border-radius: 50%; border: 1px solid rgba(255, 255, 255, .5); cursor: pointer; padding: 0; }
+    .sw.on { outline: 2px solid #8ecbff; outline-offset: 1px; }
+    input[type=range] { width: 70px; }
+    #av { min-width: 34px; color: #bbb; font-size: 11px; }
+    button.t { border: 0; border-radius: 6px; background: rgba(255, 255, 255, .12); color: #fff; cursor: pointer; padding: 2px 8px; font: inherit; }
+    button.t:hover { background: rgba(255, 255, 255, .22); }
+    button.t.del:hover { background: #d33; }
+    .sp { flex: 1; }
+    #grip { position: fixed; right: 0; bottom: 0; width: 18px; height: 18px; display: none; cursor: nwse-resize;
+            background: linear-gradient(135deg, transparent 50%, rgba(142, 203, 255, .95) 50%); border-bottom-right-radius: 6px; }
+    body.edit #grip { display: block; }
+  </style>
+</head>
+<body>
+  <div id="box" data-tauri-drag-region></div>
+  <div id="bar">
+    <span id="sws"></span>
+    <input type="range" id="a" min="20" max="100" step="5" title="투명도 (끝까지 올리면 불투명)" /><b id="av"></b>
+    <span class="sp"></span>
+    <button class="t" id="lock" title="잠그기 — 클릭이 아래 게임 창으로 통과해요 (풀기: 트레이 🧰 · 플레이어 ☰)">🔒 잠그기</button>
+    <button class="t del" id="del" title="이 가림막 지우기">✕</button>
+  </div>
+  <div id="hint">끌어서 옮기기 · 오른쪽 아래 모서리로 크기</div>
+  <div id="grip" title="끌어서 크기 바꾸기"></div>
+  <script src="cover.js"></script>
+</body>
+</html>

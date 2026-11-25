@@ -9,7 +9,8 @@
     "lyrics",
     "bar",
     "music",
-    "unlock"
+    "unlock",
+    "cover-*"
   ],
   "permissions": [
     "core:default",

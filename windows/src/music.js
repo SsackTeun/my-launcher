@@ -1160,6 +1160,22 @@ try { plGhost = new Set(JSON.parse(localStorage.getItem("mzPlGhost") || "[]")); 
 const saveGhost = () => { try { localStorage.setItem("mzPlGhost", JSON.stringify([...plGhost])); } catch { /* 없음 */ } };
 const ghostLoading = new Set(); // 수록곡 읽는 중인 앨범
 const ghostFailed = new Set();  // 수록곡을 못 읽은 앨범
+// 앨범 수록곡 읽기 줄: 앨범이 많은 플레이리스트에서 요청이 한꺼번에 몰리지 않게 2개씩
+const albumQueue = [];
+let albumBusy = 0, albumRedraw = 0;
+function pumpAlbums() {
+  while (albumBusy < 2 && albumQueue.length) {
+    const aid = albumQueue.shift();
+    albumBusy++;
+    // 못 읽으면 캐시는 비워 두고(다른 곳에서 다시 읽게) 여기서만 '찾지 못했어요'
+    call("albumTracks", { id: aid }, 30).then((r) => albumTrackCache.set(aid, r)).catch(() => ghostFailed.add(aid))
+      .finally(() => {
+        albumBusy--; ghostLoading.delete(aid); pumpAlbums();
+        clearTimeout(albumRedraw);
+        albumRedraw = setTimeout(() => { if (tab === 3) drawTracks(); }, 200);
+      });
+  }
+}
 let plGroups = [];   // 화면의 앨범 묶음들 (곡 번호 목록)
 let plAuto = false;  // 재생 중인 앨범만 펼치기
 const plFlip = new Set(); // 재생 중인 앨범만 펼치기에서 머리줄을 눌러 반대로 둔 묶음 (곡이 바뀌면 비움)
@@ -1203,16 +1219,18 @@ function drawTracks() {
       const collapsed = plAuto ? playing === plFlip.has(ck) : plCollapsed.has(ck);
       const list = idx.map((k) => plTracks[k]);
       const ghostOn = !!t0.alid && plGhost.has(ck);
-      const G = ghostOn ? albumGhosts(gi) : null;
-      const gnote = !G ? "" : G.loading ? " · 수록곡 읽는 중…" : !G.songs.length ? " · 수록곡을 찾지 못했어요"
-        : G.missing.length ? ` · <span class="mz-miss">${G.missing.length}곡 빠짐</span>` : G.swap.length ? ` · <span class="mz-miss">다른 앨범 버전 ${G.swap.length}곡</span>` : ` · 앨범 ${G.songs.length}곡 모두 있어요`;
-      const gbtn = !G || G.loading ? "" : G.missing.length ? `<button class="pl-open ghost mz-gather" data-eadd="${gi}:-1" title="빠진 곡 ${G.missing.length}개를 앨범 순서 자리에 모두 넣기">＋ 모두 넣기</button>`
+      // 앨범 정보가 있으면 늘 수록곡 수를 읽어 '앨범 9곡 중 7곡' (✎ 를 안 눌러도) — 빠진 곡 줄은 ✎ 켠 앨범만
+      const G = t0.alid ? albumGhosts(gi) : null;
+      const known = G && !G.loading && G.songs.length;
+      const cnt = !known ? `${list.length}곡` : G.missing.length ? `<span class="mz-miss">앨범 ${G.songs.length}곡 중 ${G.songs.length - G.missing.length}곡</span>` : `앨범 ${G.songs.length}곡 모두`;
+      const gnote = !ghostOn || !G ? "" : G.loading ? " · 수록곡 읽는 중…" : !G.songs.length ? " · 수록곡을 찾지 못했어요" : G.swap.length ? ` · <span class="mz-miss">다른 앨범 버전 ${G.swap.length}곡</span>` : "";
+      const gbtn = !ghostOn || !G || G.loading ? "" : G.missing.length ? `<button class="pl-open ghost mz-gather" data-eadd="${gi}:-1" title="빠진 곡 ${G.missing.length}개를 앨범 순서 자리에 모두 넣기">＋ 모두 넣기</button>`
         : G.swap.length ? `<button class="pl-open ghost mz-gather" data-eswap="${gi}:-1" title="다른 앨범 버전으로 들어 있는 곡을 이 앨범 버전으로 모두 바꾸기 (되돌리기 가능)">⇄ 모두 바꾸기</button>` : "";
-      rows += `<div class="mz-ahead ${playing ? "playing" : ""}" data-g="${gi}" title="누르면 접거나 펼쳐요"><span class="mz-chev2">${collapsed ? "▸" : "▾"}</span><b title="${esc(t0.al)}">${playing ? "🔊 " : ""}${esc(t0.al || "앨범 정보 없음 (영상 등)")}</b><small>${list.length}곡 · ${hms(list.reduce((a, x) => a + secsOf(x.d), 0))}${gnote}</small>
+      rows += `<div class="mz-ahead ${playing ? "playing" : ""}" data-g="${gi}" title="누르면 접거나 펼쳐요"><span class="mz-chev2">${collapsed ? "▸" : "▾"}</span><b title="${esc(t0.al)}">${playing ? "🔊 " : ""}${esc(t0.al || "앨범 정보 없음 (영상 등)")}</b><small title="플레이리스트에 든 이 앨범 곡 ${list.length}개">${cnt} · ${hms(list.reduce((a, x) => a + secsOf(x.d), 0))}${gnote}</small>
         <span class="mz-sp"></span>${gbtn}${scattered && t0.al ? '<button class="pl-open ghost mz-gather" data-ggather="1" title="이 앨범 곡들이 플레이리스트에서 떨어져 있어요 — 누르면 첫 곡 자리에 한데 모아요">모으기</button>' : ""}${t0.alid ? `<button class="mz-aplay ${ghostOn ? "on" : ""}" data-gedit="1" title="${ghostOn ? "빠진 곡 숨기기" : "빠진 곡 보기 — 이 앨범에서 플레이리스트에 없는 곡을 제자리에 흐리게 보여 줘요"}">✎</button>` : ""}<button class="mz-aplay" data-gplay="1" title="이 앨범부터 재생">▶</button><button class="mz-x" data-gx="1" title="이 앨범 곡을 모두 플레이리스트에서 빼기 — 두 번 눌러요 (되돌리기 가능)">⊖</button></div>`;
       if (!collapsed) {
         // 빠진 곡: 앨범 순서에서 바로 앞 곡 뒤에 투명한 줄로 (앞 곡이 없으면 묶음 맨 위)
-        const gh = G && !G.loading ? ghostRows(G, gi, t0) : null;
+        const gh = ghostOn && G && !G.loading ? ghostRows(G, gi, t0) : null;
         rows += (gh?.get(-1) || "") + idx.map((k) => row(plTracks[k], k) + (gh?.get(k) || "")).join("");
       }
     }
@@ -1299,12 +1317,7 @@ function albumGhosts(gi) {
   const got = aid && albumTrackCache.get(aid);
   if (!got) {
     if (ghostFailed.has(aid)) return { songs: [], missing: [], swap: [], anchor: new Map() };
-    if (aid && !ghostLoading.has(aid)) {
-      ghostLoading.add(aid);
-      // 못 읽으면 캐시는 비워 두고(다른 곳에서 다시 읽게) 여기서만 '찾지 못했어요'
-      call("albumTracks", { id: aid }, 30).then((r) => albumTrackCache.set(aid, r)).catch(() => ghostFailed.add(aid))
-        .finally(() => { ghostLoading.delete(aid); if (tab === 3) drawTracks(); });
-    }
+    if (aid && !ghostLoading.has(aid)) { ghostLoading.add(aid); albumQueue.push(aid); pumpAlbums(); }
     return { loading: true };
   }
   const songs = got.out || [];
@@ -1759,7 +1772,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     try {
       if (big) {
         const [bw, bh] = getSize("playerBigSize", [940, 640]);
-        await w.setMinSize(new T.dpi.LogicalSize(600, 400));
+        await w.setMinSize(new T.dpi.LogicalSize(760, 420)); // 왼쪽(340) + 오른쪽 탭 줄이 한 줄로 들어가는 폭
         await w.setSize(new T.dpi.LogicalSize(bw, bh));
       } else {
         await w.setMinSize(new T.dpi.LogicalSize(260, 60));
@@ -1871,8 +1884,13 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     try { await w.setAlwaysOnBottom(lv === 0); await w.setAlwaysOnTop(lv === 2); } catch { /* 없음 */ }
   };
   // 투명도 (40 ~ 100): 평소 / 조작할 때 — 마우스가 창 위에 있으면(뒤쪽 클릭이면 🔒 를 풀었을 때) '조작할 때'
-  let alpha = ls("mzAlpha", 100), alphaA = ls("mzAlphaA", 100), ct = ls("mzClickThrough", false), unlocked = false, hovering = false;
-  function applyAlpha() { document.documentElement.style.opacity = String((hovering && (!ct || unlocked) ? alphaA : alpha) / 100); }
+  // 100% 는 완전히 불투명 (바탕까지), 그 아래는 창 전체를 그만큼 비침 — 처음 값 99 는 예전 모양(반투명 유리)
+  let alpha = ls("mzAlpha", 99), alphaA = ls("mzAlphaA", 99), ct = ls("mzClickThrough", false), unlocked = false, hovering = false;
+  function applyAlpha() {
+    const v = hovering && (!ct || unlocked) ? alphaA : alpha;
+    document.documentElement.classList.toggle("solid", v >= 100);
+    document.documentElement.style.opacity = v >= 100 ? "1" : String(v / 100);
+  }
   document.documentElement.addEventListener("mouseenter", () => { hovering = true; applyAlpha(); });
   document.documentElement.addEventListener("mouseleave", () => { hovering = false; applyAlpha(); });
   // 뒤쪽 클릭: 창 전체가 마우스를 통과, 위쪽 가운데 🔒 작은 창만 눌림 → 풀면 마우스가 창 밖으로 나갈 때까지 조작
@@ -1920,10 +1938,22 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     const list = ls("mzPresets", []);
     $("#hubPresets").innerHTML = list.map((p, i) => `<div class="hub-pr"><button class="pl-open ghost" data-pr="${i}" title="이 배치로">${esc(p.name)}</button><button class="icon sm" data-prx="${i}" title="지우기">✕</button></div>`).join("") +
       `<button class="pl-open ghost" id="hubSave">＋ 지금 배치 저장</button>`;
-    $("#hubA").value = alpha; $("#hubAv").textContent = alpha + "%";
-    $("#hubAA").value = alphaA; $("#hubAAv").textContent = alphaA + "%";
+    $("#hubA").value = alpha; $("#hubAv").textContent = alpha >= 100 ? "불투명" : alpha + "%";
+    $("#hubAA").value = alphaA; $("#hubAAv").textContent = alphaA >= 100 ? "불투명" : alphaA + "%";
     $("#hubCT").checked = ct;
+    drawCover();
   }
+  // 가림막: ＋ 추가 · 잠금 · 숨기기 (모든 가림막 같이, 트레이 🧰 에도 있음)
+  let cov = { locked: true, hidden: false };
+  function drawCover() {
+    const n = Object.keys((() => { try { return JSON.parse(localStorage.getItem("covers") || "{}"); } catch { return {}; } })()).length;
+    $("#covLock").hidden = $("#covHide").hidden = !n;
+    $("#covLock").textContent = cov.locked ? "🔓 풀기" : "🔒 잠그기";
+    $("#covLock").title = cov.locked ? "가림막 잠금 풀기 — 옮기고 크기 · 색을 바꿀 수 있어요" : "가림막 잠그기 — 클릭이 아래 창(게임)으로 통과해요";
+    $("#covHide").textContent = cov.hidden ? "보이기" : "숨기기";
+  }
+  invoke("cover_state").then((s) => { cov = s; drawCover(); }).catch(() => {});
+  T.event.listen("cover-state", (e) => { cov = e.payload; drawCover(); });
   hub.addEventListener("click", async (e) => {
     const lb = e.target.closest("[data-lv]");
     if (lb) { level = +lb.dataset.lv; lsSet("mzLevel", level); await applyLevel(); drawHub(); return; }
@@ -1945,10 +1975,13 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
       return;
     }
     if (e.target.closest("#lineBtn")) { setConfig("lyricsLine", !(cfg.lyricsLine !== false)); return; }
+    if (e.target.closest("#covAdd")) { invoke("cover_add").then(() => setTimeout(drawCover, 600)).catch((err) => toast(`가림막을 만들지 못했어요: ${err}`)); return; }
+    if (e.target.closest("#covLock")) { invoke("cover_set", { locked: !cov.locked }).catch(() => {}); return; }
+    if (e.target.closest("#covHide")) { invoke("cover_set", { hidden: !cov.hidden }).catch(() => {}); return; }
   });
   hub.addEventListener("input", (e) => {
-    if (e.target.id === "hubA") { alpha = +e.target.value; lsSet("mzAlpha", alpha); $("#hubAv").textContent = alpha + "%"; hovering = false; applyAlpha(); }
-    if (e.target.id === "hubAA") { alphaA = +e.target.value; lsSet("mzAlphaA", alphaA); $("#hubAAv").textContent = alphaA + "%"; hovering = true; applyAlpha(); }
+    if (e.target.id === "hubA") { alpha = +e.target.value; lsSet("mzAlpha", alpha); $("#hubAv").textContent = alpha >= 100 ? "불투명" : alpha + "%"; hovering = false; applyAlpha(); }
+    if (e.target.id === "hubAA") { alphaA = +e.target.value; lsSet("mzAlphaA", alphaA); $("#hubAAv").textContent = alphaA >= 100 ? "불투명" : alphaA + "%"; hovering = true; applyAlpha(); }
   });
   hub.addEventListener("change", (e) => {
     if (e.target.id === "hubCT") { ct = e.target.checked; lsSet("mzClickThrough", ct); $("#hubBtn").classList.toggle("on", ct); applyClickThrough(); }

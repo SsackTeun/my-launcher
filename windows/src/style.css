@@ -348,6 +348,11 @@ body.music #app { height: 100vh; }
 .mz-left .pl-ctl { flex-wrap: wrap; row-gap: 4px; }
 .mz-right { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .mz-tabs { display: flex; align-items: center; gap: 8px; padding: 12px 14px 10px; border-bottom: 1px solid var(--line); }
+/* 크게 보기 탭: 창을 좁혀도 글자가 줄바꿈되지 않게 (최소 폭은 music.js 에서 760) */
+#mzTabs { flex: 0 0 auto; }
+/* 투명도 100% = 바탕까지 불투명 */
+html.solid { --bg: var(--bg-solid) !important; }
+#mzTabs button { white-space: nowrap; flex: 0 0 auto; }
 .mz-sp { flex: 1; }
 .mz-status { font-size: 11px; color: var(--sub); }
 .mz-body { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 10px 16px; }
@@ -684,6 +689,8 @@ body.compact .lyside { display: none; }
 .hub-row b { width: 34px; text-align: right; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--sub); }
 .hub-ct { margin-top: 4px; }
 .hub-sites { display: flex; align-items: center; gap: 6px; }
+.hub-cover { display: flex; flex-wrap: wrap; gap: 6px; }
+.hub-sec small { font-weight: 400; color: var(--sub); margin-left: 4px; }
 .hub-sites .sites { flex: 1; }
 .hub-tools { display: flex; gap: 4px; }
 .hub-tools .icon { width: 30px; height: 28px; border-radius: 7px; background: rgba(128,128,128,.12); }

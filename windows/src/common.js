@@ -51,6 +51,8 @@ async function applyTheme(cfg) {
   const b = BASE[t] || BASE.default;
   const a = cfg.bgOpacity ? Math.max(0.1, Math.min(1, cfg.bgOpacity / 100)) : b[3];
   document.documentElement.style.setProperty("--bg", `rgba(${b[0]}, ${b[1]}, ${b[2]}, ${a})`);
+  // 플레이어 창 투명도를 끝(100%)까지 올리면 바탕도 불투명 (html.solid)
+  document.documentElement.style.setProperty("--bg-solid", `rgb(${b[0]}, ${b[1]}, ${b[2]})`);
   let img = null;
   if (cfg.themeImage) { try { img = await invoke("theme_image", {}); } catch { /* 없음 */ } }
   document.documentElement.style.setProperty("--bgimg", img ? `url("${img}")` : "none");
@@ -91,3 +93,11 @@ const fmtBytes = (b) => (b >= 1 << 30 ? (b / (1 << 30)).toFixed(1) + " GB" : Mat
   T.event.listen("update-none", (e) => { if (document.hasFocus()) toast(e.payload); });
   invoke("update_info").then(show).catch(() => {});
 })();
+
+// 가림막 되살리기: 도구함 · 플레이어 창이 켜질 때 (이미 떠 있으면 그대로) — 다시 켜면 잠긴 채로
+if (T && ["main", "music"].includes(win().label)) {
+  try {
+    const cs = JSON.parse(localStorage.getItem("covers") || "{}");
+    for (const [id, c] of Object.entries(cs)) if (c && c.w && c.h) invoke("cover_open", { id, x: c.x, y: c.y, w: c.w, h: c.h }).catch(() => {});
+  } catch { /* 없음 */ }
+}
