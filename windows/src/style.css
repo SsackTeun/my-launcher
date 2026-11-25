@@ -643,3 +643,11 @@ body.compact .lyside { display: none; }
 .mz-aedit.have .mz-t b { color: var(--sub); }
 .mz-aedit .pl-open { padding: 2px 10px; font-size: 11px; }
 .mz-aplay.on { color: var(--accent); }
+.mz-ahead { cursor: pointer; }
+.mz-chev2 { width: 10px; color: var(--sub); font-size: 10px; }
+.mz-gather { padding: 1px 8px; font-size: 11px; }
+.mz-aedit.song { cursor: pointer; border-radius: 0 6px 6px 0; }
+.mz-aedit.song:hover { background: var(--hover); }
+.mz-add.swap { color: #ff9f0a; }
+.lyside.away { background: transparent; align-items: center; }
+.ls-back { font-size: 11px; padding: 3px 12px; }

@@ -186,6 +186,28 @@ const JS = {
       if (m) return { id: m[2], name: m[1] || '' };
     }
     return null;`,
+  // 다음 트랙 나머지 다 불러오기 (YouTube Music 은 50곡씩만 불러옴 — 플레이리스트 · 앨범만, 섞어 듣기 · 라디오는 그대로)
+  qLoadAll: QCTL + `
+    if (!QQ || !QQ.continuation || QQ.pendingFetchItemsRequest) return 0;
+    if (QQ.store.getState().queue.shuffleEnabled) return 0;
+    // 플레이리스트 · 앨범만 (라디오 · 믹스 RD… 는 끝이 없어서 그대로)
+    const ids = {}; for (const x of QQ.getItems()) { const r = R(x), w = r && r.navigationEndpoint && r.navigationEndpoint.watchEndpoint; if (w && w.playlistId) ids[w.playlistId] = (ids[w.playlistId] || 0) + 1; }
+    const pl = Object.keys(ids).sort((a, b) => ids[b] - ids[a])[0] || '';
+    if (!/^(PL|OLAK|VL)/.test(pl)) return 0;
+    let added = 0;
+    for (let p = 0; p < 20 && QQ.continuation; p++) {
+      const tok = QQ.continuation;
+      const j = await api('next', { continuation: tok, enablePersistentPlaylistPanel: true, isAudioOnly: true });
+      const pc = (j.continuationContents || {}).playlistPanelContinuation;
+      if (!pc || QQ.continuation !== tok) break;   // YouTube Music 이 그사이 직접 불러왔으면 그만
+      const items = (pc.contents || []).filter((x) => x.playlistPanelVideoRenderer || x.playlistPanelVideoWrapperRenderer);
+      const nx = (pc.continuations || [])[0] || {};
+      QQ.continuation = (nx.nextContinuationData || {}).continuation || null;
+      if (!items.length) break;
+      QQ.store.dispatch({ type: 'ADD_ITEMS', payload: { nextQueueItemId: QQ.store.getState().queue.nextQueueItemId, index: QQ.getItems().length, items, shouldAssignIds: true } });
+      added += items.length;
+    }
+    return added;`,
   // 노래 검색 (YouTube Music '노래' 칸만)
   searchSongs: `
     let j = await api('search', { query: args.q });
@@ -485,6 +507,7 @@ const touched = () => { qTouch = Date.now(); };
 /// 자동재생 (YouTube Music '유사한 콘텐츠를 현재 재생목록 끝에 추가'): 직접 고른 값 (null: 아직 안 고름 — 틀 때 끔)
 function autoPref() { try { const v = localStorage.getItem("mzAutoplay"); return v === null ? null : v === "1"; } catch { return null; } }
 let qAuto = null; // 페이지의 지금 자동재생 상태
+let loadAllTried = "";
 const ICON_SEARCH = '<svg viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M10.4 10.4 14 14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 const ICON_FOLLOW = '<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="8" r="2" fill="currentColor"/><path d="M8 .8v2.4M8 12.8v2.4M.8 8h2.4M12.8 8h2.4" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>';
 
@@ -517,6 +540,9 @@ async function loadQueue(quiet, force) {
   if (link?.id !== qLink?.id) qUndo = null;
   qLink = link;
   qAuto = auto;
+  // 일부만 불러온 긴 플레이리스트 · 앨범이면 나머지를 한 번에 (곡 수가 바뀔 때마다 한 번)
+  const mainN = q.filter((x) => !x.auto).length, lk = `${q[0]?.vid}|${mainN}`;
+  if (mainN >= 20 && lk !== loadAllTried) { loadAllTried = lk; call("qLoadAll", {}, 60).then((n) => { if (n > 0) refreshQueue(300); }).catch(() => {}); }
   const sig = JSON.stringify([q.map((x) => [x.vid, x.cur, x.sid]), link?.id, link?.t, !!qUndo, auto]);
   if (quiet && sig === queueSig) return;
   renderQueue(q, sig);
@@ -1127,6 +1153,13 @@ let plGroup = false; // 앨범별로 묶어 보기
 try { plGroup = localStorage.getItem("mzPlGroup") === "1"; } catch { /* 없음 */ }
 let plUndo = null;   // { pid, entries: [{ t, after }], label } — 방금 뺀 곡 · 앨범 되돌리기
 let plEdit = null;   // 앨범 편집 중인 묶음 (그 묶음 첫 곡의 자리 ID)
+let plGroups = [];   // 화면의 앨범 묶음들 (곡 번호 목록)
+let plAuto = false;  // 재생 중인 앨범만 펼치기
+const plFlip = new Set(); // 재생 중인 앨범만 펼치기에서 머리줄을 눌러 반대로 둔 묶음 (곡이 바뀌면 비움)
+let plCollapsed = new Set(); // 접어 둔 앨범 묶음 (플레이리스트 | 앨범)
+try { plAuto = localStorage.getItem("mzPlAuto") === "1"; plCollapsed = new Set(JSON.parse(localStorage.getItem("mzPlCollapsed") || "[]")); } catch { /* 없음 */ }
+const saveCollapsed = () => { try { localStorage.setItem("mzPlCollapsed", JSON.stringify([...plCollapsed])); localStorage.setItem("mzPlAuto", plAuto ? "1" : "0"); localStorage.setItem("mzPlGroup", plGroup ? "1" : "0"); } catch { /* 없음 */ } };
+const groupKey = (t) => `${plSel}|${t.alid || "n:" + t.al}`;
 const plAdding = new Set(); // 넣는 중인 곡 ID
 
 async function loadTracks() {
@@ -1152,27 +1185,59 @@ function drawTracks() {
       <button class="mz-x" title="플레이리스트에서 빼기">⊖</button></div>`;
   let rows = "";
   if (plGroup) {
-    // 앨범별: 이어진 같은 앨범 곡들 위에 머리줄 (이름 · 곡 수 · 시간 · ▶ 여기부터 · ⊖ 앨범째 빼기)
-    for (let i = 0; i < plTracks.length;) {
-      let j = i;
-      while (j + 1 < plTracks.length && plTracks[j + 1].al === plTracks[i].al && plTracks[j + 1].alid === plTracks[i].alid) j++;
-      const g = plTracks.slice(i, j + 1);
-      rows += `<div class="mz-ahead" data-g="${i}:${j}"><b title="${esc(plTracks[i].al)}">${esc(plTracks[i].al || "앨범 정보 없음 (영상 등)")}</b><small>${g.length}곡 · ${hms(g.reduce((a, x) => a + secsOf(x.d), 0))}</small>
-        <span class="mz-sp"></span>${plTracks[i].alid ? `<button class="mz-aplay ${plEdit === plTracks[i].s ? "on" : ""}" data-gedit="1" title="앨범 편집 — 이 앨범의 전체 수록곡을 보고 빠진 곡 넣기">✎</button>` : ""}<button class="mz-aplay" data-gplay="1" title="이 앨범부터 재생">▶</button><button class="mz-x" data-gx="1" title="이 앨범 곡을 모두 플레이리스트에서 빼기 (되돌리기 가능)">⊖</button></div>`;
-      rows += g.map((t, k) => row(t, i + k)).join("");
-      if (plEdit === plTracks[i].s && plTracks[i].alid) rows += albumEditor(i, j);
-      i = j + 1;
+    // 앨범별: 같은 앨범은 떨어져 있어도 한 묶음 (처음 나온 자리 순서), 묶음 안은 플레이리스트 순서
+    plGroups = [];
+    const order = [], mem = {};
+    plTracks.forEach((t, k) => { const g = t.alid || "n:" + t.al; if (!mem[g]) { mem[g] = []; order.push(g); } mem[g].push(k); });
+    for (const g of order) {
+      const idx = mem[g], gi = plGroups.push(idx) - 1, t0 = plTracks[idx[0]];
+      const scattered = idx[idx.length - 1] - idx[0] + 1 !== idx.length;
+      const ck = groupKey(t0), playing = idx.some((k) => plTracks[k].t === curT);
+      const collapsed = plAuto ? playing === plFlip.has(ck) : plCollapsed.has(ck);
+      const list = idx.map((k) => plTracks[k]);
+      rows += `<div class="mz-ahead" data-g="${gi}" title="누르면 접거나 펼쳐요"><span class="mz-chev2">${collapsed ? "▸" : "▾"}</span><b title="${esc(t0.al)}">${esc(t0.al || "앨범 정보 없음 (영상 등)")}</b><small>${list.length}곡 · ${hms(list.reduce((a, x) => a + secsOf(x.d), 0))}</small>
+        <span class="mz-sp"></span>${scattered && t0.al ? '<button class="pl-open ghost mz-gather" data-ggather="1" title="이 앨범 곡들이 플레이리스트에서 떨어져 있어요 — 누르면 첫 곡 자리에 한데 모아요">모으기</button>' : ""}${t0.alid ? `<button class="mz-aplay ${plEdit === t0.s ? "on" : ""}" data-gedit="1" title="앨범 편집 — 이 앨범의 전체 수록곡을 보고 빠진 곡 넣기">✎</button>` : ""}<button class="mz-aplay" data-gplay="1" title="이 앨범부터 재생">▶</button><button class="mz-x" data-gx="1" title="이 앨범 곡을 모두 플레이리스트에서 빼기 (되돌리기 가능)">⊖</button></div>`;
+      if (!collapsed) {
+        rows += idx.map((k) => row(plTracks[k], k)).join("");
+        if (plEdit === t0.s && t0.alid) rows += albumEditor(gi);
+      }
     }
   } else rows = plTracks.map(row).join("");
   const undo = plUndo && plUndo.pid === plSel ? `<button class="pl-open ghost" id="plUndo">${esc(plUndo.label)} 되돌리기</button>` : "";
   main.innerHTML = `<div class="mz-pl-head"><b>${esc(l?.t || "")}</b><small>${plTracks.length}곡</small><span class="mz-sp"></span>${undo}
-      <button class="pl-open ${plGroup ? "" : "ghost"}" id="plGroup" title="${plGroup ? "앨범별로 묶어 보는 중 — 누르면 곡만" : "앨범별로 묶어 보기 (앨범째 재생 · 빼기)"}">앨범별</button>
+      ${plGroup ? (() => {
+        const keys = new Set(plTracks.map(groupKey)), allClosed = !plAuto && keys.size && [...keys].every((k) => plCollapsed.has(k));
+        return `<button class="pl-open ghost" id="plFold" title="${allClosed ? "모두 펼치기" : "모두 접기"}">${allClosed ? "모두 펼치기" : "모두 접기"}</button>
+          <button class="pl-open ${plAuto ? "" : "ghost"}" id="plAutoBtn" title="재생 중인 앨범만 펼치기 (나머지는 접음)">재생 중만</button>`;
+      })() : ""}
+      <button class="pl-open ${plGroup ? "" : "ghost"}" id="plGroup" title="보기 고르기: 곡만 · 앨범별 · 재생 중인 앨범만 펼치기 · 모두 접기 / 펼치기">${plGroup ? (plAuto ? "앨범별 · 재생 중만 ▾" : "앨범별 ▾") : "곡만 ▾"}</button>
       <button class="pl-open" id="plPlay">▶ 재생</button><button class="pl-open ghost" id="plAddCur" title="지금 듣는 곡을 이 플레이리스트에">＋ 지금 곡</button></div>
     <div class="mz-pl-tracks">${rows || '<div class="mz-empty">비어 있어요 — ＋ 지금 곡 으로 넣어 보세요</div>'}</div>`;
   main.querySelector(".mz-pl-tracks").scrollTop = keep;
   $("#plPlay").onclick = () => { playList(plSel); toast(`‘${l?.t}’ 재생`); };
-  $("#plGroup").onclick = () => { plGroup = !plGroup; try { localStorage.setItem("mzPlGroup", plGroup ? "1" : "0"); } catch { /* 없음 */ } drawTracks(); };
+  $("#plGroup").onclick = (e) => {
+    const r = e.target.getBoundingClientRect();
+    const keys = new Set(plTracks.map(groupKey));
+    const set = (g, a) => { plGroup = g; plAuto = a; plFlip.clear(); saveCollapsed(); drawTracks(); };
+    showMenu(r.left, r.bottom + 4, [
+      { label: "곡만 보기", checked: !plGroup, action: () => set(false, plAuto) },
+      { label: "앨범별로 묶어 보기", checked: plGroup && !plAuto, action: () => set(true, false) },
+      { label: "앨범별 · 재생 중인 앨범만 펼치기", checked: plGroup && plAuto, action: () => set(true, true) },
+      "-",
+      { label: "모두 접기", action: () => { keys.forEach((k) => plCollapsed.add(k)); set(true, false); } },
+      { label: "모두 펼치기", action: () => { keys.forEach((k) => plCollapsed.delete(k)); set(true, false); } },
+    ]);
+  };
   if (undo) $("#plUndo").onclick = undoTracks;
+  if (plGroup) {
+    $("#plFold").onclick = () => {
+      const keys = [...new Set(plTracks.map(groupKey))];
+      const anyOpen = plAuto || keys.some((k) => !plCollapsed.has(k));
+      keys.forEach((k) => (anyOpen ? plCollapsed.add(k) : plCollapsed.delete(k)));
+      plAuto = false; saveCollapsed(); drawTracks();
+    };
+    $("#plAutoBtn").onclick = () => { plAuto = !plAuto; plFlip.clear(); saveCollapsed(); drawTracks(); };
+  }
   $("#plAddCur").onclick = async () => {
     const v = await call("currentVideo").catch(() => "");
     if (!v) { toast("지금 듣는 곡이 없어요"); return; }
@@ -1181,15 +1246,36 @@ function drawTracks() {
   main.querySelector(".mz-pl-tracks").onclick = (e) => {
     const h = e.target.closest("[data-g]");
     if (h) {
-      const [i, j] = h.dataset.g.split(":").map(Number);
-      if (e.target.closest("[data-gplay]")) playList(plSel, plTracks[i].v);
-      if (e.target.closest("[data-gedit]")) { plEdit = plEdit === plTracks[i].s ? null : plTracks[i].s; drawTracks(); }
-      if (e.target.closest("[data-gx]")) removeTracks(plTracks.slice(i, j + 1), plTracks[i].al ? `‘${plTracks[i].al.slice(0, 12)}’` : `${j - i + 1}곡`);
+      const idx = plGroups[+h.dataset.g] || [], t0 = plTracks[idx[0]];
+      if (!t0) return;
+      if (e.target.closest("[data-gplay]")) playList(plSel, t0.v);
+      else if (e.target.closest("[data-gedit]")) { plEdit = plEdit === t0.s ? null : t0.s; drawTracks(); }
+      else if (e.target.closest("[data-gx]")) removeTracks(idx.map((k) => plTracks[k]), t0.al ? `‘${t0.al.slice(0, 12)}’` : `${idx.length}곡`);
+      else if (e.target.closest("[data-ggather]")) gatherGroup(idx);
+      else {
+        // 머리줄을 누르면 접기 · 펼치기
+        const ck = groupKey(t0);
+        if (plAuto) plFlip.has(ck) ? plFlip.delete(ck) : plFlip.add(ck);
+        else { plCollapsed.has(ck) ? plCollapsed.delete(ck) : plCollapsed.add(ck); saveCollapsed(); }
+        drawTracks();
+      }
       return;
     }
-    const ed = e.target.closest("[data-eadd]");
-    if (ed) { const [i, j, k] = ed.dataset.eadd.split(":").map(Number); const songs = albumTrackCache.get(plTracks[i].alid)?.out || [];
-      addToGroup(k < 0 ? songs.filter((x) => !inPlaylist(x)) : [songs[k]], i, j); return; }
+    const ed = e.target.closest("[data-eadd],[data-erm],[data-eplay],[data-eswap]");
+    if (ed) {
+      const [gi, k] = (ed.dataset.eadd || ed.dataset.erm || ed.dataset.eswap || ed.dataset.eplay).split(":").map(Number);
+      const t0 = plTracks[(plGroups[gi] || [])[0]];
+      const songs = (t0 && albumTrackCache.get(t0.alid)?.out) || [];
+      if (ed.dataset.eswap) {
+        // ⇄ 이 앨범 버전으로: 이 묶음에 넣고 원래 버전은 뺌 (되돌리기로 원래 버전 되살림)
+        const list = (k < 0 ? songs : [songs[k]]).filter((x) => x && !plTracks.some((t) => t.v === x.v) && otherVersions(x, t0.alid).length);
+        const olds = list.flatMap((x) => otherVersions(x, t0.alid));
+        if (list.length) { addToGroup(list, gi); removeTracks(olds, olds.length === 1 ? `‘${olds[0].t.slice(0, 12)}’` : `${olds.length}곡`); }
+      } else if (ed.dataset.eadd) addToGroup(k < 0 ? songs.filter((x) => !inPlaylist(x)) : [songs[k]], gi);
+      else if (ed.dataset.erm) { const ts = plTracks.filter((t) => !t.s.startsWith("pending-") && (t.v === songs[k].v || normT(t.t) === normT(songs[k].t))); if (ts.length) removeTracks(ts, `‘${songs[k].t.slice(0, 12)}’`); }
+      else if (songs[k]) playVideos([songs[k].v]);
+      return;
+    }
     const row = e.target.closest("[data-k]");
     if (!row) return;
     const t = plTracks[+row.dataset.k];
@@ -1200,8 +1286,11 @@ function drawTracks() {
 // 앨범 편집: 전체 수록곡 중 빠진 곡을 ＋ 로 그 앨범 묶음 끝에 (이미 있는 곡은 ✓ — 곡 ID 가 같거나 제목이 같으면)
 const normT = (t) => String(t || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
 function inPlaylist(x) { return plTracks.some((t) => t.v === x.v || normT(t.t) === normT(x.t)); }
-function albumEditor(i, j) {
-  const aid = plTracks[i].alid;
+/// 다른 앨범 버전으로 들어 있는 곡 (제목만 같고 곡 · 앨범이 다름)
+function otherVersions(x, aid) { return plTracks.filter((t) => t.v !== x.v && normT(t.t) === normT(x.t) && t.alid !== aid && !t.s.startsWith("pending-")); }
+function albumEditor(gi) {
+  const t0 = plTracks[plGroups[gi][0]];
+  const aid = t0.alid;
   const got = albumTrackCache.get(aid);
   if (!got) {
     call("albumTracks", { id: aid }, 30).then((r) => { albumTrackCache.set(aid, r); if (tab === 3) drawTracks(); }).catch(() => {});
@@ -1210,28 +1299,57 @@ function albumEditor(i, j) {
   const songs = got.out || [];
   if (!songs.length) return `<div class="mz-aedit"><span class="mz-note">수록곡을 찾지 못했어요</span></div>`;
   const missing = songs.filter((x) => !inPlaylist(x));
-  return `<div class="mz-aedit"><span class="mz-note">${missing.length ? `앨범 ${songs.length}곡 중 ${missing.length}곡이 빠져 있어요 — ＋ 로 넣기` : `앨범 ${songs.length}곡이 모두 들어 있어요`}</span><span class="mz-sp"></span>
-      ${missing.length ? `<button class="pl-open ghost" data-eadd="${i}:${j}:-1">모두 넣기</button>` : ""}</div>` +
+  const swap = songs.filter((x) => otherVersions(x, aid).length && !plTracks.some((t) => t.v === x.v));
+  const note = (missing.length ? `앨범 ${songs.length}곡 중 ${missing.length}곡이 빠져 있어요 — ＋ 로 넣기 · 줄을 누르면 들어 보기` : `앨범 ${songs.length}곡이 모두 들어 있어요`) + (swap.length ? ` · 다른 앨범 버전 ${swap.length}곡 ⇄` : "");
+  return `<div class="mz-aedit"><span class="mz-note">${note}</span><span class="mz-sp"></span>
+      ${missing.length ? `<button class="pl-open ghost" data-eadd="${gi}:-1">모두 넣기</button>` : swap.length ? `<button class="pl-open ghost" data-eswap="${gi}:-1">모두 바꾸기</button>` : ""}</div>` +
     songs.map((x, k) => {
-      const have = inPlaylist(x), busy = plAdding.has(x.v);
-      return `<div class="mz-aedit song ${have ? "have" : ""}"><span class="mz-num">${k + 1}</span><span class="mz-t"><b>${esc(trimAlbum(x.t, plTracks[i].al))}</b></span><span class="mz-d">${esc(x.d)}</span>
-        ${have ? '<span class="mz-add done" title="이미 들어 있어요">✓</span>' : busy ? '<span class="mz-add" title="넣는 중…">…</span>' : `<button class="mz-add" data-eadd="${i}:${j}:${k}" title="이 플레이리스트의 앨범 묶음 끝에 넣기">＋</button>`}</div>`;
+      const have = inPlaylist(x), busy = plTracks.some((t) => t.s === "pending-" + x.v);
+      const other = !plTracks.some((t) => t.v === x.v) ? otherVersions(x, aid) : [];
+      return `<div class="mz-aedit song ${have ? "have" : ""}" data-eplay="${gi}:${k}" title="누르면 이 곡만 들어 보기"><span class="mz-num">${k + 1}</span><span class="mz-t"><b>${esc(trimAlbum(x.t, t0.al))}</b></span><span class="mz-d">${esc(x.d)}</span>
+        ${busy ? '<span class="mz-add" title="넣는 중…">…</span>' : other.length ? `<button class="mz-add swap" data-eswap="${gi}:${k}" title="다른 앨범 버전(‘${esc(other[0].al)}’)으로 들어 있어요 — 누르면 이 앨범 버전으로 바꿔 이 묶음에 넣기">⇄</button>` : have ? `<button class="mz-add done" data-erm="${gi}:${k}" title="들어 있어요 — 누르면 플레이리스트에서 빼기 (되돌리기 가능)">✓</button>` : `<button class="mz-add" data-eadd="${gi}:${k}" title="이 플레이리스트의 앨범 묶음 끝에 넣기">＋</button>`}</div>`;
     }).join("");
 }
-/// 곡들을 플레이리스트에 넣고 그 앨범 묶음 바로 뒤(다음 묶음 앞)로 옮김 (앨범 순서대로)
-async function addToGroup(songs, i, j) {
+/// 곡들을 플레이리스트에 넣고 그 앨범 묶음 바로 뒤로 옮김 (앨범 순서대로)
+/// 화면엔 바로 ✓ (임시 자리 ID 'pending-…' 로 끼워 둠), 서버는 뒤에서 — 끝나면 진짜 자리 ID 로 바꿈
+async function addToGroup(songs, gi) {
   const pid = plSel;
-  const vids = songs.map((x) => x.v).filter((v) => v && !plAdding.has(v));
-  if (!vids.length) return;
-  vids.forEach((v) => plAdding.add(v));
+  const idx = plGroups[gi] || [];
+  const t0 = plTracks[idx[0]];
+  const add = songs.filter((x) => x && x.v && !plTracks.some((t) => t.v === x.v));
+  if (!t0 || !add.length) return;
+  const last = idx[idx.length - 1];
+  const before = plTracks.slice(last + 1).find((t) => !t.s.startsWith("pending-"))?.s || null;
+  const pend = add.map((x) => ({ t: x.t, a: t0.a, d: x.d, v: x.v, s: "pending-" + x.v, th: "", al: t0.al, alid: t0.alid }));
+  plTracks.splice(last + 1, 0, ...pend);
   drawTracks();
-  const before = j + 1 < plTracks.length ? plTracks[j + 1].s : null;
-  try {
-    const m = await call("addIds", { pid, vids }, 30);
-    if (!m) throw "넣지 못했어요";
-    if (before) for (const v of vids) if (m[v]) await call("moveBefore", { pid, sid: m[v], before }, 30).catch(() => {});
-  } catch (e) { fail(e); }
-  vids.forEach((v) => plAdding.delete(v));
+  let m = null;
+  try { m = await call("addIds", { pid, vids: add.map((x) => x.v) }, 30); } catch (e) { /* 아래에서 */ }
+  if (plSel !== pid) return;
+  if (!m) { toast("넣지 못했어요"); plTracks = plTracks.filter((t) => !pend.includes(t)); drawTracks(); return; }
+  // 임시 자리 ID → 진짜 자리 ID (이미 있던 곡이라 안 들어간 건 뺌)
+  plTracks = plTracks.filter((t) => !pend.includes(t) || m[t.v]);
+  pend.forEach((t) => { if (m[t.v]) t.s = m[t.v]; });
+  drawTracks();
+  if (before) for (const x of add) if (m[x.v]) await call("moveBefore", { pid, sid: m[x.v], before }, 30).catch(() => {});
+}
+/// 모으기: 흩어진 앨범 곡들을 첫 곡 자리에 한데 모음 (실제 플레이리스트 순서) — 화면은 바로, 서버는 뒤에서
+async function gatherGroup(idx) {
+  const pid = plSel;
+  const group = idx.map((k) => plTracks[k]);
+  const sids = new Set(group.map((t) => t.s));
+  const rest = plTracks.filter((t) => !sids.has(t.s));
+  const at = plTracks.slice(0, idx[0]).filter((t) => !sids.has(t.s)).length;
+  rest.splice(at, 0, ...group);
+  const after = rest[at + group.length]?.s || null;
+  plTracks = rest;
+  drawTracks();
+  // 뒤 곡부터: 마지막 곡을 '뒤에 오는 곡' 앞으로, 그 앞 곡을 그 곡 앞으로 … (첫 곡은 그대로)
+  let before = after;
+  for (const t of group.slice(1).reverse()) {
+    if (!(await call("moveBefore", { pid, sid: t.s, before }, 30).catch(() => false))) { toast("모으지 못했어요"); break; }
+    before = t.s;
+  }
   if (plSel === pid) loadTracks();
 }
 function trackMenu(x, y, row) {
@@ -1503,8 +1621,20 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
   const side = $("#lyside");
   let sideN = 2;
   try { const v = localStorage.getItem("sideLyricsLines"); if (v !== null) sideN = +v; } catch { /* 없음 */ }
-  const showSide = () => big && tab !== 1 && !cfg.detachLyrics;
-  drawSide = () => { side.hidden = !showSide(); if (!side.hidden) Player.renderSide(side, sideN); };
+  const showSide = () => big && tab !== 1;
+  drawSide = () => {
+    side.hidden = !showSide();
+    if (side.hidden) return;
+    // 떼어 냈으면 그 자리에 '여기로 되돌리기'
+    side.classList.toggle("away", !!cfg.detachLyrics);
+    if (cfg.detachLyrics) {
+      if (side._sig !== "away") { side._sig = "away"; side.innerHTML = `<button class="pl-open ghost ls-back" data-s="back" title="떼어 낸 가사 줄 창을 닫고 이 칸으로 되돌려요">가사를 따로 띄워 뒀어요 · 여기로 되돌리기</button>`; }
+      return;
+    }
+    if (side._sig === "away") side._sig = "";
+    Player.renderSide(side, sideN);
+  };
+  side.addEventListener("click", (e) => { if (e.target.closest('[data-s="back"]')) setConfig("detachLyrics", false); });
   Player.bindSide(side, {
     count: (n) => { sideN = n; try { localStorage.setItem("sideLyricsLines", String(n)); } catch { /* 없음 */ } side._sig = ""; drawSide(); },
     detach: () => setConfig("detachLyrics", true),
@@ -1552,7 +1682,10 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
       lastTitle = t;
       if (tab === 0) setTimeout(() => loadQueue(true), 1200);
       if (tab === 2) loadAlbums();
-      if (tab === 3 && plSel) body.querySelectorAll(".mz-pl-tracks .mz-row").forEach((r) => r.classList.toggle("cur", plTracks[+r.dataset.k]?.t === t));
+      if (tab === 3 && plSel) {
+        if (plGroup && plAuto) { plFlip.clear(); drawTracks(); }
+        else body.querySelectorAll(".mz-pl-tracks .mz-row").forEach((r) => r.classList.toggle("cur", plTracks[+r.dataset.k]?.t === t));
+      }
     }
   });
   body.dataset.tools = "1"; // 가사 탭 제목 옆에 번역 · 발음 고르기
