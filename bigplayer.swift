@@ -643,7 +643,9 @@ final class BigPlayerView: NSView {
         if curTitle != scrolledFor, quiet, !scrolledFor.isEmpty { scrolledFor = curTitle }
         if curTitle != scrolledFor, let r = doc.subviews.first(where: { ($0 as? QueueRow)?.isCurrent == true }) {
             scrolledFor = curTitle
-            scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, r.frame.minY - QueueRow.rowH)))
+            // 목록 끝을 넘어서까지 올리지 않게 (끝 곡일 때 아래가 텅 비어 보였음)
+            let maxY = max(0, doc.frame.height - scroll.contentSize.height)
+            scroll.contentView.scroll(to: NSPoint(x: 0, y: min(maxY, max(0, r.frame.minY - QueueRow.rowH))))
             scroll.reflectScrolledClipView(scroll.contentView)
         }
     }
