@@ -281,7 +281,7 @@ final class PlaylistPane: NSView {
     private var lastVid = ""
     func tickPlaying() {
         let v = music?.state?.videoId ?? ""
-        guard v != lastVid else { return }
+        guard v != lastVid, dragRow == nil else { return }
         lastVid = v
         if !tracks.isEmpty { show(tracks) }
     }
@@ -325,6 +325,8 @@ final class PlaylistPane: NSView {
     }
 
     private func show(_ ts: [PlaylistTrack]) {
+        // 줄을 끌어 옮기는 중엔 다시 그리지 않음 (잡은 줄이 사라져 끌기가 끊겼음) — 놓은 뒤 새로 읽음
+        if dragRow != nil { pendingReload = true; return }
         tracks = ts
         doc.subviews.forEach { $0.removeFromSuperview() }
         let playingHere = music?.state?.listId == Self.selectedId
@@ -343,6 +345,7 @@ final class PlaylistPane: NSView {
     }
 
     private func stack() {
+        guard dragRow == nil else { return }   // 끄는 중엔 줄 자리를 되돌리지 않음
         let w = scroll.contentSize.width
         let rows = doc.subviews.compactMap { $0 as? PlaylistRow }   // 끌 때 나오는 선은 빼고
         for (i, r) in rows.enumerated() {
@@ -518,41 +521,63 @@ final class PlaylistPane: NSView {
         }
     }
 
-    // MARK: 끌어서 순서 바꾸기
+    // MARK: 끌어서 순서 바꾸기 (다음 트랙과 같은 방식: 잡은 줄이 마우스를 따라오고 다른 줄이 비켜 줌)
 
-    private let line: NSView = {
-        let v = NSView(); v.wantsLayer = true
-        v.layer?.backgroundColor = NSColor.launcherAccent.cgColor
-        v.layer?.cornerRadius = 1
-        return v
-    }()
-    private var dropAt = 0
+    private weak var dragRow: PlaylistRow?
+    private var dragFrom = -1
+    private var dragTo = -1
+    private var pendingReload = false
 
-    /// 줄을 잡고 위아래로 끌면 넣을 자리에 선, 놓으면 그 자리로
     private func dragging(_ row: PlaylistRow, y: CGFloat, done: Bool) {
         let p = doc.convert(NSPoint(x: 0, y: y), from: nil)
-        let n = tracks.count
-        dropAt = max(0, min(n, Int((p.y / PlaylistRow.rowH).rounded())))
+        let rows = doc.subviews.compactMap { $0 as? PlaylistRow }.sorted { $0.index < $1.index }
+        let n = rows.count
+        let h = PlaylistRow.rowH
+        if dragRow !== row {
+            guard let k = rows.firstIndex(where: { $0 === row }) else { return }
+            dragRow = row; dragFrom = k; dragTo = k
+            row.wantsLayer = true
+            row.layer?.zPosition = 10
+            row.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.92).cgColor
+            row.layer?.cornerRadius = 6
+            row.layer?.shadowOpacity = 0.25; row.layer?.shadowRadius = 6; row.layer?.shadowOffset = .zero
+        }
+        let to = max(0, min(n - 1, Int((p.y / h).rounded(.down))))
         if !done {
-            if line.superview == nil { doc.addSubview(line) }
-            line.frame = NSRect(x: 8, y: CGFloat(dropAt) * PlaylistRow.rowH - 1, width: doc.bounds.width - 16, height: 2)
-            row.alphaValue = 0.5
+            row.setFrameOrigin(NSPoint(x: row.frame.minX, y: max(0, min(CGFloat(n - 1) * h, p.y - h / 2))))
+            if to != dragTo {
+                dragTo = to
+                let others = rows.filter { $0 !== row }
+                NSAnimationContext.runAnimationGroup { c in
+                    c.duration = 0.12
+                    for (i, r) in others.enumerated() {
+                        let slot = i < to ? i : i + 1
+                        r.animator().setFrameOrigin(NSPoint(x: r.frame.minX, y: CGFloat(slot) * h))
+                    }
+                }
+            }
             // 가장자리 근처면 저절로 스크롤
             let vis = scroll.contentView.bounds
             if p.y < vis.minY + 20 { scroll.contentView.scroll(to: NSPoint(x: 0, y: max(0, vis.minY - 12))) }
             if p.y > vis.maxY - 20 { scroll.contentView.scroll(to: NSPoint(x: 0, y: min(max(0, doc.frame.height - vis.height), vis.minY + 12))) }
             return
         }
-        line.removeFromSuperview()
-        row.alphaValue = 1
-        let from = row.index
-        guard dropAt != from && dropAt != from + 1 else { return }
-        let t = tracks[from]
-        let before = dropAt < n ? tracks[dropAt].setId : nil
+        // 놓음
+        let from = dragFrom
+        dragRow = nil
+        row.layer?.zPosition = 0; row.layer?.shadowOpacity = 0; row.layer?.backgroundColor = nil
+        let reloadAfter = pendingReload
+        pendingReload = false
+        guard from >= 0, from < tracks.count, to != from else { show(tracks); if reloadAfter { loadTracks() }; return }
         var ts = tracks
-        ts.remove(at: from)
-        ts.insert(t, at: dropAt > from ? dropAt - 1 : dropAt)
-        show(ts)
+        let t = ts.remove(at: from)
+        ts.insert(t, at: to)
+        // 그 곡 뒤에 오는 곡 앞으로 (맨 끝이면 nil)
+        let before = to + 1 < ts.count ? ts[to + 1].setId : nil
+        NSAnimationContext.runAnimationGroup({ c in
+            c.duration = 0.12
+            row.animator().setFrameOrigin(NSPoint(x: row.frame.minX, y: CGFloat(to) * h))
+        }, completionHandler: { [weak self] in MainActor.assumeIsolated { self?.show(ts) } })
         music?.moveInPlaylist(Self.selectedId, setId: t.setId, before: before) { [weak self] ok in
             if !ok { self?.toast?("순서를 바꾸지 못했어요"); self?.loadTracks() }
         }

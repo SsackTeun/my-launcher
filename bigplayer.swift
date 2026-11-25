@@ -315,7 +315,7 @@ final class BigPlayerView: NSView {
         // 앨범 탭: 직접 고른 가수가 아니면 지금 곡의 가수를 따라감
         if tab == 2, st.title != lastTitle, !albumPinned { albumsForCurrent() }
         if tab == 3 { plPane.tickPlaying() }
-        if tab == 0 { syncQueueHover() }
+        if tab == 0 { syncQueueHover(); tickLeft() }
         // 처음 켤 땐 페이지가 덜 떠서 목록을 못 받을 수 있어 몇 번 더
         if plPane.playlists.isEmpty, ticks % 3 == 0, ticks < 40 { plPane.reload() }
         lastTitle = st.title
@@ -399,7 +399,12 @@ final class BigPlayerView: NSView {
 
     private var items: [QueueItem] = []
     private func loadQueue() {
-        music?.loadQueue { [weak self] items in self?.show(items) }
+        // 줄을 끌어 옮기는 중엔 새로 읽지 않음 (목록을 다시 그리면 잡은 줄이 사라져 끌기가 끊겼음)
+        guard dragRow == nil else { return }
+        music?.loadQueue { [weak self] items in
+            guard let self, self.dragRow == nil else { return }
+            self.show(items)
+        }
     }
 
     private func show(_ items: [QueueItem]) {
@@ -417,10 +422,13 @@ final class BigPlayerView: NSView {
             let cur = main.firstIndex(where: { $0.current })
             // 남은 시간: 지금 곡의 남은 부분 + 그 뒤 곡들 (자동재생 곡은 빼고)
             var left = ""
+            leftCalc = nil
             if let c = cur {
                 let pos = music?.state?.position ?? 0
-                let rest = max(0, Double(Self.secs(main[c].duration)) - pos) + Double(main[(c + 1)...].reduce(0) { $0 + Self.secs($1.duration) })
+                leftCalc = (Double(Self.secs(main[c].duration)), Double(main[(c + 1)...].reduce(0) { $0 + Self.secs($1.duration) }), "")
+                let rest = max(0, leftCalc!.dur - pos) + leftCalc!.after
                 left = " · 남은 시간 \(Self.hms(Int(rest)))"
+                leftCalc!.shown = Self.hms(Int(rest))
             }
             let k = cur.map { " · 지금 \($0 + 1)번째\(left)" } ?? ""
             // 플레이리스트 · 앨범이면 전체 곡 수도 (다음 트랙은 50곡씩만 불러오고, 나머지는 재생하며 이어서 불러옴)
@@ -433,6 +441,7 @@ final class BigPlayerView: NSView {
             }
             headLabel.stringValue = head
             headLabel.toolTip = head
+            if leftCalc != nil, !head.contains("남은 시간 \(leftCalc!.shown)") { leftCalc = nil }
             partial = head.hasPrefix("전체 ")
             if let link {
                 // 내 플레이리스트와 연결: 여기서 고치면 플레이리스트에도 반영
@@ -474,6 +483,9 @@ final class BigPlayerView: NSView {
             r.makeMenu = { [weak self] in self?.albumMenu(item) ?? NSMenu() }
             if let link, !item.auto, !item.setId.isEmpty, !selecting {
                 r.onRemove = { [weak self] in self?.removeMany([item], from: link) }
+            }
+            // 끌어서 순서 바꾸기: 내 플레이리스트면 플레이리스트에도, 아니면(앨범 · 라디오 · 남의 플레이리스트) 다음 트랙에서만
+            if !item.auto, !selecting, link == nil || !item.setId.isEmpty {
                 r.onDrag = { [weak self] row, y, done in self?.draggingQueue(row, item: item, y: y, done: done, link: link) }
             }
             if item.auto { r.alphaValue = 0.6 }
@@ -537,6 +549,16 @@ final class BigPlayerView: NSView {
     }
     /// 불러온 다음 트랙이 플레이리스트의 일부뿐인지 (긴 플레이리스트)
     private var partial = false
+    /// 남은 시간 1초마다 다시 셈: 지금 곡 길이 · 그 뒤 곡들 합 · 지금 보이는 글자
+    private var leftCalc: (dur: Double, after: Double, shown: String)?
+    private func tickLeft() {
+        guard var c = leftCalc else { return }
+        let now = Self.hms(Int(max(0, c.dur - (music?.state?.position ?? 0)) + c.after))
+        guard now != c.shown else { return }
+        let s = headLabel.stringValue.replacingOccurrences(of: "남은 시간 \(c.shown)", with: "남은 시간 \(now)")
+        headLabel.stringValue = s; headLabel.toolTip = s
+        c.shown = now; leftCalc = c
+    }
     /// 방금 뺀 곡 (되돌리기: 그 곡 · 원래 다음 곡 자리 ID · 대기열 자리)
     private var undoInfo: (entries: [(item: QueueItem, after: String?)], list: String)?
 
@@ -652,7 +674,7 @@ final class BigPlayerView: NSView {
             guard let self else { return }
             guard let m, !m.isEmpty else { self.toast("되돌리지 못했어요"); self.refreshQueue(); return }
             var newSid: [String: String] = [:]   // 옛 자리 ID → 새 자리 ID
-            for e in back { if let s = m[e.item.ownVideoId] { newSid[e.item.setId] = s; self.music?.queueSetSid(e.item.ownVideoId, sid: s) } }
+            for e in back { if let s = m[e.item.ownVideoId] { newSid[e.item.setId] = s; self.music?.queueSetSid(e.item.ownVideoId, sid: s, old: e.item.setId) } }
             let order = back.reversed().map { $0 }
             @MainActor func move(_ i: Int) {
                 guard i < order.count else { PlaylistCount.cache[u.list] = nil; self.refreshQueue(after: 0.3); return }
@@ -710,7 +732,7 @@ final class BigPlayerView: NSView {
     private var dragFrom = -1
     private var dragTo = -1
     private weak var dragRow: QueueRow?
-    private func draggingQueue(_ row: QueueRow, item: QueueItem, y: CGFloat, done: Bool, link: PlaylistInfo) {
+    private func draggingQueue(_ row: QueueRow, item: QueueItem, y: CGFloat, done: Bool, link: PlaylistInfo?) {
         lastUserTouch = Date()
         let p = doc.convert(NSPoint(x: 0, y: y), from: nil)
         let main = items.filter { !$0.auto }
@@ -750,7 +772,7 @@ final class BigPlayerView: NSView {
         row.layer?.zPosition = 0; row.layer?.shadowOpacity = 0
         let revert = { [weak self] (msg: String) in self?.toast(msg); self?.applyLocal(main) }
         guard from >= 0, to != from else { applyLocal(main); return }
-        if to == n - 1 && partial { revert("긴 플레이리스트는 불러온 곡 맨 끝으로는 못 옮겨요"); return }
+        if to == n - 1 && partial && link != nil { revert("긴 플레이리스트는 불러온 곡 맨 끝으로는 못 옮겨요"); return }
         var m = main
         let moved = m.remove(at: from)
         m.insert(moved, at: to)
@@ -761,6 +783,13 @@ final class BigPlayerView: NSView {
         let before = to + 1 < m.count ? m[to + 1].setId : nil
         // 대기열은 '그 곡 앞에 꽂기' 자리로 (원래 순서 기준)
         let insertAt = to > from ? to + 1 : to
+        // 내 플레이리스트가 아니면 다음 트랙에서만 (섞어 듣는 중이어도 됨)
+        guard let link else {
+            music?.queueMove(from: item.index, to: insertAt, setId: "", videoId: item.ownVideoId) { [weak self] ok in
+                if !ok { self?.toast("다음 트랙 순서를 바꾸지 못했어요"); self?.refreshQueue() }
+            }
+            return
+        }
         music?.queueShuffled { [weak self] shuffled in
             guard let self else { return }
             // 섞어 듣는 중이면 다음 트랙 순서가 플레이리스트 순서와 달라서 못 옮김
@@ -851,7 +880,7 @@ final class BigPlayerView: NSView {
         }
     }
 
-    private func layoutRows() { Self.stack(doc, width: scroll.contentSize.width) }
+    private func layoutRows() { if dragRow == nil { Self.stack(doc, width: scroll.contentSize.width) } }   // 끄는 중엔 줄 자리를 되돌리지 않음
     private func layoutAlbums() { Self.stack(albumDoc, width: albumScroll.contentSize.width) }
     /// 줄들을 위에서부터 차례로 (머리줄 · 곡 줄 · 앨범 줄 높이가 달라서)
     private static func stack(_ doc: NSView, width w: CGFloat) {

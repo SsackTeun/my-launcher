@@ -209,7 +209,16 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         })(),
         vol: vol, muted: muted,
         page: document.querySelector('ytmusic-app-layout')?.getAttribute('player-page-open') !== null,
-        list: new URLSearchParams(location.search).get('list') || '',
+        // 주소에 list= 가 없으면(도구함을 다시 켜서 이어 재생 등) 대기열 곡들에 붙은 플레이리스트 중 가장 많은 것
+        list: new URLSearchParams(location.search).get('list') || (() => {
+          const QC = document.querySelector('ytmusic-player-queue')?.polymerController, QQ = QC && QC.queue, n = {};
+          for (const x of (QQ ? QQ.getItems() : [])) {
+            const r = x && (x.playlistPanelVideoWrapperRenderer ? x.playlistPanelVideoWrapperRenderer.primaryRenderer.playlistPanelVideoRenderer : x.playlistPanelVideoRenderer);
+            const p = r && r.navigationEndpoint && r.navigationEndpoint.watchEndpoint && r.navigationEndpoint.watchEndpoint.playlistId;
+            if (p) n[p] = (n[p] || 0) + 1;
+          }
+          return Object.keys(n).sort((a, b) => n[b] - n[a])[0] || '';
+        })(),
         vid: new URLSearchParams(location.search).get('v') || ''
       });
     })()

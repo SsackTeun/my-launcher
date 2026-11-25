@@ -40,17 +40,18 @@ extension YTMusic {
     }
 
     /// 대기열에서 from 번째 곡을 to 번째 곡 앞으로 (to == 개수면 맨 끝) — YouTube Music 화면에서 끌어 옮길 때와 같은 방법
-    func queueMove(from: Int, to: Int, setId: String, done: @escaping (Bool) -> Void) {
+    /// videoId: 자리 ID 가 없는 곡(앨범 · 라디오)은 곡 ID 로 맞는 곡인지 확인
+    func queueMove(from: Int, to: Int, setId: String, videoId: String = "", done: @escaping (Bool) -> Void) {
         runAPIPublic(Self.queueCtl + """
         if (!QQ || !QC.onDrop) return false;
         const ct = QEL.querySelector('#contents'), kids = [...ct.children], items = QQ.getItems();
         if (kids.length !== items.length || !kids[from]) return false;
-        const r = R(items[from]); if (!r || (sid && r.playlistSetVideoId !== sid)) return false;
+        const r = R(items[from]); if (!r || (sid && r.playlistSetVideoId !== sid) || (vid && r.videoId !== vid)) return false;
         const el = kids[from];
         ct.insertBefore(el, kids[to] || null);
         QC.onDrop({detail: {dragEl: el}});
         return R(QQ.getItems()[to > from ? to - 1 : to]) === r;
-        """, ["from": from, "to": to, "sid": setId]) { done($0 as? Bool ?? false) }
+        """, ["from": from, "to": to, "sid": setId, "vid": videoId]) { done($0 as? Bool ?? false) }
     }
 
     /// 곡들을 대기열 at 번째 자리에 넣기 (nil 이면 맨 끝 · 자동재생 곡 앞). setIds 가 있으면 플레이리스트 자리 ID 도 붙여 둠 (나중에 뺄 수 있게)
@@ -69,13 +70,14 @@ extension YTMusic {
     }
 
     /// 다음 트랙에 붙인 곡(자리 ID 없는 것)에 플레이리스트 자리 ID 를 붙여 둠 (나중에 빼기 · 옮기기용)
-    func queueSetSid(_ vid: String, sid: String) {
+    /// old: 되돌리기로 다시 넣은 곡은 옛 자리 ID 를 달고 있어서 그것도 새 ID 로 바꿈
+    func queueSetSid(_ vid: String, sid: String, old: String = "") {
         runAPIPublic(Self.queueCtl + """
         if (!QQ) return false;
-        const it = QQ.getItems().map(R).reverse().find(r => r && r.videoId === vid && !r.playlistSetVideoId);
+        const it = QQ.getItems().map(R).reverse().find(r => r && r.videoId === vid && (!r.playlistSetVideoId || (old && r.playlistSetVideoId === old)));
         if (it) it.playlistSetVideoId = sid;
         return !!it;
-        """, ["vid": vid, "sid": sid]) { _ in }
+        """, ["vid": vid, "sid": sid, "old": old]) { _ in }
     }
 
     /// 플레이리스트에서 여러 곡을 한 번에 빼기 (자리 ID · 곡 ID)
