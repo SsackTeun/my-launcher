@@ -651,3 +651,7 @@ body.compact .lyside { display: none; }
 .mz-add.swap { color: #ff9f0a; }
 .lyside.away { background: transparent; align-items: center; }
 .ls-back { font-size: 11px; padding: 3px 12px; }
+.mz-ahead.playing { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.mz-ahead.playing b, .mz-ahead.playing .mz-chev2 { color: var(--accent); }
+.mz-ahead .mz-x.armed { visibility: visible; color: #fff; background: var(--red); font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+.mz-pl-tracks .mz-row.cur { background: color-mix(in srgb, var(--accent) 18%, transparent); }
