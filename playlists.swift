@@ -7,6 +7,8 @@ struct PlaylistInfo: Equatable {
     let id: String      // PL… (앞의 VL 뺀 것)
     let title: String
     let sub: String
+    /// 자켓 (작은 사진 주소, 없으면 "")
+    var thumb = ""
 }
 
 struct PlaylistTrack: Equatable {
@@ -83,11 +85,12 @@ extension YTMusic {
         const j = await api('browse', {browseId: 'FEmusic_liked_playlists'});
         return JSON.stringify(collect(j, 'musicTwoRowItemRenderer').map(i => ({
           t: (i.title.runs || [])[0].text, id: (i.navigationEndpoint && i.navigationEndpoint.browseEndpoint || {}).browseId || '',
-          sub: (i.subtitle && i.subtitle.runs || []).map(x => x.text).join('')
+          sub: (i.subtitle && i.subtitle.runs || []).map(x => x.text).join(''),
+          th: (((i.thumbnailRenderer && i.thumbnailRenderer.musicThumbnailRenderer && i.thumbnailRenderer.musicThumbnailRenderer.thumbnail.thumbnails) || [])[0] || {}).url || ''
         })).filter(x => x.id.startsWith('VLPL')));
         """) { [weak self] v in
             let arr = self?.json(v) as? [[String: Any]] ?? []
-            done(arr.map { PlaylistInfo(id: String(($0["id"] as? String ?? "").dropFirst(2)), title: $0["t"] as? String ?? "", sub: $0["sub"] as? String ?? "") })
+            done(arr.map { PlaylistInfo(id: String(($0["id"] as? String ?? "").dropFirst(2)), title: $0["t"] as? String ?? "", sub: $0["sub"] as? String ?? "", thumb: $0["th"] as? String ?? "") })
         }
     }
 
@@ -181,6 +184,7 @@ extension YTMusic {
 }
 
 // MARK: - 플레이리스트 탭: 고르기 · 재생 · 끌어서 순서 바꾸기 · ⊖ 빼기 · 되돌리기 · 새 플레이리스트
+// 넓으면 2단 (왼쪽 플레이리스트 목록 · 오른쪽 곡), 좁으면 위쪽 고르기 칸 하나
 
 @MainActor
 final class PlaylistPane: NSView {
@@ -204,6 +208,13 @@ final class PlaylistPane: NSView {
     private let scroll = NSScrollView()
     private let doc = FlippedView()
     private let status = NSTextField(labelWithString: "")
+    /// 2단일 때: 왼쪽 플레이리스트 목록 · 가운데 선 · 오른쪽 머리줄 이름 (그 옆에 countLabel)
+    private let listScroll = NSScrollView()
+    private let listDoc = FlippedView()
+    private let divider = NSBox()
+    private let titleLabel = NSTextField(labelWithString: "")
+    /// 이만큼 넓으면 2단
+    private var twoCol: Bool { bounds.width >= 440 }
     private var lists: [PlaylistInfo] = []
     private(set) var tracks: [PlaylistTrack] = []
     /// 방금 뺀 곡 (되돌리기용: 그 곡 · 원래 뒤에 있던 곡)
@@ -255,6 +266,15 @@ final class PlaylistPane: NSView {
         status.textColor = .secondaryLabelColor
         status.alignment = .center
         addSubview(status)
+        listScroll.documentView = listDoc
+        listScroll.hasVerticalScroller = false
+        listScroll.drawsBackground = false
+        addSubview(listScroll)
+        divider.boxType = .separator
+        addSubview(divider)
+        titleLabel.font = .boldSystemFont(ofSize: 15)
+        titleLabel.lineBreakMode = .byTruncatingTail
+        addSubview(titleLabel)
     }
     required init?(coder: NSCoder) { fatalError() }
 
@@ -263,6 +283,32 @@ final class PlaylistPane: NSView {
         let w = bounds.width
         undoBtn.sizeToFit()
         let uw = undoBtn.isHidden ? 0 : undoBtn.frame.width + 6
+        let two = twoCol
+        picker.isHidden = two
+        for v in [listScroll, divider, titleLabel] as [NSView] { v.isHidden = !two }
+        if two {
+            // 왼쪽: 새로 · 이름 · 지우기 / 플레이리스트 목록
+            let lw = min(260, max(170, (w * 0.32).rounded()))
+            for (i, b) in [newBtn, renameBtn, delBtn].enumerated() { b.frame = NSRect(x: 6 + CGFloat(i) * 26, y: 2, width: 24, height: 24) }
+            listScroll.frame = NSRect(x: 0, y: 32, width: lw, height: bounds.height - 32)
+            divider.frame = NSRect(x: lw + 4, y: 4, width: 1, height: bounds.height - 8)
+            // 오른쪽: 이름 · 곡 수 · 시간 ……… 되돌리기 · (모두 접기) · 앨범별 · 재생 / 곡
+            let rx = lw + 9
+            playBtn.frame = NSRect(x: w - 26, y: 2, width: 24, height: 24)
+            groupBtn.frame = NSRect(x: playBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+            foldBtn.frame = NSRect(x: groupBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+            let bx = Self.groupByAlbum ? foldBtn.frame.minX : groupBtn.frame.minX
+            undoBtn.frame = NSRect(x: bx - uw, y: 5, width: max(0, uw - 6), height: 18)
+            let tx = rx + 6, tEnd = bx - uw - 6
+            titleLabel.sizeToFit()
+            let tw = min(titleLabel.frame.width, max(40, (tEnd - tx) * 0.62))
+            titleLabel.frame = NSRect(x: tx, y: 4, width: tw, height: 20)
+            countLabel.frame = NSRect(x: tx + tw + 8, y: 8, width: max(0, tEnd - tx - tw - 8), height: 15)
+            scroll.frame = NSRect(x: rx, y: 32, width: w - rx, height: bounds.height - 32)
+            status.frame = NSRect(x: rx, y: scroll.frame.midY - 9, width: w - rx, height: 18)
+            stack(); stackLists()
+            return
+        }
         delBtn.frame = NSRect(x: w - 26, y: 2, width: 24, height: 24)
         renameBtn.frame = NSRect(x: delBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         newBtn.frame = NSRect(x: renameBtn.frame.minX - 26, y: 2, width: 24, height: 24)
@@ -286,10 +332,8 @@ final class PlaylistPane: NSView {
     /// 고르기 칸 · 곡 목록을 이 목록으로
     private func applyLists(_ ls: [PlaylistInfo]) {
         lists = ls
-        picker.removeAllItems()
-        for l in ls { picker.menu?.addItem(NSMenuItem(title: l.title, action: nil, keyEquivalent: "")) }
         if !ls.contains(where: { $0.id == Self.selectedId }) { Self.selectedId = ls.first?.id ?? "" }
-        if let i = ls.firstIndex(where: { $0.id == Self.selectedId }) { picker.selectItem(at: i) }
+        syncLists()
         if ls.isEmpty { status.stringValue = "플레이리스트가 없어요 · ⊕ 로 새로 만들어요"; status.isHidden = false }
         loadTracks()
     }
@@ -297,7 +341,7 @@ final class PlaylistPane: NSView {
     func followPlaying() {
         guard let l = music?.state?.listId, l.hasPrefix("PL"), l != Self.selectedId, lists.contains(where: { $0.id == l }) else { return }
         Self.selectedId = l
-        if let i = lists.firstIndex(where: { $0.id == l }) { picker.selectItem(at: i) }
+        markSelected()
         loadTracks()
     }
     /// 곡이 바뀌면 '지금 재생 중' 표시를 옮김
@@ -308,7 +352,42 @@ final class PlaylistPane: NSView {
         guard !v.isEmpty, v != lastVid, dragRow == nil else { return }
         lastVid = v
         autoFlip = []
+        let l = music?.state?.listId ?? ""
+        for r in listDoc.subviews.compactMap({ $0 as? PlaylistListRow }) { r.playing = r.info.id == l }
         if !tracks.isEmpty { show(tracks) }
+    }
+
+    /// 고르기 칸(좁을 때)과 왼쪽 목록(넓을 때)을 lists · 고른 것에 맞춤
+    private func syncLists() {
+        // 이름이 같은 플레이리스트가 있어도 하나로 합쳐지지 않게 한 줄씩 (addItems 는 같은 이름을 합쳐 순서가 밀렸음)
+        picker.removeAllItems()
+        for l in lists { picker.menu?.addItem(NSMenuItem(title: l.title, action: nil, keyEquivalent: "")) }
+        listDoc.subviews.forEach { $0.removeFromSuperview() }
+        let playing = music?.state?.listId ?? ""
+        for l in lists {
+            let r = PlaylistListRow(l)
+            r.playing = l.id == playing
+            r.onPick = { [weak self] in self?.pick(l.id) }
+            listDoc.addSubview(r)
+        }
+        markSelected()
+        stackLists()
+    }
+    /// 고른 플레이리스트 표시만 옮김 (고르기 칸 · 왼쪽 목록 · 머리줄 이름)
+    private func markSelected() {
+        if let i = lists.firstIndex(where: { $0.id == Self.selectedId }) { picker.selectItem(at: i) }
+        for r in listDoc.subviews.compactMap({ $0 as? PlaylistListRow }) { r.selected = r.info.id == Self.selectedId }
+        titleLabel.stringValue = current?.title ?? ""
+        needsLayout = true
+    }
+    private func stackLists() {
+        let w = listScroll.contentSize.width
+        let rows = listDoc.subviews.compactMap { $0 as? PlaylistListRow }
+        for (i, r) in rows.enumerated() {
+            r.frame = NSRect(x: 0, y: CGFloat(i) * PlaylistListRow.rowH, width: w, height: PlaylistListRow.rowH)
+            r.needsLayout = true
+        }
+        listDoc.frame = NSRect(x: 0, y: 0, width: w, height: CGFloat(rows.count) * PlaylistListRow.rowH)
     }
 
     func reload(lists again: Bool = true) {
@@ -320,19 +399,16 @@ final class PlaylistPane: NSView {
                 guard let self else { return }
                 // 방금 지운 건 숨기고, 방금 바꾼 이름은 서버 목록이 늦게 바뀌어도 새 이름으로
                 let ls = all.filter { !Self.recentlyDeleted.contains($0.id) }.map { p in
-                    Self.renamed[p.id].map { PlaylistInfo(id: p.id, title: $0, sub: p.sub) } ?? p
+                    Self.renamed[p.id].map { PlaylistInfo(id: p.id, title: $0, sub: p.sub, thumb: p.thumb) } ?? p
                 }
                 self.loading = false
                 // 실패(페이지가 아직 덜 떠서 빈 응답)면 고른 목록을 지우지 않고 다음 시도를 기다림
                 if ls.isEmpty { return }
                 self.lists = ls
-                // 이름이 같은 플레이리스트가 있어도 하나로 합쳐지지 않게 한 줄씩 (addItems 는 같은 이름을 합쳐 순서가 밀렸음)
-                self.picker.removeAllItems()
-                for l in ls { self.picker.menu?.addItem(NSMenuItem(title: l.title, action: nil, keyEquivalent: "")) }
                 if !ls.contains(where: { $0.id == Self.selectedId }) { Self.selectedId = ls.first?.id ?? "" }
                 // 내 플레이리스트 중 하나를 듣는 중이면 그 목록부터
                 if let l = self.music?.state?.listId, ls.contains(where: { $0.id == l }) { Self.selectedId = l }
-                if let i = ls.firstIndex(where: { $0.id == Self.selectedId }) { self.picker.selectItem(at: i) }
+                self.syncLists()
                 if ls.isEmpty { self.status.stringValue = "플레이리스트가 없어요 · ⊕ 로 새로 만들어요" }
                 self.loadTracks()
             }
@@ -449,8 +525,19 @@ final class PlaylistPane: NSView {
 
     @objc private func picked() {
         guard picker.indexOfSelectedItem >= 0, picker.indexOfSelectedItem < lists.count else { return }
-        Self.selectedId = lists[picker.indexOfSelectedItem].id
+        pick(lists[picker.indexOfSelectedItem].id)
+    }
+    /// 플레이리스트 고르기 (고르기 칸 · 왼쪽 목록): 오른쪽을 바로 비우고 그 곡들을 불러옴
+    private func pick(_ id: String) {
+        guard id != Self.selectedId || tracks.isEmpty else { return }
+        Self.selectedId = id
         removed = nil; undoBtn.isHidden = true
+        tracks = []
+        doc.subviews.forEach { $0.removeFromSuperview() }
+        countLabel.stringValue = ""
+        stack()
+        status.stringValue = "불러오는 중…"; status.isHidden = false
+        markSelected()
         loadTracks()
     }
 
@@ -471,8 +558,8 @@ final class PlaylistPane: NSView {
             self.music?.renamePlaylist(cur.id, name) { ok in
                 guard ok else { self.toast?("이름을 바꾸지 못했어요"); return }
                 Self.renamed[cur.id] = name
-                self.lists = self.lists.map { $0.id == cur.id ? PlaylistInfo(id: $0.id, title: name, sub: $0.sub) : $0 }
-                if let i = self.lists.firstIndex(where: { $0.id == cur.id }) { self.picker.item(at: i)?.title = name; self.picker.selectItem(at: i) }
+                self.lists = self.lists.map { $0.id == cur.id ? PlaylistInfo(id: $0.id, title: name, sub: $0.sub, thumb: $0.thumb) : $0 }
+                self.syncLists()
                 self.toast?("‘\(name)’으로 바꿨어요")
                 NotificationCenter.default.post(name: Notification.Name("playlistRenamed"), object: nil)
             }
@@ -863,6 +950,77 @@ final class PlaylistPane: NSView {
         music?.moveInPlaylist(Self.selectedId, setId: t.setId, before: before) { [weak self] ok in
             if !ok { self?.toast?("순서를 바꾸지 못했어요"); self?.loadTracks() }
         }
+    }
+}
+
+/// 왼쪽 플레이리스트 한 줄: 자켓 · 이름 · 곡 수. 누르면 오른쪽에 그 곡들, 듣는 중이면 🔊
+@MainActor
+final class PlaylistListRow: NSView {
+    static let rowH: CGFloat = 54
+    /// 자켓 주소 → 사진 (다시 그릴 때마다 받지 않게)
+    static var thumbs: [String: NSImage] = [:]
+    let info: PlaylistInfo
+    var onPick: (() -> Void)?
+    var selected = false { didSet { t.font = selected ? .boldSystemFont(ofSize: 13) : .systemFont(ofSize: 13); needsDisplay = true } }
+    var playing = false { didSet { s.stringValue = playing ? "🔊 듣는 중 · \(info.sub)" : info.sub } }
+    private let art = NSImageView()
+    private let t: NSTextField, s: NSTextField
+    private var hovering = false { didSet { needsDisplay = true } }
+    override var isFlipped: Bool { true }
+
+    init(_ p: PlaylistInfo) {
+        info = p
+        t = NSTextField(labelWithString: p.title)
+        s = NSTextField(labelWithString: p.sub)
+        super.init(frame: .zero)
+        t.font = .systemFont(ofSize: 13)
+        s.font = .systemFont(ofSize: 11); s.textColor = .secondaryLabelColor
+        for f in [t, s] { f.lineBreakMode = .byTruncatingTail }
+        art.imageScaling = .scaleProportionallyUpOrDown
+        art.wantsLayer = true
+        art.layer?.cornerRadius = 5
+        art.layer?.masksToBounds = true
+        art.image = Self.thumbs[p.thumb] ?? NSImage(systemSymbolName: "music.note.list", accessibilityDescription: nil)
+        for v in [art, t, s] { addSubview(v) }
+        toolTip = p.sub.isEmpty ? p.title : "\(p.title) · \(p.sub)"
+        loadThumb()
+    }
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func loadThumb() {
+        let url = info.thumb
+        guard !url.isEmpty, Self.thumbs[url] == nil, let u = URL(string: url) else { return }
+        URLSession.shared.dataTask(with: u) { data, _, _ in
+            guard let data, let img = NSImage(data: data) else { return }
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    Self.thumbs[url] = img
+                    self.art.image = img
+                }
+            }
+        }.resume()
+    }
+
+    override func layout() {
+        super.layout()
+        let w = bounds.width
+        art.frame = NSRect(x: 8, y: 7, width: 40, height: 40)
+        t.frame = NSRect(x: 56, y: 9, width: max(20, w - 64), height: 18)
+        s.frame = NSRect(x: 56, y: 28, width: max(20, w - 64), height: 15)
+    }
+    override func updateTrackingAreas() {
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { hovering = true }
+    override func mouseExited(with event: NSEvent) { hovering = false }
+    override func draw(_ dirtyRect: NSRect) {
+        let r = NSBezierPath(roundedRect: bounds.insetBy(dx: 4, dy: 2), xRadius: 7, yRadius: 7)
+        if selected { NSColor.launcherAccent.withAlphaComponent(0.20).setFill(); r.fill() }
+        else if hovering { NSColor.labelColor.withAlphaComponent(0.08).setFill(); r.fill() }
+    }
+    override func mouseUp(with event: NSEvent) {
+        if bounds.contains(convert(event.locationInWindow, from: nil)) { onPick?() }
     }
 }
 
