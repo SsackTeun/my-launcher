@@ -27,6 +27,10 @@ final class BigPlayerView: NSView {
     var onLyricsWindow: (() -> Void)?
     /// 가사 칸을 떼어 내 따로 띄운 동안은 칸을 숨김
     var sideDetached = false { didSet { needsLayout = true } }
+    /// 떼어 낸 동안 빈칸에 '여기로 되돌리기'
+    var onSideReattach: (() -> Void)?
+    private let sideReturn = NSButton(title: "가사를 따로 띄워 뒀어요 · 여기로 되돌리기", target: nil, action: nil)
+    @objc private func reattachSide() { onSideReattach?() }
     private let lyricsWinBtn = NSButton()
     /// '랜덤' 탭: 랜덤 플레이리스트 만드는 판 (따로 창과 같은 것)
     private let randomScroll = NSScrollView()
@@ -94,6 +98,15 @@ final class BigPlayerView: NSView {
         self.sideLyrics = sideLyrics
         super.init(frame: .zero)
         addSubview(sideLyrics)
+        sideReturn.bezelStyle = .recessed
+        sideReturn.controlSize = .small
+        sideReturn.font = .systemFont(ofSize: 11)
+        sideReturn.image = NSImage(systemSymbolName: "arrow.down.right.and.arrow.up.left", accessibilityDescription: nil)
+        sideReturn.imagePosition = .imageLeading
+        sideReturn.toolTip = "떼어 낸 가사 창을 닫고 이 칸으로 되돌려요"
+        sideReturn.target = self; sideReturn.action = #selector(reattachSide)
+        sideReturn.isHidden = true
+        addSubview(sideReturn)
         randomScroll.drawsBackground = false
         randomScroll.hasVerticalScroller = true
         randomScroll.autohidesScrollers = true
@@ -469,6 +482,13 @@ final class BigPlayerView: NSView {
         let sh = bounds.height - sy - pad
         sideLyrics.frame = NSRect(x: art.frame.minX, y: sy, width: art.frame.width, height: max(0, sh))
         sideLyrics.isHidden = sh < 70 || tab == 1 || sideDetached
+        // 떼어 냈으면 그 자리 위쪽에 되돌리기 단추
+        sideReturn.isHidden = !(sideDetached && tab != 1 && sh >= 30)
+        if !sideReturn.isHidden {
+            sideReturn.sizeToFit()
+            let bw = min(art.frame.width, sideReturn.frame.width + 16)
+            sideReturn.frame = NSRect(x: art.frame.midX - bw / 2, y: sy + 4, width: bw, height: 24)
+        }
 
         let full = NSRect(x: x - 6, y: tabs.frame.maxY + 6, width: w + 6, height: bounds.height - tabs.frame.maxY - 6 - 4)
         // 고르는 중이면 아래에 '플레이리스트에 넣기' 줄
@@ -546,6 +566,11 @@ final class BigPlayerView: NSView {
             headLabel.toolTip = head
             if leftCalc != nil, !head.contains("남은 시간 \(leftCalc!.shown)") { leftCalc = nil }
             partial = head.hasPrefix("전체 ")
+            // 일부만 불러온 긴 플레이리스트 · 앨범이면 나머지를 한 번에 불러옴 (목록 · 곡 수마다 한 번)
+            if partial, let l = music?.state?.listId, loadAllTried != "\(l)|\(main.count)" {
+                loadAllTried = "\(l)|\(main.count)"
+                music?.queueLoadAll { [weak self] n in if n > 0 { self?.refreshQueue(after: 0.3) } }
+            }
             if let link {
                 // 내 플레이리스트와 연결: 여기서 고치면 플레이리스트에도 반영
                 if let u = undoInfo {
@@ -692,6 +717,7 @@ final class BigPlayerView: NSView {
     }
     /// 불러온 다음 트랙이 플레이리스트의 일부뿐인지 (긴 플레이리스트)
     private var partial = false
+    private var loadAllTried = ""
     /// 남은 시간 1초마다 다시 셈: 지금 곡 길이 · 그 뒤 곡들 합 · 지금 보이는 글자
     private var leftCalc: (dur: Double, after: Double, shown: String)?
     private func tickLeft() {

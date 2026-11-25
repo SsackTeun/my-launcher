@@ -728,7 +728,6 @@ struct LyricsSide: View {
             .clipped()
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .padding(.top, detached ? 14 : 0)   // 떼어 낸 창: 닫기 단추 자리만큼
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(RoundedRectangle(cornerRadius: 10).fill(Color.primary.opacity(detached ? 0 : 0.05)))
         .clipped()
@@ -827,7 +826,9 @@ final class LyricsController: NSObject, NSWindowDelegate {
             p.isFloatingPanel = true
             p.hidesOnDeactivate = false
             p.isReleasedWhenClosed = false
-            p.minSize = NSSize(width: 220, height: 90)
+            p.minSize = NSSize(width: 220, height: 70)
+            // 위쪽 신호등(●●●) 줄 없이 — 닫기 · 다시 붙이기는 창 안 오른쪽 위 단추로
+            for b in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] { p.standardWindowButton(b)?.isHidden = true }
             let host = NSHostingView(rootView: LyricsSide(model: model, detached: true, onOpenWindow: { [weak self] in self?.attachSide() }))
             host.sizingOptions = []
             p.contentView = host

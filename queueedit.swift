@@ -34,6 +34,34 @@ extension YTMusic {
         """, ["i": index, "sid": setId]) { done($0 as? Bool ?? false) }
     }
 
+    /// 다음 트랙 나머지 다 불러오기: YouTube Music 은 긴 플레이리스트를 50곡씩만 불러오고 재생하며 이어 불러옴 →
+    /// 남은 쪽(continuation)을 미리 받아 대기열 끝에 붙임 (플레이리스트 · 앨범만, 섞어 듣기 · 라디오는 그대로)
+    func queueLoadAll(_ done: @escaping (Int) -> Void) {
+        runAPIPublic(Self.queueCtl + """
+
+        if (!QQ || !QQ.continuation || QQ.pendingFetchItemsRequest) return 0;
+        if (QQ.store.getState().queue.shuffleEnabled) return 0;
+        // 플레이리스트 · 앨범만 (라디오 · 믹스 RD… 는 끝이 없어서 그대로)
+        const ids = {}; for (const x of QQ.getItems()) { const r = R(x), w = r && r.navigationEndpoint && r.navigationEndpoint.watchEndpoint; if (w && w.playlistId) ids[w.playlistId] = (ids[w.playlistId] || 0) + 1; }
+        const pl = Object.keys(ids).sort((a, b) => ids[b] - ids[a])[0] || '';
+        if (!/^(PL|OLAK|VL)/.test(pl)) return 0;
+        let added = 0;
+        for (let p = 0; p < 20 && QQ.continuation; p++) {
+          const tok = QQ.continuation;
+          const j = await api('next', { continuation: tok, enablePersistentPlaylistPanel: true, isAudioOnly: true });
+          const pc = (j.continuationContents || {}).playlistPanelContinuation;
+          if (!pc || QQ.continuation !== tok) break;   // YouTube Music 이 그사이 직접 불러왔으면 그만
+          const items = (pc.contents || []).filter((x) => x.playlistPanelVideoRenderer || x.playlistPanelVideoWrapperRenderer);
+          const nx = (pc.continuations || [])[0] || {};
+          QQ.continuation = (nx.nextContinuationData || {}).continuation || null;
+          if (!items.length) break;
+          QQ.store.dispatch({ type: 'ADD_ITEMS', payload: { nextQueueItemId: QQ.store.getState().queue.nextQueueItemId, index: QQ.getItems().length, items, shouldAssignIds: true } });
+          added += items.length;
+        }
+        return added;
+        """, [:]) { done(($0 as? Int) ?? Int(($0 as? Double) ?? 0)) }
+    }
+
     /// 섞어 듣는 중인지 (그러면 다음 트랙 순서 ≠ 플레이리스트 순서)
     func queueShuffled(_ done: @escaping (Bool) -> Void) {
         runAPIPublic(Self.queueCtl + "return !!(QQ && QQ.store.getState().queue.shuffleEnabled);", [:]) { done($0 as? Bool ?? false) }

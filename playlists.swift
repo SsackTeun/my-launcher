@@ -191,6 +191,9 @@ final class PlaylistPane: NSView {
     private let renameBtn = NSButton()
     private let delBtn = NSButton()
     private let groupBtn = NSButton()
+    /// 앨범별로 볼 때만: 모두 접기 · 펼치기 / 재생 중인 앨범만 펼치기
+    private let foldBtn = NSButton()
+    private let autoBtn = NSButton()
     /// 앨범별로 묶어 보기 (이어진 같은 앨범 곡들 위에 머리줄)
     static var groupByAlbum: Bool {
         get { UserDefaults.standard.bool(forKey: "plGroupAlbum") }
@@ -225,7 +228,9 @@ final class PlaylistPane: NSView {
                                    (newBtn, "plus.circle", "새 플레이리스트", #selector(newList)),
                                    (renameBtn, "pencil", "이 플레이리스트 이름 바꾸기", #selector(renameList)),
                                    (delBtn, "trash", "플레이리스트 지우기 (여러 개 골라서)", #selector(deleteList)),
-                                   (groupBtn, "square.stack.3d.up", "앨범별로 묶어 보기", #selector(toggleGroup))] {
+                                   (groupBtn, "square.stack.3d.up", "앨범별로 묶어 보기", #selector(toggleGroup)),
+                                   (foldBtn, "rectangle.compress.vertical", "모두 접기", #selector(foldAll)),
+                                   (autoBtn, "play.square.stack", "재생 중인 앨범만 펼치기", #selector(toggleAuto))] {
             b.image = NSImage(systemSymbolName: sym, accessibilityDescription: tip)
             b.isBordered = false; b.toolTip = tip; b.target = self; b.action = act
             b.symbolConfiguration = .init(pointSize: 16, weight: .regular)
@@ -258,7 +263,9 @@ final class PlaylistPane: NSView {
         renameBtn.frame = NSRect(x: delBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         newBtn.frame = NSRect(x: renameBtn.frame.minX - 26, y: 2, width: 24, height: 24)
         groupBtn.frame = NSRect(x: newBtn.frame.minX - 26, y: 2, width: 24, height: 24)
-        playBtn.frame = NSRect(x: groupBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        autoBtn.frame = NSRect(x: groupBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        foldBtn.frame = NSRect(x: autoBtn.frame.minX - 26, y: 2, width: 24, height: 24)
+        playBtn.frame = NSRect(x: (Self.groupByAlbum ? foldBtn.frame.minX : groupBtn.frame.minX) - 26, y: 2, width: 24, height: 24)
         undoBtn.frame = NSRect(x: playBtn.frame.minX - uw, y: 5, width: uw - 6, height: 18)
         picker.frame = NSRect(x: 4, y: 2, width: max(80, playBtn.frame.minX - uw - 10), height: 24)
         scroll.frame = NSRect(x: 0, y: 32, width: w, height: bounds.height - 32)
@@ -295,6 +302,7 @@ final class PlaylistPane: NSView {
         let v = music?.state?.videoId ?? ""
         guard v != lastVid, dragRow == nil else { return }
         lastVid = v
+        autoFlip = []
         if !tracks.isEmpty { show(tracks) }
     }
 
@@ -344,17 +352,24 @@ final class PlaylistPane: NSView {
         let playingHere = music?.state?.listId == Self.selectedId
         let nowVid = music?.state?.videoId ?? ""
         let grouped = Self.groupByAlbum
-        var i = 0
-        while i < ts.count {
-            // 앨범별: 이어진 같은 앨범 곡들 위에 머리줄 (이름 · 곡 수 · 시간 · ▶ · ⊖)
-            if grouped {
-                var j = i
-                while j + 1 < ts.count && ts[j + 1].album == ts[i].album && ts[j + 1].albumId == ts[i].albumId { j += 1 }
-                let group = Array(ts[i...j])
-                let h = AlbumGroupHead(title: ts[i].album.isEmpty ? "앨범 정보 없음 (영상 등)" : ts[i].album,
+        if grouped {
+            // 앨범별: 같은 앨범은 떨어져 있어도 한 묶음 (처음 나온 자리 순서), 묶음 안은 플레이리스트 순서
+            var order: [String] = [], members: [String: [Int]] = [:]
+            for (k, t) in ts.enumerated() {
+                let g = t.albumId.isEmpty ? "n:" + t.album : t.albumId
+                if members[g] == nil { order.append(g) }
+                members[g, default: []].append(k)
+            }
+            for g in order {
+                let idx = members[g]!
+                let group = idx.map { ts[$0] }
+                // 흩어짐: 플레이리스트에서 이 앨범 곡들 사이에 다른 곡이 끼어 있음
+                let scattered = idx.last! - idx.first! + 1 != idx.count
+                let h = AlbumGroupHead(title: group[0].album.isEmpty ? "앨범 정보 없음 (영상 등)" : group[0].album,
                                        detail: "\(group.count)곡 · \(Self.total(group))")
                 h.onPlay = { [weak self] in self?.play(from: group[0]) }
                 h.onRemove = { [weak self] in self?.removeGroup(group) }
+                if scattered, !group[0].album.isEmpty { h.onGather = { [weak self] in self?.gather(group) } }
                 // 앨범 편집: 이 앨범의 전체 수록곡을 펼쳐 빠진 곡을 넣기 (앨범 정보가 있을 때만)
                 let key = group[0].setId
                 if !group[0].albumId.isEmpty {
@@ -365,12 +380,32 @@ final class PlaylistPane: NSView {
                         self.show(self.tracks)
                     }
                 }
+                // 접기: 머리줄을 누르면 그 앨범 곡들을 접거나 펼침 (기억함)
+                let ck = Self.collapseKey(group[0])
+                if Self.autoExpand {
+                    // 재생 중인 앨범만 펼치기: 지금 곡이 든 묶음만 펼침 (머리줄을 누르면 곡이 바뀔 때까지 반대로)
+                    let playing = playingHere && group.contains { $0.videoId == nowVid }
+                    h.collapsed = playing == autoFlip.contains(ck)
+                    h.onToggle = { [weak self] in
+                        guard let self else { return }
+                        if self.autoFlip.contains(ck) { self.autoFlip.remove(ck) } else { self.autoFlip.insert(ck) }
+                        self.show(self.tracks)
+                    }
+                } else {
+                    h.collapsed = Self.collapsed.contains(ck)
+                    h.onToggle = { [weak self] in
+                        guard let self else { return }
+                        if Self.collapsed.contains(ck) { Self.collapsed.remove(ck) } else { Self.collapsed.insert(ck) }
+                        self.show(self.tracks)
+                    }
+                }
                 doc.addSubview(h)
-                for k in i...j { addRow(ts[k], k, drag: false) }
-                if editKey == key, !group[0].albumId.isEmpty { addEditor(group) }
-                i = j + 1
-            } else { addRow(ts[i], i, drag: true); i += 1 }
-        }
+                if !h.collapsed {
+                    for k in idx { addRow(ts[k], k, drag: false) }
+                    if editKey == key, !group[0].albumId.isEmpty { addEditor(group) }
+                }
+            }
+        } else { for (k, t) in ts.enumerated() { addRow(t, k, drag: true) } }
         func addRow(_ t: PlaylistTrack, _ k: Int, drag: Bool) {
             let r = PlaylistRow(t, index: k)
             if playingHere && t.videoId == nowVid { r.markPlaying() }
@@ -380,6 +415,7 @@ final class PlaylistPane: NSView {
             if drag { r.onDrag = { [weak self] row, y, done in self?.dragging(row, y: y, done: done) } }
             doc.addSubview(r)
         }
+        if grouped { syncGroupBtn() }
         status.stringValue = ts.isEmpty ? "빈 플레이리스트예요\n다음 트랙 · 앨범에서 곡을 넣어 보세요" : ""
         status.isHidden = !ts.isEmpty
         stack()
@@ -576,6 +612,45 @@ final class PlaylistPane: NSView {
         }
     }
 
+    /// 모으기: 흩어진 앨범 곡들을 첫 곡 자리에 한데 모음 (실제 플레이리스트 순서) — 화면은 바로, 서버는 뒤에서
+    private func gather(_ group: [PlaylistTrack]) {
+        let id = Self.selectedId
+        let sids = Set(group.map(\.setId))
+        guard let first = tracks.firstIndex(where: { sids.contains($0.setId) }) else { return }
+        var final = tracks.filter { !sids.contains($0.setId) }
+        let at = tracks[..<first].filter { !sids.contains($0.setId) }.count
+        final.insert(contentsOf: group, at: at)
+        // 묶음 뒤에 오는 곡 (첫 곡 뒤로 처음 나오는 다른 곡)
+        let after: String? = at + group.count < final.count ? final[at + group.count].setId : nil
+        show(final)
+        // 뒤 곡부터: 마지막 곡을 '뒤에 오는 곡' 앞으로, 그 앞 곡을 그 곡 앞으로 … (첫 곡은 그대로)
+        let order = Array(group.dropFirst().reversed())
+        @MainActor func move(_ i: Int, before: String?) {
+            guard i < order.count else { if Self.selectedId == id { self.loadTracks() }; return }
+            music?.moveInPlaylist(id, setId: order[i].setId, before: before) { [weak self] ok in
+                guard let self else { return }
+                if !ok { self.toast?("모으지 못했어요"); self.loadTracks(); return }
+                move(i + 1, before: order[i].setId)
+            }
+        }
+        move(0, before: after)
+    }
+
+    /// 재생 중인 앨범만 펼치기 (나머지는 접음)
+    static var autoExpand: Bool {
+        get { UserDefaults.standard.bool(forKey: "plAutoExpand") }
+        set { UserDefaults.standard.set(newValue, forKey: "plAutoExpand") }
+    }
+    /// 재생 중인 앨범만 펼치기에서 머리줄을 눌러 반대로 둔 묶음 (곡이 바뀌면 비움)
+    private var autoFlip = Set<String>()
+
+    /// 접어 둔 앨범 묶음 (플레이리스트 · 앨범별로 기억)
+    static var collapsed: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "plCollapsed") ?? []) }
+        set { UserDefaults.standard.set(Array(newValue), forKey: "plCollapsed") }
+    }
+    static func collapseKey(_ t: PlaylistTrack) -> String { "\(selectedId)|\(t.albumId.isEmpty ? t.album : t.albumId)" }
+
     // MARK: 앨범 편집 (앨범별로 묶어 볼 때 머리줄 ✎) — 전체 수록곡 중 빠진 곡을 그 앨범 묶음 끝에 넣기
 
     /// 편집 중인 앨범 묶음 (그 묶음 첫 곡의 자리 ID)
@@ -599,52 +674,125 @@ final class PlaylistPane: NSView {
         func norm(_ t: String) -> String { t.lowercased().filter { $0.isLetter || $0.isNumber } }
         let haveV = Set(tracks.map(\.videoId)), haveT = Set(tracks.map { norm($0.title) })
         let isIn = { (q: QueueItem) in haveV.contains(q.videoId) || haveT.contains(norm(q.title)) }
+        /// 이 수록곡에 해당하는 플레이리스트 곡들 (✓ 를 누르면 뺌)
+        let inList = { (q: QueueItem) in self.tracks.filter { $0.videoId == q.videoId || norm($0.title) == norm(q.title) } }
         let missing = songs.filter { !isIn($0) && !$0.videoId.isEmpty }
-        let head = AlbumEditRow(note: missing.isEmpty ? "앨범 \(songs.count)곡이 모두 들어 있어요" : "앨범 \(songs.count)곡 중 \(missing.count)곡이 빠져 있어요 — ＋ 로 넣기",
-                                button: missing.isEmpty ? nil : "모두 넣기")
-        head.onButton = { [weak self] in self?.addToGroup(missing, group: group) }
+        // 다른 앨범 버전으로 들어 있는 곡 (제목만 같고 곡 · 앨범이 다름) → ⇄ 이 앨범 버전으로 바꾸기
+        let others = { (q: QueueItem) in self.tracks.filter { $0.videoId != q.videoId && norm($0.title) == norm(q.title) && $0.albumId != aid && !$0.setId.hasPrefix("pending-") } }
+        let swap = songs.filter { !haveV.contains($0.videoId) && !others($0).isEmpty }
+        var note = missing.isEmpty ? "앨범 \(songs.count)곡이 모두 들어 있어요" : "앨범 \(songs.count)곡 중 \(missing.count)곡이 빠져 있어요 — ＋ 로 넣기"
+        if !swap.isEmpty { note += " · 다른 앨범 버전 \(swap.count)곡 ⇄" }
+        let head = AlbumEditRow(note: note, button: !missing.isEmpty ? "모두 넣기" : !swap.isEmpty ? "모두 바꾸기" : nil)
+        head.onButton = { [weak self] in
+            guard let self else { return }
+            if !missing.isEmpty { self.addToGroup(missing, group: group) } else { self.swapVersions(swap.map { ($0, others($0)) }, group: group) }
+        }
         doc.addSubview(head)
         for (k, q) in songs.enumerated() {
-            let r = AlbumEditRow(number: k + 1, song: q, state: isIn(q) ? .have : adding.contains(q.videoId) ? .working : .add)
-            r.onButton = { [weak self] in self?.addToGroup([q], group: group) }
+            let pending = inList(q).contains { $0.setId.hasPrefix("pending-") }
+            let other = others(q)
+            let isSwap = !haveV.contains(q.videoId) && !other.isEmpty
+            let r = AlbumEditRow(number: k + 1, song: q, state: pending ? .working : isSwap ? .other : isIn(q) ? .have : .add,
+                                 otherAlbum: other.first?.album ?? "")
+            r.onButton = { [weak self] in
+                guard let self else { return }
+                if isSwap { self.swapVersions([(q, other)], group: group) }
+                else if isIn(q) { let ts = inList(q).filter { !$0.setId.hasPrefix("pending-") }; if !ts.isEmpty { self.removeGroup(ts) } }
+                else { self.addToGroup([q], group: group) }
+            }
+            // 줄을 누르면 그 곡만 들어 보기
+            r.onPlay = { [weak self] in self?.music?.playVideo(q.videoId); self?.toast?("‘\(q.title)’ 들어 보기") }
             doc.addSubview(r)
         }
     }
 
     /// 곡들을 플레이리스트에 넣고 그 앨범 묶음 바로 뒤(다음 묶음 앞)로 옮김 (앨범 순서대로)
+    /// 화면엔 바로 ✓ (임시 자리 ID 'pending-…' 로 끼워 둠), 서버는 뒤에서 — 끝나면 진짜 자리 ID 로 바꿈
     private func addToGroup(_ songs: [QueueItem], group: [PlaylistTrack]) {
         let id = Self.selectedId
-        let vids = songs.map(\.videoId).filter { !$0.isEmpty && !adding.contains($0) }
-        guard !vids.isEmpty else { return }
-        vids.forEach { adding.insert($0) }
-        show(tracks)
-        // 묶음 마지막 곡 뒤에 오는 곡 (없으면 맨 끝)
-        let lastSid = group.last?.setId ?? ""
-        let before: String? = tracks.firstIndex(where: { $0.setId == lastSid }).flatMap { $0 + 1 < tracks.count ? tracks[$0 + 1].setId : nil }
-        music?.addToPlaylistIds(id, videoIds: vids) { [weak self] m in
+        let have = Set(tracks.map(\.videoId))
+        let add = songs.filter { !$0.videoId.isEmpty && !have.contains($0.videoId) }
+        guard !add.isEmpty, let first = group.first else { return }
+        // 묶음 끝 (같은 앨범이 이어지는 마지막 자리 — 방금 끼운 임시 곡 포함)
+        guard var end = tracks.firstIndex(where: { $0.setId == first.setId }) else { return }
+        while end + 1 < tracks.count && tracks[end + 1].albumId == first.albumId && tracks[end + 1].album == first.album { end += 1 }
+        let before: String? = tracks[(end + 1)...].first(where: { !$0.setId.hasPrefix("pending-") })?.setId
+        let temp = add.map { q in PlaylistTrack(title: q.title, artist: first.artist, duration: q.duration, videoId: q.videoId,
+                                                setId: "pending-\(q.videoId)", thumb: "", artistId: first.artistId, album: first.album, albumId: first.albumId) }
+        var ts = tracks; ts.insert(contentsOf: temp, at: end + 1); show(ts)
+        music?.addToPlaylistIds(id, videoIds: add.map(\.videoId)) { [weak self] m in
             guard let self else { return }
-            guard let m else { vids.forEach { self.adding.remove($0) }; self.toast?("넣지 못했어요"); self.show(self.tracks); return }
-            let sids = vids.compactMap { m[$0] }.filter { !$0.isEmpty }
+            guard let m else {
+                self.toast?("넣지 못했어요")
+                let temps = Set(add.map { "pending-\($0.videoId)" })
+                if Self.selectedId == id { self.show(self.tracks.filter { !temps.contains($0.setId) }) }
+                return
+            }
+            // 임시 자리 ID → 진짜 자리 ID (화면은 그대로, 다시 불러오지 않음)
+            if Self.selectedId == id {
+                self.show(self.tracks.compactMap { t in
+                    guard t.setId.hasPrefix("pending-") else { return t }
+                    let v = String(t.setId.dropFirst(8))
+                    guard add.contains(where: { $0.videoId == v }) else { return t }
+                    guard let sid = m[v], !sid.isEmpty else { return nil }   // 이미 있던 곡이라 안 들어감
+                    return PlaylistTrack(title: t.title, artist: t.artist, duration: t.duration, videoId: t.videoId, setId: sid, thumb: t.thumb,
+                                         artistId: t.artistId, album: t.album, albumId: t.albumId)
+                })
+            }
+            let sids = add.compactMap { m[$0.videoId] }.filter { !$0.isEmpty }
             @MainActor func move(_ i: Int) {
-                guard i < sids.count, before != nil else {
-                    vids.forEach { self.adding.remove($0) }
-                    if Self.selectedId == id { self.loadTracks() }
-                    return
-                }
+                guard i < sids.count, before != nil else { return }
                 self.music?.moveInPlaylist(id, setId: sids[i], before: before) { _ in move(i + 1) }
             }
             move(0)
         }
     }
 
-    @objc private func toggleGroup() {
-        Self.groupByAlbum.toggle()
-        syncGroupBtn()
-        show(tracks)
+    /// 겹친 상자: 보기 고르기 메뉴 (곡만 · 앨범별 · 재생 중인 앨범만 펼치기 · 모두 접기 / 펼치기)
+    /// ⇄ 다른 앨범 버전을 이 앨범 버전으로: 이 앨범 묶음에 넣고 원래 버전은 뺌 (되돌리기로 원래 버전 되살림)
+    private func swapVersions(_ pairs: [(QueueItem, [PlaylistTrack])], group: [PlaylistTrack]) {
+        guard !pairs.isEmpty else { return }
+        addToGroup(pairs.map(\.0), group: group)
+        removeGroup(pairs.flatMap(\.1))
     }
+
+    @objc private func toggleGroup() {
+        let m = NSMenu()
+        func item(_ t: String, on: Bool, _ f: @escaping () -> Void) { let i = MenuAction(t, f); i.state = on ? .on : .off; m.addItem(i) }
+        let g = Self.groupByAlbum, a = Self.autoExpand
+        item("곡만 보기 (끌어서 순서 바꾸기)", on: !g) { [weak self] in Self.groupByAlbum = false; self?.regroup() }
+        item("앨범별로 묶어 보기", on: g && !a) { [weak self] in Self.groupByAlbum = true; Self.autoExpand = false; self?.regroup() }
+        item("앨범별 · 재생 중인 앨범만 펼치기", on: g && a) { [weak self] in Self.groupByAlbum = true; Self.autoExpand = true; self?.autoFlip = []; self?.regroup() }
+        m.addItem(.separator())
+        // 모두 접기 · 펼치기 (재생 중인 앨범만 펼치기는 끔)
+        let keys = Set(tracks.map { Self.collapseKey($0) })
+        let all = MenuAction("모두 접기") { [weak self] in Self.groupByAlbum = true; Self.autoExpand = false; Self.collapsed.formUnion(keys); self?.regroup() }
+        let none = MenuAction("모두 펼치기") { [weak self] in Self.groupByAlbum = true; Self.autoExpand = false; Self.collapsed.subtract(keys); self?.regroup() }
+        m.addItem(all); m.addItem(none)
+        m.popUp(positioning: nil, at: NSPoint(x: 0, y: groupBtn.bounds.height + 2), in: groupBtn)
+    }
+    private func regroup() { syncGroupBtn(); show(tracks) }
+    /// 모두 접기 ↔ 모두 펼치기 (하나라도 펼쳐져 있으면 접기) — 재생 중인 앨범만 펼치기는 끔
+    @objc private func foldAll() {
+        let keys = Set(tracks.map { Self.collapseKey($0) })
+        let anyOpen = Self.autoExpand || !keys.isSubset(of: Self.collapsed)
+        if anyOpen { Self.collapsed.formUnion(keys) } else { Self.collapsed.subtract(keys) }
+        Self.autoExpand = false
+        regroup()
+    }
+    @objc private func toggleAuto() { Self.autoExpand.toggle(); autoFlip = []; regroup() }
     private func syncGroupBtn() {
+        foldBtn.isHidden = !Self.groupByAlbum
+        autoBtn.isHidden = !Self.groupByAlbum
+        autoBtn.contentTintColor = Self.autoExpand ? .launcherAccent : nil
+        autoBtn.toolTip = Self.autoExpand ? "재생 중인 앨범만 펼치는 중 — 누르면 끔" : "재생 중인 앨범만 펼치기 (나머지는 접음)"
+        let keys = Set(tracks.map { Self.collapseKey($0) })
+        let allClosed = !Self.autoExpand && !keys.isEmpty && keys.isSubset(of: Self.collapsed)
+        foldBtn.image = NSImage(systemSymbolName: allClosed ? "rectangle.expand.vertical" : "rectangle.compress.vertical", accessibilityDescription: nil)
+        foldBtn.toolTip = allClosed ? "모두 펼치기" : "모두 접기"
+        needsLayout = true
         groupBtn.contentTintColor = Self.groupByAlbum ? .launcherAccent : nil
-        groupBtn.toolTip = Self.groupByAlbum ? "앨범별로 묶어 보는 중 — 누르면 곡만 (끌어서 순서 바꾸기는 곡만 볼 때)" : "앨범별로 묶어 보기 (앨범째 재생 · 빼기)"
+        groupBtn.toolTip = !Self.groupByAlbum ? "보기: 곡만 — 누르면 앨범별로 묶어 보기 등 고르기" : Self.autoExpand ? "보기: 앨범별 · 재생 중인 앨범만 펼치기" : "보기: 앨범별로 묶어 보기"
     }
     /// 곡들 길이 합 '1:02:03' · '23:45'
     static func total(_ ts: [PlaylistTrack]) -> String {
@@ -815,6 +963,13 @@ final class AlbumGroupHead: NSView {
     /// ✎ 앨범 편집 (앨범 정보가 있을 때만 보임)
     var onEdit: (() -> Void)? { didSet { edit.isHidden = onEdit == nil } }
     var editing = false { didSet { edit.contentTintColor = editing ? .launcherAccent : .secondaryLabelColor } }
+    /// 접힘 (▸) / 펼침 (▾) — 머리줄을 누르면 바뀜
+    var collapsed = false { didSet { chev.image = NSImage(systemSymbolName: collapsed ? "chevron.right" : "chevron.down", accessibilityDescription: nil) } }
+    var onToggle: (() -> Void)?
+    /// 흩어진 앨범이면 '모으기' (실제 순서도 한데 모음)
+    var onGather: (() -> Void)? { didSet { gatherBtn.isHidden = onGather == nil } }
+    private let gatherBtn = NSButton(title: "모으기", target: nil, action: nil)
+    private let chev = NSImageView()
     private let name: NSTextField, info: NSTextField
     private let play = NSButton(), minus = NSButton(), edit = NSButton()
     override var isFlipped: Bool { true }
@@ -837,7 +992,19 @@ final class AlbumGroupHead: NSView {
             addSubview(b)
         }
         edit.isHidden = true
+        gatherBtn.bezelStyle = .recessed; gatherBtn.controlSize = .small; gatherBtn.font = .systemFont(ofSize: 10.5)
+        gatherBtn.toolTip = "이 앨범 곡들이 플레이리스트에서 떨어져 있어요 — 누르면 첫 곡 자리에 한데 모아요"
+        gatherBtn.target = self; gatherBtn.action = #selector(gatherTapped)
+        gatherBtn.isHidden = true
+        addSubview(gatherBtn)
+        chev.image = NSImage(systemSymbolName: "chevron.down", accessibilityDescription: nil)
+        chev.contentTintColor = .secondaryLabelColor
+        chev.symbolConfiguration = .init(pointSize: 9, weight: .bold)
+        addSubview(chev)
+        toolTip = "누르면 이 앨범 곡들을 접거나 펼쳐요"
     }
+    override func mouseDown(with event: NSEvent) { }
+    override func mouseUp(with event: NSEvent) { if bounds.contains(convert(event.locationInWindow, from: nil)) { onToggle?() } }
     required init?(coder: NSCoder) { fatalError() }
     override func layout() {
         super.layout()
@@ -846,9 +1013,15 @@ final class AlbumGroupHead: NSView {
         play.frame = NSRect(x: w - 54, y: 6, width: 20, height: 20)
         edit.frame = NSRect(x: w - 78, y: 6, width: 20, height: 20)
         info.sizeToFit()
-        let left = edit.isHidden ? play.frame.minX : edit.frame.minX
+        var left = edit.isHidden ? play.frame.minX : edit.frame.minX
+        if !gatherBtn.isHidden {
+            gatherBtn.sizeToFit()
+            gatherBtn.frame = NSRect(x: left - 6 - gatherBtn.frame.width, y: 6, width: gatherBtn.frame.width, height: 19)
+            left = gatherBtn.frame.minX
+        }
         info.frame = NSRect(x: left - 6 - info.frame.width, y: 9, width: info.frame.width, height: 15)
-        name.frame = NSRect(x: 8, y: 8, width: max(40, info.frame.minX - 16), height: 17)
+        chev.frame = NSRect(x: 8, y: 9, width: 12, height: 13)
+        name.frame = NSRect(x: 24, y: 8, width: max(40, info.frame.minX - 32), height: 17)
     }
     override func draw(_ dirtyRect: NSRect) {
         NSColor.labelColor.withAlphaComponent(0.06).setFill()
@@ -856,6 +1029,7 @@ final class AlbumGroupHead: NSView {
     }
     @objc private func playTapped() { onPlay?() }
     @objc private func editTapped() { onEdit?() }
+    @objc private func gatherTapped() { onGather?() }
     @objc private func removeTapped() { onRemove?() }
 }
 
@@ -863,8 +1037,11 @@ final class AlbumGroupHead: NSView {
 @MainActor
 final class AlbumEditRow: NSView {
     static let height: CGFloat = 28
-    enum State { case have, add, working }
+    enum State { case have, add, working, other }
     var onButton: (() -> Void)?
+    /// 줄을 누르면 (수록곡 들어 보기)
+    var onPlay: (() -> Void)?
+    private var hover = false { didSet { needsDisplay = true } }
     private let btn = NSButton()
     override var isFlipped: Bool { true }
     private var labels: [NSTextField] = []
@@ -883,7 +1060,7 @@ final class AlbumEditRow: NSView {
         }
     }
     /// 수록곡 한 곡
-    init(number: Int, song q: QueueItem, state: State) {
+    init(number: Int, song q: QueueItem, state: State, otherAlbum: String = "") {
         self.state = state
         super.init(frame: .zero)
         let n = NSTextField(labelWithString: "\(number)")
@@ -896,10 +1073,13 @@ final class AlbumEditRow: NSView {
         for v in [n, t, d] { addSubview(v) }
         labels = [n, t, d]
         btn.isBordered = false
-        btn.image = NSImage(systemSymbolName: state == .have ? "checkmark.circle.fill" : state == .working ? "ellipsis.circle" : "plus.circle.fill", accessibilityDescription: nil)
-        btn.contentTintColor = state == .have ? .systemGreen : .launcherAccent
-        btn.toolTip = state == .have ? "이미 들어 있어요" : state == .working ? "넣는 중…" : "이 플레이리스트의 앨범 묶음 끝에 넣기"
-        btn.isEnabled = state == .add
+        btn.image = NSImage(systemSymbolName: state == .have ? "checkmark.circle.fill" : state == .working ? "ellipsis.circle" : state == .other ? "arrow.triangle.2.circlepath.circle.fill" : "plus.circle.fill", accessibilityDescription: nil)
+        btn.contentTintColor = state == .have ? .systemGreen : state == .other ? .systemOrange : .launcherAccent
+        btn.toolTip = state == .have ? "들어 있어요 — 누르면 플레이리스트에서 빼기 (되돌리기 가능)" : state == .working ? "넣는 중…"
+            : state == .other ? "다른 앨범 버전(‘\(otherAlbum)’)으로 들어 있어요 — 누르면 이 앨범 버전으로 바꿔 이 묶음에 넣기" : "이 플레이리스트의 앨범 묶음 끝에 넣기"
+        btn.isEnabled = state != .working
+        toolTip = "누르면 이 곡만 들어 보기"
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
         btn.target = self; btn.action = #selector(tapped)
         addSubview(btn)
     }
@@ -922,6 +1102,16 @@ final class AlbumEditRow: NSView {
         // 펼친 편집 칸: 왼쪽에 옅은 세로 줄
         NSColor.launcherAccent.withAlphaComponent(0.35).setFill()
         NSRect(x: 10, y: 0, width: 2, height: bounds.height).fill()
+        if hover && state != nil {
+            NSColor.labelColor.withAlphaComponent(0.07).setFill()
+            NSBezierPath(roundedRect: bounds.insetBy(dx: 14, dy: 1), xRadius: 5, yRadius: 5).fill()
+        }
+    }
+    override func mouseEntered(with event: NSEvent) { hover = true }
+    override func mouseExited(with event: NSEvent) { hover = false }
+    override func mouseDown(with event: NSEvent) { }
+    override func mouseUp(with event: NSEvent) {
+        if state != nil, bounds.contains(convert(event.locationInWindow, from: nil)) { onPlay?() }
     }
     @objc private func tapped() { onButton?() }
 }
