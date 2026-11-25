@@ -844,6 +844,8 @@ final class EdgeResizer: NSView {
     var onBegin: (() -> Void)?
     var onDrag: ((CGFloat) -> Void)?      // 처음 누른 곳에서 오른쪽(세로면 아래쪽)으로 움직인 거리
     var onReset: (() -> Void)?
+    /// 손을 뗐을 때
+    var onEnd: (() -> Void)?
     /// true 면 위아래로 끌어서 높이 조절
     var vertical = false
     private var cursor: NSCursor { vertical ? .resizeUpDown : .resizeLeftRight }
@@ -880,6 +882,7 @@ final class EdgeResizer: NSView {
             }
         }
         NSCursor.pop()
+        onEnd?()
     }
 }
 
@@ -891,6 +894,8 @@ final class FrameResizer: NSView {
     var onBegin: (() -> Void)?
     var onDrag: ((CGFloat, CGFloat) -> Void)?   // 처음 누른 곳에서 마우스가 움직인 거리 (x 오른쪽 +, y 위 +)
     var onReset: (() -> Void)?
+    /// 손을 뗐을 때
+    var onEnd: (() -> Void)?
     init(_ e: Edges) { edges = e; super.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError() }
     private var cursor: NSCursor {
@@ -935,6 +940,7 @@ final class FrameResizer: NSView {
             }
         }
         NSCursor.pop()
+        onEnd?()
         OnScreen.fix(w)
     }
 }
@@ -1272,34 +1278,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.contentTintColor = .secondaryLabelColor
         return b
     }()
-    /// 조작할 때 투명도 (마우스를 올렸을 때 · 뒤쪽 클릭이면 ⌘ 를 누를 때) — 평소는 playerAlpha
+    /// 조작할 때 투명도 (마우스를 올렸을 때 · 뒤쪽 클릭이면 🔒 를 풀었을 때) — 평소는 playerAlpha
     var playerAlphaActive: CGFloat {
         get { let v = d.double(forKey: "playerAlphaActive"); return v >= 0.4 && v <= 1 ? CGFloat(v) : 1 }
         set { d.set(Double(newValue), forKey: "playerAlphaActive") }
     }
-    /// 지금 조작 중인지 (마우스가 창 위 · 뒤쪽 클릭이면 ⌘ 도)
+    /// 지금 조작 중인지 (마우스가 창 위 · 뒤쪽 클릭이면 🔒 를 풀었을 때)
     private var playerActive: Bool {
         guard let p = playerPanel, p.isVisible else { return false }
         let inside = NSMouseInRect(NSEvent.mouseLocation, p.frame, false)
-        return inside && (!playerClickThrough || NSEvent.modifierFlags.contains(.command))
+        return inside && (!playerClickThrough || playerUnlocked)
     }
-    /// 창을 뚫고 뒤쪽 클릭 (⌘ 를 누르고 있는 동안만 플레이어를 조작 — ⌥-클릭은 macOS 가 앞에 쓰던 앱을 숨겨서 ⌘ 로)
+    /// 창을 뚫고 뒤쪽 클릭 (맨 위 🔒 를 눌러 풀어야 조작 — 키를 쓰면 게임(Wine)이 Alt 등으로 받아서 키 없이)
     var playerClickThrough: Bool {
         get { d.bool(forKey: "playerClickThrough") }
         set { d.set(newValue, forKey: "playerClickThrough"); applyClickThrough() }
     }
     private var clickTimer: Timer?
-    /// 켜져 있으면 0.1초마다 ⌘ 를 보고 마우스를 받을지 정함 (권한 없이 키 상태만 읽음)
+    /// 뒤쪽 클릭 중 🔒 를 눌러 잠깐 풀었는지 (마우스가 창 밖으로 나가면 다시 잠금) — 키를 안 써서 게임에 아무 신호도 안 감
+    var playerUnlocked = false
+    /// 🔒 손잡이: 마우스를 통과시키는 플레이어 창 위에 얹는 작은 창 (이것만 눌림) — 맨 위 줄 가운데 막대 자리
+    private lazy var unlockPanel: NSPanel = {
+        let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 44, height: 20), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        p.isOpaque = false
+        p.backgroundColor = .clear
+        p.hasShadow = false
+        p.hidesOnDeactivate = false
+        p.isReleasedWhenClosed = false
+        p.collectionBehavior = [.canJoinAllSpaces, .ignoresCycle]
+        let b = ActionButton(title: "", symbol: "lock.fill") { [unowned self] _ in
+            playerUnlocked = true
+            playerPanel?.ignoresMouseEvents = false
+            syncUnlockHandle()
+        }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
+        b.contentTintColor = .launcherAccent
+        b.toolTip = "눌러서 잠깐 풀기 — 플레이어를 조작할 수 있어요 (마우스가 창 밖으로 나가면 다시 잠겨요)"
+        b.wantsLayer = true
+        b.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.35).cgColor
+        b.layer?.cornerRadius = 9
+        b.frame = NSRect(x: 0, y: 0, width: 44, height: 20)
+        p.contentView = b
+        return p
+    }()
+    /// 🔒 손잡이 보이기 · 자리 (잠겨 있을 때만, 맨 위 줄 가운데)
+    func syncUnlockHandle() {
+        guard let pp = playerPanel else { return }
+        let show = playerClickThrough && !playerUnlocked && pp.isVisible
+        if show {
+            let f = pp.frame
+            unlockPanel.setFrame(NSRect(x: f.midX - 22, y: f.maxY - 23, width: 44, height: 20), display: false)
+            if unlockPanel.parent !== pp { unlockPanel.parent?.removeChildWindow(unlockPanel); pp.addChildWindow(unlockPanel, ordered: .above) }
+            unlockPanel.level = pp.level
+            if !unlockPanel.isVisible { unlockPanel.orderFront(nil) }
+        } else if unlockPanel.isVisible {
+            pp.removeChildWindow(unlockPanel)
+            unlockPanel.orderOut(nil)
+        }
+    }
+    /// 켜져 있으면 0.1초마다 풀림 · 마우스 위치를 보고 마우스를 받을지 정함
     /// 뒤쪽 클릭 · 평소/조작할 때 투명도가 필요할 때만 0.1초마다 확인
     func applyClickThrough() {
         clickTimer?.invalidate(); clickTimer = nil
-        if !playerClickThrough { playerPanel?.ignoresMouseEvents = false }
+        if !playerClickThrough { playerPanel?.ignoresMouseEvents = false; playerUnlocked = false; syncUnlockHandle() }
         guard playerClickThrough || abs(playerAlpha - playerAlphaActive) > 0.01 else { playerPanel?.alphaValue = playerAlpha; return }
         var shown: CGFloat = -1
         let update = { [weak self] in
             guard let self, let p = self.playerPanel else { return }
             if self.playerClickThrough {
-                let pass = !NSEvent.modifierFlags.contains(.command)
+                // 잠겨 있으면 마우스를 통과, 🔒 로 풀었으면 조작 — 마우스가 창 밖으로 나가면 다시 잠금
+            let inside = NSMouseInRect(NSEvent.mouseLocation, p.frame.insetBy(dx: -6, dy: -6), false)
+            if self.playerUnlocked && !inside { self.playerUnlocked = false }
+            let pass = !self.playerUnlocked
+            self.syncUnlockHandle()
                 if p.ignoresMouseEvents != pass { p.ignoresMouseEvents = pass }
             }
             // 조작할 때 ↔ 평소 투명도 (부드럽게)
@@ -1358,7 +1410,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ct.target = ctAction; ct.action = #selector(ActionTarget.fire)
         objc_setAssociatedObject(ct, "act", ctAction, .OBJC_ASSOCIATION_RETAIN)
         v.addSubview(ct)
-        let hint = NSTextField(labelWithString: "켜 두면 ⌘(command) 를 누르고 있는 동안만 이 창을 조작해요")
+        let hint = NSTextField(labelWithString: "켜 두면 맨 위 🔒 를 눌러 풀어야 조작해요 (창 밖으로 나가면 다시 잠김)")
         hint.font = .systemFont(ofSize: 10); hint.textColor = .tertiaryLabelColor
         hint.frame = NSRect(x: 28, y: 10, width: W - 36, height: 14)
         v.addSubview(hint)
@@ -2172,7 +2224,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         p.collectionBehavior = widget ? [.canJoinAllSpaces, .stationary, .ignoresCycle, .fullScreenNone] : []
         // 화면 끝에 접어 둔 상태면 다시 띄우지 않음
-        if EdgeDock.dock(for: p)?.collapsed != true { p.orderFrontRegardless() }
+        // 이미 떠 있으면 다시 '맨 앞으로' 보내지 않음 (게임(Wine) 등이 포커스가 바뀐 줄 알고 키 상태를 다시 읽던 문제)
+        if EdgeDock.dock(for: p)?.collapsed != true, !p.isVisible { p.orderFrontRegardless() }
     }
 
     lazy var lyrics: LyricsController = {
@@ -2261,8 +2314,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let f = playerPanel?.frame ?? .zero
             widthStart = (f.width, f.minX, f.maxX)
         }
+        r.onEnd = { [unowned self] in showLimit(false) }
         r.onDrag = { [unowned self] dx in
-            let v = max(Self.minWidth, (widthStart.w + (left ? -dx : dx)).rounded())
+            let raw = (widthStart.w + (left ? -dx : dx)).rounded()
+            showLimit(raw < (BigPlayerView.enabled ? max(Self.minWidth, BigPlayerView.minWidth) : Self.minWidth))
+            let v = max(Self.minWidth, raw)
             guard abs(v - (detachedWidth ?? widthStart.w)) >= 3 else { return }
             detachedWidth = v
             d.set(Double(v), forKey: "detachedWidth")
@@ -2282,7 +2338,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let r = EdgeResizer(frame: .zero)
         r.vertical = true
         r.onBegin = { [unowned self] in bigHStart = BigPlayerView.userHeight }
+        r.onEnd = { [unowned self] in showLimit(false) }
         r.onDrag = { [unowned self] dy in
+            showLimit((bigHStart + dy).rounded() < BigPlayerView.height)
             // 화면 아래를 넘지 않게
             let room = (playerPanel.flatMap { p in (p.screen ?? NSScreen.main).map { p.frame.minY - $0.visibleFrame.minY } } ?? 0)
             let maxH = BigPlayerView.userHeight + max(0, room)
@@ -2299,6 +2357,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     lazy var detachedLeft = detachedResizer(left: true)
     lazy var detachedRight = detachedResizer(left: false)
+    /// 최소 크기에 닿으면 플레이어 창 테두리를 붉게 (손을 떼면 사라짐)
+    private lazy var limitBorder: NSView = {
+        let v = PassView()
+        v.wantsLayer = true
+        v.layer?.borderColor = NSColor.systemRed.withAlphaComponent(0.85).cgColor
+        v.layer?.borderWidth = 2.5
+        v.layer?.cornerRadius = Theme.playerRadius
+        v.isHidden = true
+        return v
+    }()
+    func showLimit(_ on: Bool) {
+        guard let fx = playerPanel?.contentView else { return }
+        if limitBorder.superview !== fx { fx.addSubview(limitBorder) }
+        limitBorder.frame = fx.bounds
+        guard limitBorder.isHidden == on else { return }
+        if on { limitBorder.removeFromSuperview(); fx.addSubview(limitBorder) }   // 맨 위에
+        limitBorder.isHidden = !on
+        if on { NSHapticFeedbackManager.defaultPerformer.perform(.alignment, performanceTime: .now) }
+    }
     /// 아래 두 모서리: 대각선으로 끌어 폭 · 높이를 한 번에 (높이는 크게 보기일 때만 — 작게 보기는 내용에 맞춤)
     lazy var detachedCorners: [FrameResizer] = [true, false].map { detachedCorner(left: $0) }
     private func detachedCorner(left: Bool) -> FrameResizer {
@@ -2308,9 +2385,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             widthStart = (f.width, f.minX, f.maxX)
             bigHStart = BigPlayerView.userHeight
         }
+        r.onEnd = { [unowned self] in showLimit(false) }
         r.onDrag = { [unowned self] dx, dy in
             var changed = false
-            let w = max(Self.minWidth, (widthStart.w + (left ? -dx : dx)).rounded())
+            let rawW = (widthStart.w + (left ? -dx : dx)).rounded()
+            let minW = BigPlayerView.enabled ? max(Self.minWidth, BigPlayerView.minWidth) : Self.minWidth
+            var atMin = rawW < minW
+            if BigPlayerView.enabled, (bigHStart - dy).rounded() < BigPlayerView.height { atMin = true }
+            showLimit(atMin)
+            let w = max(Self.minWidth, rawW)
             if abs(w - (detachedWidth ?? widthStart.w)) >= 3 { detachedWidth = w; d.set(Double(w), forKey: "detachedWidth"); changed = true }
             if BigPlayerView.enabled {
                 let room = (playerPanel.flatMap { p in (p.screen ?? NSScreen.main).map { p.frame.minY - $0.visibleFrame.minY } } ?? 0)
@@ -3923,7 +4006,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 플레이어 창의 YouTube Music 단추로 접었으면 여기서 다시 열기
             let open = showPlayer && playerDetached && !playerHidden
             m.addItem(Item(open ? "    플레이어 창 접기" : "    플레이어 창 열기") { [unowned self] in togglePlayerWindow() })
-            let ct = Item("    플레이어 창을 뚫고 뒤쪽 클릭 (⌘ 누르면 조작)") { [unowned self] in playerClickThrough.toggle(); refresh() }
+            let ct = Item("    플레이어 창을 뚫고 뒤쪽 클릭 (맨 위 🔒 로 풀기)") { [unowned self] in playerClickThrough.toggle(); refresh() }
             ct.state = playerClickThrough ? .on : .off
             m.addItem(ct)
         }
@@ -4522,3 +4605,6 @@ final class ActionTarget: NSObject {
     init(_ run: @escaping () -> Void) { self.run = run }
     @objc func fire() { run() }
 }
+
+/// 마우스를 통과시키는 판 (테두리 표시 등)
+final class PassView: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
