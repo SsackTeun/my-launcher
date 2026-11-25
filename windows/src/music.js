@@ -1154,7 +1154,12 @@ async function loadPlaylists(force) {
 let plGroup = false; // 앨범별로 묶어 보기
 try { plGroup = localStorage.getItem("mzPlGroup") === "1"; } catch { /* 없음 */ }
 let plUndo = null;   // { pid, entries: [{ t, after }], label } — 방금 뺀 곡 · 앨범 되돌리기
-let plEdit = null;   // 앨범 편집 중인 묶음 (그 묶음 첫 곡의 자리 ID)
+// ✎ 빠진 곡 보기를 켜 둔 앨범 묶음 (플레이리스트 | 앨범, 기억) — 켜면 앨범의 빠진 곡이 묶음 안 제자리에 투명한 줄로
+let plGhost = new Set();
+try { plGhost = new Set(JSON.parse(localStorage.getItem("mzPlGhost") || "[]")); } catch { /* 없음 */ }
+const saveGhost = () => { try { localStorage.setItem("mzPlGhost", JSON.stringify([...plGhost])); } catch { /* 없음 */ } };
+const ghostLoading = new Set(); // 수록곡 읽는 중인 앨범
+const ghostFailed = new Set();  // 수록곡을 못 읽은 앨범
 let plGroups = [];   // 화면의 앨범 묶음들 (곡 번호 목록)
 let plAuto = false;  // 재생 중인 앨범만 펼치기
 const plFlip = new Set(); // 재생 중인 앨범만 펼치기에서 머리줄을 눌러 반대로 둔 묶음 (곡이 바뀌면 비움)
@@ -1197,11 +1202,18 @@ function drawTracks() {
       const ck = groupKey(t0), playing = idx.some((k) => plTracks[k].t === curT);
       const collapsed = plAuto ? playing === plFlip.has(ck) : plCollapsed.has(ck);
       const list = idx.map((k) => plTracks[k]);
-      rows += `<div class="mz-ahead ${playing ? "playing" : ""}" data-g="${gi}" title="누르면 접거나 펼쳐요"><span class="mz-chev2">${collapsed ? "▸" : "▾"}</span><b title="${esc(t0.al)}">${playing ? "🔊 " : ""}${esc(t0.al || "앨범 정보 없음 (영상 등)")}</b><small>${list.length}곡 · ${hms(list.reduce((a, x) => a + secsOf(x.d), 0))}</small>
-        <span class="mz-sp"></span>${scattered && t0.al ? '<button class="pl-open ghost mz-gather" data-ggather="1" title="이 앨범 곡들이 플레이리스트에서 떨어져 있어요 — 누르면 첫 곡 자리에 한데 모아요">모으기</button>' : ""}${t0.alid ? `<button class="mz-aplay ${plEdit === t0.s ? "on" : ""}" data-gedit="1" title="앨범 편집 — 이 앨범의 전체 수록곡을 보고 빠진 곡 넣기">✎</button>` : ""}<button class="mz-aplay" data-gplay="1" title="이 앨범부터 재생">▶</button><button class="mz-x" data-gx="1" title="이 앨범 곡을 모두 플레이리스트에서 빼기 — 두 번 눌러요 (되돌리기 가능)">⊖</button></div>`;
+      const ghostOn = !!t0.alid && plGhost.has(ck);
+      const G = ghostOn ? albumGhosts(gi) : null;
+      const gnote = !G ? "" : G.loading ? " · 수록곡 읽는 중…" : !G.songs.length ? " · 수록곡을 찾지 못했어요"
+        : G.missing.length ? ` · <span class="mz-miss">${G.missing.length}곡 빠짐</span>` : G.swap.length ? ` · <span class="mz-miss">다른 앨범 버전 ${G.swap.length}곡</span>` : ` · 앨범 ${G.songs.length}곡 모두 있어요`;
+      const gbtn = !G || G.loading ? "" : G.missing.length ? `<button class="pl-open ghost mz-gather" data-eadd="${gi}:-1" title="빠진 곡 ${G.missing.length}개를 앨범 순서 자리에 모두 넣기">＋ 모두 넣기</button>`
+        : G.swap.length ? `<button class="pl-open ghost mz-gather" data-eswap="${gi}:-1" title="다른 앨범 버전으로 들어 있는 곡을 이 앨범 버전으로 모두 바꾸기 (되돌리기 가능)">⇄ 모두 바꾸기</button>` : "";
+      rows += `<div class="mz-ahead ${playing ? "playing" : ""}" data-g="${gi}" title="누르면 접거나 펼쳐요"><span class="mz-chev2">${collapsed ? "▸" : "▾"}</span><b title="${esc(t0.al)}">${playing ? "🔊 " : ""}${esc(t0.al || "앨범 정보 없음 (영상 등)")}</b><small>${list.length}곡 · ${hms(list.reduce((a, x) => a + secsOf(x.d), 0))}${gnote}</small>
+        <span class="mz-sp"></span>${gbtn}${scattered && t0.al ? '<button class="pl-open ghost mz-gather" data-ggather="1" title="이 앨범 곡들이 플레이리스트에서 떨어져 있어요 — 누르면 첫 곡 자리에 한데 모아요">모으기</button>' : ""}${t0.alid ? `<button class="mz-aplay ${ghostOn ? "on" : ""}" data-gedit="1" title="${ghostOn ? "빠진 곡 숨기기" : "빠진 곡 보기 — 이 앨범에서 플레이리스트에 없는 곡을 제자리에 흐리게 보여 줘요"}">✎</button>` : ""}<button class="mz-aplay" data-gplay="1" title="이 앨범부터 재생">▶</button><button class="mz-x" data-gx="1" title="이 앨범 곡을 모두 플레이리스트에서 빼기 — 두 번 눌러요 (되돌리기 가능)">⊖</button></div>`;
       if (!collapsed) {
-        rows += idx.map((k) => row(plTracks[k], k)).join("");
-        if (plEdit === t0.s && t0.alid) rows += albumEditor(gi);
+        // 빠진 곡: 앨범 순서에서 바로 앞 곡 뒤에 투명한 줄로 (앞 곡이 없으면 묶음 맨 위)
+        const gh = G && !G.loading ? ghostRows(G, gi, t0) : null;
+        rows += (gh?.get(-1) || "") + idx.map((k) => row(plTracks[k], k) + (gh?.get(k) || "")).join("");
       }
     }
   } else rows = plTracks.map(row).join("");
@@ -1240,12 +1252,13 @@ function drawTracks() {
     addTo(plSel, l?.t || "", [v], []);
   };
   main.querySelector(".mz-pl-tracks").onclick = (e) => {
+    if (ghostClick(e)) return;
     const h = e.target.closest("[data-g]");
     if (h) {
       const idx = plGroups[+h.dataset.g] || [], t0 = plTracks[idx[0]];
       if (!t0) return;
       if (e.target.closest("[data-gplay]")) playList(plSel, t0.v);
-      else if (e.target.closest("[data-gedit]")) { plEdit = plEdit === t0.s ? null : t0.s; drawTracks(); }
+      else if (e.target.closest("[data-gedit]")) { const ck = groupKey(t0); plGhost.has(ck) ? plGhost.delete(ck) : plGhost.add(ck); saveGhost(); drawTracks(); }
       else if (e.target.closest("[data-gx]")) {
         // 두 번 누르기: 한 번 누르면 '한 번 더 누르면 빼요' (3초), 그 안에 다시 누르면 앨범째 뺌 — 묻는 창 없이 실수 방지
         const b = e.target.closest("[data-gx]");
@@ -1266,21 +1279,6 @@ function drawTracks() {
       }
       return;
     }
-    const ed = e.target.closest("[data-eadd],[data-erm],[data-eplay],[data-eswap]");
-    if (ed) {
-      const [gi, k] = (ed.dataset.eadd || ed.dataset.erm || ed.dataset.eswap || ed.dataset.eplay).split(":").map(Number);
-      const t0 = plTracks[(plGroups[gi] || [])[0]];
-      const songs = (t0 && albumTrackCache.get(t0.alid)?.out) || [];
-      if (ed.dataset.eswap) {
-        // ⇄ 이 앨범 버전으로: 이 묶음에 넣고 원래 버전은 뺌 (되돌리기로 원래 버전 되살림)
-        const list = (k < 0 ? songs : [songs[k]]).filter((x) => x && !plTracks.some((t) => t.v === x.v) && otherVersions(x, t0.alid).length);
-        const olds = list.flatMap((x) => otherVersions(x, t0.alid));
-        if (list.length) { addToGroup(list, gi); removeTracks(olds, olds.length === 1 ? `‘${olds[0].t.slice(0, 12)}’` : `${olds.length}곡`); }
-      } else if (ed.dataset.eadd) addToGroup(k < 0 ? songs.filter((x) => !inPlaylist(x)) : [songs[k]], gi);
-      else if (ed.dataset.erm) { const ts = plTracks.filter((t) => !t.s.startsWith("pending-") && (t.v === songs[k].v || normT(t.t) === normT(songs[k].t))); if (ts.length) removeTracks(ts, `‘${songs[k].t.slice(0, 12)}’`); }
-      else if (songs[k]) playVideos([songs[k].v]);
-      return;
-    }
     const row = e.target.closest("[data-k]");
     if (!row) return;
     const t = plTracks[+row.dataset.k];
@@ -1293,40 +1291,83 @@ const normT = (t) => String(t || "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, ""
 function inPlaylist(x) { return plTracks.some((t) => t.v === x.v || normT(t.t) === normT(x.t)); }
 /// 다른 앨범 버전으로 들어 있는 곡 (제목만 같고 곡 · 앨범이 다름)
 function otherVersions(x, aid) { return plTracks.filter((t) => t.v !== x.v && normT(t.t) === normT(x.t) && t.alid !== aid && !t.s.startsWith("pending-")); }
-function albumEditor(gi) {
-  const t0 = plTracks[plGroups[gi][0]];
-  const aid = t0.alid;
-  const got = albumTrackCache.get(aid);
+/// 앨범의 빠진 곡 · 다른 앨범 버전으로 들어 있는 곡, 그리고 각 곡이 들어갈 자리 (앞 곡의 플레이리스트 번호, -1 = 묶음 맨 위)
+function albumGhosts(gi) {
+  const idx = plGroups[gi] || [];
+  const t0 = plTracks[idx[0]];
+  const aid = t0 && t0.alid;
+  const got = aid && albumTrackCache.get(aid);
   if (!got) {
-    call("albumTracks", { id: aid }, 30).then((r) => { albumTrackCache.set(aid, r); if (tab === 3) drawTracks(); }).catch(() => {});
-    return `<div class="mz-aedit"><span class="mz-note">수록곡 불러오는 중…</span></div>`;
+    if (ghostFailed.has(aid)) return { songs: [], missing: [], swap: [], anchor: new Map() };
+    if (aid && !ghostLoading.has(aid)) {
+      ghostLoading.add(aid);
+      // 못 읽으면 캐시는 비워 두고(다른 곳에서 다시 읽게) 여기서만 '찾지 못했어요'
+      call("albumTracks", { id: aid }, 30).then((r) => albumTrackCache.set(aid, r)).catch(() => ghostFailed.add(aid))
+        .finally(() => { ghostLoading.delete(aid); if (tab === 3) drawTracks(); });
+    }
+    return { loading: true };
   }
   const songs = got.out || [];
-  if (!songs.length) return `<div class="mz-aedit"><span class="mz-note">수록곡을 찾지 못했어요</span></div>`;
-  const missing = songs.filter((x) => !inPlaylist(x));
-  const swap = songs.filter((x) => otherVersions(x, aid).length && !plTracks.some((t) => t.v === x.v));
-  const note = (missing.length ? `앨범 ${songs.length}곡 중 ${missing.length}곡이 빠져 있어요 — ＋ 로 넣기 · 줄을 누르면 들어 보기` : `앨범 ${songs.length}곡이 모두 들어 있어요`) + (swap.length ? ` · 다른 앨범 버전 ${swap.length}곡 ⇄` : "");
-  return `<div class="mz-aedit"><span class="mz-note">${note}</span><span class="mz-sp"></span>
-      ${missing.length ? `<button class="pl-open ghost" data-eadd="${gi}:-1">모두 넣기</button>` : swap.length ? `<button class="pl-open ghost" data-eswap="${gi}:-1">모두 바꾸기</button>` : ""}</div>` +
-    songs.map((x, k) => {
-      const have = inPlaylist(x), busy = plTracks.some((t) => t.s === "pending-" + x.v);
-      const other = !plTracks.some((t) => t.v === x.v) ? otherVersions(x, aid) : [];
-      return `<div class="mz-aedit song ${have ? "have" : ""}" data-eplay="${gi}:${k}" title="누르면 이 곡만 들어 보기"><span class="mz-num">${k + 1}</span><span class="mz-t"><b>${esc(trimAlbum(x.t, t0.al))}</b></span><span class="mz-d">${esc(x.d)}</span>
-        ${busy ? '<span class="mz-add" title="넣는 중…">…</span>' : other.length ? `<button class="mz-add swap" data-eswap="${gi}:${k}" title="다른 앨범 버전(‘${esc(other[0].al)}’)으로 들어 있어요 — 누르면 이 앨범 버전으로 바꿔 이 묶음에 넣기">⇄</button>` : have ? `<button class="mz-add done" data-erm="${gi}:${k}" title="들어 있어요 — 누르면 플레이리스트에서 빼기 (되돌리기 가능)">✓</button>` : `<button class="mz-add" data-eadd="${gi}:${k}" title="이 플레이리스트의 앨범 묶음 끝에 넣기">＋</button>`}</div>`;
-    }).join("");
+  const match = (t, x) => t.v === x.v || normT(t.t) === normT(x.t);
+  const missing = [], swap = [], anchor = new Map();
+  songs.forEach((x, j) => {
+    const other = plTracks.some((t) => t.v === x.v) ? [] : otherVersions(x, aid);
+    const miss = !inPlaylist(x);
+    if (!miss && !other.length) return;
+    (miss ? missing : swap).push(x);
+    let at = -1;
+    for (let p = j - 1; p >= 0 && at < 0; p--) { const k = idx.find((k) => match(plTracks[k], songs[p])); if (k !== undefined) at = k; }
+    anchor.set(x.v, at);
+  });
+  return { songs, missing, swap, anchor };
 }
-/// 곡들을 플레이리스트에 넣고 그 앨범 묶음 바로 뒤로 옮김 (앨범 순서대로)
-/// 화면엔 바로 ✓ (임시 자리 ID 'pending-…' 로 끼워 둠), 서버는 뒤에서 — 끝나면 진짜 자리 ID 로 바꿈
-async function addToGroup(songs, gi) {
+/// 빠진 곡 줄들: 앞 곡 번호 → 그 뒤에 붙일 투명한 줄 HTML
+function ghostRows(G, gi, t0) {
+  const m = new Map();
+  G.songs.forEach((x, j) => {
+    if (!G.anchor.has(x.v)) return;
+    const at = G.anchor.get(x.v);
+    const other = G.swap.includes(x) ? otherVersions(x, t0.alid) : [];
+    const html = `<div class="mz-row ghost" data-eplay="${gi}:${j}" title="앨범 ${j + 1}번 곡 · 플레이리스트에 없어요 — 줄을 누르면 이 곡만 들어 보기">
+      <span class="mz-noimg">${j + 1}</span><span class="mz-t"><b>${esc(trimAlbum(x.t, t0.al))}</b><small>${other.length ? `다른 앨범 버전(‘${esc(other[0].al)}’)으로 들어 있어요` : "빠진 곡"}</small></span><span class="mz-d">${esc(x.d)}</span>
+      ${other.length ? `<button class="mz-add swap" data-eswap="${gi}:${j}" title="이 앨범 버전으로 바꿔 이 자리에 넣기 (원래 버전은 빼요 · 되돌리기 가능)">⇄</button>` : `<button class="mz-add" data-eadd="${gi}:${j}" title="이 자리에 넣기">＋</button>`}</div>`;
+    m.set(at, (m.get(at) || "") + html);
+  });
+  return m;
+}
+/// 빠진 곡 줄 · 머리줄의 ＋ / ⇄ / 들어 보기. 처리했으면 true
+function ghostClick(e) {
+  const ed = e.target.closest("[data-eadd],[data-eplay],[data-eswap]");
+  if (!ed) return false;
+  const [gi, k] = (ed.dataset.eadd || ed.dataset.eswap || ed.dataset.eplay).split(":").map(Number);
+  const t0 = plTracks[(plGroups[gi] || [])[0]];
+  const G = t0 ? albumGhosts(gi) : null;
+  if (!G || G.loading) return true;
+  const songs = G.songs;
+  if (ed.dataset.eswap) {
+    // ⇄ 이 앨범 버전으로: 제자리에 넣고 원래 버전은 뺌 (되돌리기로 원래 버전 되살림)
+    const list = k < 0 ? G.swap : [songs[k]];
+    const olds = list.flatMap((x) => otherVersions(x, t0.alid));
+    if (list.length) { addToGroup(list, gi, G.anchor); removeTracks(olds, olds.length === 1 ? `‘${olds[0].t.slice(0, 12)}’` : `${olds.length}곡`); }
+  } else if (ed.dataset.eadd) addToGroup(k < 0 ? G.missing : [songs[k]], gi, G.anchor);
+  else if (songs[k]) playVideos([songs[k].v]);
+  return true;
+}
+/// 곡들을 플레이리스트에 넣고 제자리로 옮김 — anchor(곡 ID → 앞 곡 번호, -1 = 묶음 맨 위)가 있으면 그 뒤, 없으면 묶음 끝
+/// 화면엔 바로 (임시 자리 ID 'pending-…' 로 끼워 둠), 서버는 뒤에서 — 끝나면 진짜 자리 ID 로 바꿈
+async function addToGroup(songs, gi, anchor) {
   const pid = plSel;
   const idx = plGroups[gi] || [];
   const t0 = plTracks[idx[0]];
   const add = songs.filter((x) => x && x.v && !plTracks.some((t) => t.v === x.v));
   if (!t0 || !add.length) return;
   const last = idx[idx.length - 1];
-  const before = plTracks.slice(last + 1).find((t) => !t.s.startsWith("pending-"))?.s || null;
   const pend = add.map((x) => ({ t: x.t, a: t0.a, d: x.d, v: x.v, s: "pending-" + x.v, th: "", al: t0.al, alid: t0.alid }));
-  plTracks.splice(last + 1, 0, ...pend);
+  // 뒤 자리부터 끼워야 앞 번호가 안 밀림 (같은 자리면 앨범 순서가 되게 뒤 곡부터)
+  const at = (x) => (anchor && anchor.has(x.v) ? (anchor.get(x.v) < 0 ? idx[0] : anchor.get(x.v) + 1) : last + 1);
+  pend.map((t, n) => ({ t, n, pos: at(add[n]) })).sort((p, q) => q.pos - p.pos || q.n - p.n).forEach((p) => plTracks.splice(p.pos, 0, p.t));
+  // 각 곡을 옮길 기준: 바로 뒤의 진짜 곡 (없으면 맨 끝이라 안 옮김)
+  const before = pend.map((t) => plTracks.slice(plTracks.indexOf(t) + 1).find((x) => !x.s.startsWith("pending-"))?.s || null);
   drawTracks();
   let m = null;
   try { m = await call("addIds", { pid, vids: add.map((x) => x.v) }, 30); } catch (e) { /* 아래에서 */ }
@@ -1336,7 +1377,7 @@ async function addToGroup(songs, gi) {
   plTracks = plTracks.filter((t) => !pend.includes(t) || m[t.v]);
   pend.forEach((t) => { if (m[t.v]) t.s = m[t.v]; });
   drawTracks();
-  if (before) for (const x of add) if (m[x.v]) await call("moveBefore", { pid, sid: m[x.v], before }, 30).catch(() => {});
+  for (let n = 0; n < add.length; n++) if (m[add[n].v] && before[n]) await call("moveBefore", { pid, sid: m[add[n].v], before: before[n] }, 30).catch(() => {});
 }
 /// 모으기: 흩어진 앨범 곡들을 첫 곡 자리에 한데 모음 (실제 플레이리스트 순서) — 화면은 바로, 서버는 뒤에서
 async function gatherGroup(idx) {

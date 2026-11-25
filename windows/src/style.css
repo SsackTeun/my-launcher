@@ -649,6 +649,12 @@ body.compact .lyside { display: none; }
 .mz-aedit.song { cursor: pointer; border-radius: 0 6px 6px 0; }
 .mz-aedit.song:hover { background: var(--hover); }
 .mz-add.swap { color: #ff9f0a; }
+/* 빠진 곡 (✎ 켠 앨범 묶음): 제자리에 흐리게 · 자켓 자리에 앨범 트랙 번호 */
+.mz-pl-tracks .mz-row.ghost { opacity: .5; cursor: pointer; }
+.mz-pl-tracks .mz-row.ghost:hover { opacity: .85; }
+.mz-row.ghost .mz-noimg { display: flex; align-items: center; justify-content: center; background: transparent; border: 1px dashed var(--line); color: var(--sub); font-size: 11px; }
+.mz-row.ghost .mz-t b { font-weight: 400; }
+.mz-ahead .mz-miss { color: #ff9f0a; }
 .lyside.away { background: transparent; align-items: center; }
 .ls-back { font-size: 11px; padding: 3px 12px; }
 .mz-ahead.playing { background: color-mix(in srgb, var(--accent) 18%, transparent); }
