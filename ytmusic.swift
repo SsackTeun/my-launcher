@@ -125,6 +125,7 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         onFoundChange?()
         HearingMeter.shared.start()
         timer?.invalidate()
+        startAudioLog()
         let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in MainActor.assumeIsolated { self?.poll() } }
         RunLoop.main.add(t, forMode: .common)
         timer = t
@@ -934,6 +935,36 @@ final class YTMusic: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowDeleg
         for t in [3.0, 6.0, 10.0] {
             DispatchQueue.main.asyncAfter(deadline: .now() + t) { [weak self] in self?.setAutoplay(Self.autoplayPref ?? false) }
         }
+    }
+
+    /// 진단: 켠 뒤 처음 40초 동안 '재생 시작 · 탭 · 장치 시작 · 첫 소리 들어옴/나감' 을 시각과 함께 (~/MyLauncher/audio-start.txt)
+    private func startAudioLog() {
+        let t0 = CACurrentMediaTime()
+        let path = NSHomeDirectory() + "/MyLauncher/audio-start.txt"
+        try? "도구함 켬 \(Date())\n".write(toFile: path, atomically: true, encoding: .utf8)
+        var seen = Set<String>(), lastPlaying: Bool?
+        func log(_ s: String, at: Double) {
+            guard !seen.contains(s) else { return }
+            seen.insert(s)
+            if let h = FileHandle(forWritingAtPath: path) { h.seekToEndOfFile(); h.write(String(format: "%6.2f초  %@\n", at - t0, s).data(using: .utf8)!); try? h.close() }
+        }
+        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] timer in
+            MainActor.assumeIsolated {
+                let now = CACurrentMediaTime()
+                guard let self, now - t0 < 40 else { timer.invalidate(); return }
+                let tap = TapEQ.shared
+                if let p = self.state?.playing, p != lastPlaying {
+                    lastPlaying = p
+                    seen.remove("재생 상태: \(!p ? "재생" : "멈춤")")
+                    log("재생 상태: \(p ? "재생" : "멈춤") (위치 \(String(format: "%.1f", self.state?.position ?? 0))초)", at: now)
+                }
+                if tap.tapAt > 0 { log("EQ 가 소리를 가로채기 시작", at: tap.tapAt) }
+                if tap.devStartAt > 0 { log("EQ 출력 장치 시작", at: tap.devStartAt) }
+                if tap.firstInAt > 0 { log("EQ 에 처음 소리가 들어옴", at: tap.firstInAt) }
+                if tap.firstOutAt > 0 { log("EQ 에서 처음 소리가 나감", at: tap.firstOutAt) }
+            }
+        }
+        RunLoop.main.add(t, forMode: .common)
     }
 
     /// 사용자가 고른 자동재생 (nil: 아직 안 고름 — 플레이리스트 · 앨범이면 끔, 믹스는 그대로)

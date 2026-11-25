@@ -538,6 +538,20 @@ final class FavBar {
     }
 
     // MARK: 손잡이에 마우스를 대면 잠깐 펴기 (옵션) — 벗어나면 다시 접음
+    /// 직접 접었으면 마우스가 손잡이에서 한 번 벗어날 때까지 '마우스를 대면 펴기' 를 쉼
+    /// (메뉴에서 접어 두기를 누르면 마우스가 바로 손잡이 위라 곧장 다시 펴졌음)
+    var noPeekUntilLeave = false
+    func collapseByUser() {
+        noPeekUntilLeave = true
+        collapsed = true
+        // 손잡이가 마우스 밑에 안 생겼으면 바로 풀어 줌
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.noPeekUntilLeave else { return }
+                if !(self.panel?.frame.insetBy(dx: -4, dy: -4).contains(NSEvent.mouseLocation) ?? false) { self.noPeekUntilLeave = false }
+            }
+        }
+    }
     private var peek = false
     private var peekTimer: Timer?
     private var outSince: Date?
@@ -1137,7 +1151,7 @@ class FavBase: NSView {
         m.addItem(NSMenuItem(title: bar.name, action: nil, keyEquivalent: ""))
         m.addItem(.separator())
         // 붙일 곳 · 정렬 · 순서는 막대를 끌어서 바꿈
-        let cl = MenuAction("접어 두기") { bar.collapsed.toggle() }
+        let cl = MenuAction("접어 두기") { if bar.collapsed { bar.collapsed = false } else { bar.collapseByUser() } }
         cl.state = bar.collapsed ? .on : .off
         m.addItem(cl)
         let hv = MenuAction("접힌 손잡이에 마우스를 대면 펴기") { EdgeDock.hoverExpand.toggle() }
@@ -1248,7 +1262,7 @@ final class FavHandleView: FavBase {
         addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
     }
     override func mouseEntered(with e: NSEvent) {
-        guard EdgeDock.hoverExpand else { return }
+        guard EdgeDock.hoverExpand, !bar.noPeekUntilLeave else { return }
         hoverJob?.cancel()
         let bar = self.bar
         let job = DispatchWorkItem { [weak self] in
@@ -1260,7 +1274,7 @@ final class FavHandleView: FavBase {
         hoverJob = job
         DispatchQueue.main.asyncAfter(deadline: .now() + Motion.openDelay, execute: job)
     }
-    override func mouseExited(with e: NSEvent) { hoverJob?.cancel() }
+    override func mouseExited(with e: NSEvent) { hoverJob?.cancel(); bar.noPeekUntilLeave = false }
 }
 
 // MARK: - 펴진 막대
@@ -1386,7 +1400,7 @@ final class FavBarView: FavBase {
     required init?(coder: NSCoder) { fatalError() }
     deinit { NotificationCenter.default.removeObserver(self) }
 
-    @objc private func collapse() { bar.collapsed = true }
+    @objc private func collapse() { bar.collapseByUser() }
 
     /// 데스크탑 막대: 번호 배지 (막대 빈 곳) 를 누르면 그 데스크탑으로
     override func clicked() {

@@ -48,6 +48,8 @@ final class TapEQ: @unchecked Sendable {
     private(set) var running = false
     /// 마지막으로 알려 줄 문제 (권한 · 장치)
     private(set) var problem: String?
+    /// 진단용 시각 (CACurrentMediaTime): 탭 만듦 · 장치 시작 · 처음 들어온 소리 · 처음 나간 소리
+    var tapAt: Double = 0, devStartAt: Double = 0, firstInAt: Double = 0, firstOutAt: Double = 0
 
     // 실시간 처리용 (할당 없이 미리 잡아 둔 칸)
     private let coef = UnsafeMutablePointer<Double>.allocate(capacity: filters * 5)      // b0 b1 b2 a1 a2
@@ -309,6 +311,7 @@ final class TapEQ: @unchecked Sendable {
             problem = "오디오 탭을 만들지 못했어요"; return
         }
         tapID = tap
+        tapAt = CACurrentMediaTime()
 
         guard let outDev: AudioObjectID = Self.prop(AudioObjectID(kAudioObjectSystemObject), kAudioHardwarePropertyDefaultOutputDevice),
               let outUID = Self.uid(outDev) else { stop(); return }
@@ -336,6 +339,7 @@ final class TapEQ: @unchecked Sendable {
         guard st == noErr, let pid else { stop(); return }
         procID = pid
         guard AudioDeviceStart(a, pid) == noErr else { stop(); return }
+        devStartAt = CACurrentMediaTime()
         tapped = pids
         running = true
     }
@@ -497,6 +501,9 @@ final class TapEQ: @unchecked Sendable {
             }
             outCh += nch
         }
+        // 진단: 처음 소리가 들어온 · 나간 때 (켠 뒤 첫 재생에 소리가 늦는 원인 찾기)
+        if firstInAt == 0, peak > 0.0005 { firstInAt = CACurrentMediaTime() }
+        if firstOutAt == 0, sq > 1e-7 * Double(max(1, sqc)) { firstOutAt = CACurrentMediaTime() }
         if os_unfair_lock_trylock(&lock) {
             if peak > inputPeak { inputPeak = peak }
             sqSum += sq; sqN += sqc

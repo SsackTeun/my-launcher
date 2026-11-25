@@ -470,10 +470,13 @@ final class BigPlayerView: NSView {
         _ = total
         let cy = py + (pillH - 28) / 2
         let mainCtl = Array(ctl.prefix(3)), sideCtl = Array(ctl.dropFirst(3))
-        var bx = art.frame.midX - (cell * 3 + gap * 2) / 2
-        for b in mainCtl { b.frame = NSRect(x: bx, y: cy, width: cell, height: 28); bx += cell + gap }
         let sc: CGFloat = 26
         var rx = art.frame.maxX - 6 - sc * CGFloat(sideCtl.count)
+        // 재생 묶음: 가운데 — 오른쪽 묶음과 겹치거나 너무 붙으면 그 왼쪽 빈자리의 가운데로
+        let mw = cell * 3 + gap * 2
+        var bx = art.frame.midX - mw / 2
+        if bx + mw > rx - 10 { bx = art.frame.minX + (rx - art.frame.minX - mw) / 2 }
+        for b in mainCtl { b.frame = NSRect(x: bx, y: cy, width: cell, height: 28); bx += cell + gap }
         for b in sideCtl { b.frame = NSRect(x: rx, y: cy, width: sc, height: 28); rx += sc }
         let x = art.frame.maxX + 14
         let w = max(120, bounds.width - x - pad)

@@ -1244,6 +1244,107 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return b
     }()
     lazy var playerSiteButtons: [NSView] = makePlayerSiteButtons()
+    private lazy var hubDot: NSView = {
+        let v = PassView()
+        v.wantsLayer = true
+        v.layer?.backgroundColor = NSColor.systemRed.cgColor
+        v.layer?.cornerRadius = 3.5
+        return v
+    }()
+    /// ☰ : 창 위치 · 투명도 · 다른 프로그램을 한 판에
+    lazy var hubButton: ActionButton = {
+        let b = ActionButton(title: "", symbol: "line.3.horizontal") { [unowned self] b in showHub(from: b) }
+        b.isBordered = false
+        b.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+        b.toolTip = "창 위치 · 투명도 · 다른 프로그램 (Netflix · YouTube · 쇼츠 · YouTube Music)"
+        return b
+    }()
+    func showHub(from b: NSView) {
+        let W: CGFloat = 236, H: CGFloat = 238
+        let v = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        let pop = NSPopover()
+        let top: CGFloat = 58   // 맨 위: 창 위치 · 프리셋 / 투명도 두 줄
+        let t = NSTextField(labelWithString: "다른 프로그램")
+        t.font = .systemFont(ofSize: 11, weight: .semibold); t.textColor = .secondaryLabelColor
+        t.frame = NSRect(x: 12, y: top + 9, width: W - 24, height: 15)
+        v.addSubview(t)
+        // 큰 아이콘 네 칸 (Netflix · YouTube · 쇼츠 · YouTube Music 창 접기) — 누르면 판도 닫힘
+        let names = ["Netflix", "YouTube", "쇼츠", "창 접기"]
+        for (i, sb) in makePlayerSiteButtons().enumerated() {
+            guard let ab = sb as? ActionButton else { continue }
+            let cell = ActionButton(title: "", symbol: nil) { _ in pop.close(); ab.performClick(nil) }
+            cell.image = ab.image.map { img -> NSImage in let c = img.copy() as! NSImage; c.size = NSSize(width: 22, height: 22); return c }
+            if cell.image == nil, let sym = ab.image { cell.image = sym }
+            if ab.symbolConfiguration != nil { cell.image = ab.image; cell.symbolConfiguration = .init(pointSize: 18, weight: .semibold); cell.contentTintColor = ab.contentTintColor }
+            cell.imagePosition = .imageOnly
+            cell.isBordered = false
+            cell.wantsLayer = true
+            cell.layer?.cornerRadius = 8
+            cell.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
+            cell.toolTip = ab.toolTip
+            cell.frame = NSRect(x: 12 + CGFloat(i) * 54, y: top + 30, width: 48, height: 36)
+            v.addSubview(cell)
+            let l = NSTextField(labelWithString: names[i])
+            l.font = .systemFont(ofSize: 10); l.alignment = .center; l.textColor = .secondaryLabelColor
+            l.frame = NSRect(x: 12 + CGFloat(i) * 54, y: top + 69, width: 48, height: 14)
+            v.addSubview(l)
+        }
+        let sep = NSBox(frame: NSRect(x: 12, y: top + 92, width: W - 24, height: 1)); sep.boxType = .separator
+        v.addSubview(sep)
+        // 도구: 메일 · 창 정리 · Finder (위쪽 앱 창에 있던 것)
+        let tt = NSTextField(labelWithString: "도구")
+        tt.font = .systemFont(ofSize: 11, weight: .semibold); tt.textColor = .secondaryLabelColor
+        tt.frame = NSRect(x: 12, y: top + 99, width: W - 24, height: 15)
+        v.addSubview(tt)
+        let unread = MailWatch.shared.unreadCount
+        let tools: [(String, String, (NSView) -> Void)] = [
+            ("envelope.fill", unread > 0 ? "메일 \(unread)" : "메일", { [unowned self] _ in
+                pop.close(); MailWatch.shared.configured ? MailWindow.shared.show() : openSettingsTab("메일") }),
+            ("rectangle.stack", "창 정리", { b in BulkWindows.menu().popUp(positioning: nil, at: NSPoint(x: 0, y: b.bounds.height), in: b) }),
+            ("folder.fill", "Finder", { [unowned self] _ in pop.close(); launch("com.apple.finder") }),
+        ]
+        for (i, t) in tools.enumerated() {
+            let cell = ActionButton(title: "", symbol: t.0) { b in t.2(b) }
+            cell.isBordered = false
+            cell.symbolConfiguration = .init(pointSize: 16, weight: .semibold)
+            cell.contentTintColor = i == 0 && unread > 0 ? .launcherAccent : .labelColor
+            cell.wantsLayer = true
+            cell.layer?.cornerRadius = 8
+            cell.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
+            cell.frame = NSRect(x: 12 + CGFloat(i) * 54, y: top + 118, width: 48, height: 36)
+            v.addSubview(cell)
+            let l = NSTextField(labelWithString: t.1)
+            l.font = .systemFont(ofSize: 10); l.alignment = .center; l.textColor = .secondaryLabelColor
+            l.frame = NSRect(x: 12 + CGFloat(i) * 54 - 4, y: top + 157, width: 56, height: 14)
+            v.addSubview(l)
+        }
+        // 맨 위 두 줄 아래 구분선
+        let sep2 = NSBox(frame: NSRect(x: 12, y: top - 4, width: W - 24, height: 1)); sep2.boxType = .separator
+        v.addSubview(sep2)
+        // 창 위치 · 프리셋 / 투명도 · 뒤쪽 클릭 — 누르면 그 판으로
+        let c = playerLevelChoice >= 0 ? playerLevelChoice : (widget ? widgetLevel : 2)
+        let lv = ActionButton(title: " 창 위치 · 프리셋 — \(Self.levelChoices[c].1)", symbol: Self.levelChoices[c].0) { [unowned self] _ in
+            pop.close(); DispatchQueue.main.async { self.showLevelPicker(from: b) }
+        }
+        let al = ActionButton(title: " 투명도 \(Int((playerAlpha * 100).rounded()))% · \(Int((playerAlphaActive * 100).rounded()))%\(playerClickThrough ? " · 뒤쪽 클릭" : "")",
+                              symbol: "circle.lefthalf.filled") { [unowned self] _ in
+            pop.close(); DispatchQueue.main.async { self.showAlphaPicker(from: b) }
+        }
+        for (k, x) in [lv, al].enumerated() {
+            x.isBordered = false
+            x.imagePosition = .imageLeading
+            x.alignment = .left
+            x.font = .systemFont(ofSize: 12)
+            x.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
+            x.contentTintColor = .secondaryLabelColor
+            x.frame = NSRect(x: 10, y: 6 + CGFloat(k) * 24, width: W - 20, height: 22)
+            v.addSubview(x)
+        }
+        let vc = NSViewController(); vc.view = v
+        pop.contentViewController = vc
+        pop.behavior = .transient
+        pop.show(relativeTo: b.bounds, of: b, preferredEdge: .maxY)
+    }
     /// 플레이어 창 높이 (앱 창과 따로): 0 다른 창 뒤(바탕화면) · 1 일반 창처럼 · 2 다른 창 위 · -1 도구함 설정 따라감
     var playerLevelChoice: Int {
         get { d.object(forKey: "playerLevelChoice") as? Int ?? -1 }
@@ -2167,26 +2268,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let stripH: CGFloat = part == .player ? handle + 6 : handle
         let stripMid = size.height - stripH / 2
         grip.frame = NSRect(x: 0, y: size.height - stripH, width: size.width, height: stripH)
-        // 맨 위 손잡이 줄 왼쪽 끝: 📌 다른 창 위에 두기
+        // 맨 위 손잡이 줄 왼쪽 끝: ☰ 하나 (창 위치 · 투명도 · 다른 프로그램은 그 안에) — 줄엔 손잡이 막대만 남아 깔끔하게
         if part == .player {
-            if pinButton.superview !== fx { fx.addSubview(pinButton) }
-            syncPinButton()
-            pinButton.frame = NSRect(x: 16, y: stripMid - 9, width: 22, height: 18)
-            // 바로 옆: 투명도
-            if alphaButton.superview !== fx { fx.addSubview(alphaButton) }
-            alphaButton.toolTip = "플레이어 창 투명도 (평소 \(Int((playerAlpha * 100).rounded()))% · 조작할 때 \(Int((playerAlphaActive * 100).rounded()))%) — 누르면 조절"
-            alphaButton.frame = NSRect(x: pinButton.frame.maxX + 2, y: pinButton.frame.minY, width: 22, height: 18)
+            for b in [pinButton, alphaButton] + playerSiteButtons { b.removeFromSuperview() }
+            if hubButton.superview !== fx { fx.addSubview(hubButton) }
+            hubButton.frame = NSRect(x: 16, y: stripMid - 9, width: 22, height: 18)
+            hubButton.contentTintColor = playerClickThrough ? .launcherAccent : .secondaryLabelColor
+            // 안 읽은 메일이 있으면 ☰ 옆에 작은 점
+            if hubDot.superview !== fx { fx.addSubview(hubDot) }
+            hubDot.frame = NSRect(x: hubButton.frame.maxX - 3, y: hubButton.frame.maxY - 7, width: 7, height: 7)
+            hubDot.isHidden = MailWatch.shared.unreadCount == 0
             if clickTimer == nil { p.alphaValue = playerAlpha; applyClickThrough() }
-            alphaButton.contentTintColor = playerClickThrough ? .launcherAccent : .secondaryLabelColor
-        }
-        // 맨 위 손잡이 줄 오른쪽 끝: 다른 프로그램 열기 (Netflix · YouTube · YouTube Music 접기) — 재생 단추와 따로
-        if part == .player {
-            for (i, b) in playerSiteButtons.enumerated() {
-                if b.superview !== fx { fx.addSubview(b) }
-                let n = CGFloat(playerSiteButtons.count)
-                // 오른쪽 끝 여백은 왼쪽(창 위치 단추)과 같게, 세 칸 같은 폭 · 같은 가운데 높이
-                b.frame = NSRect(x: size.width - 16 - (n - CGFloat(i)) * 24, y: stripMid - 9, width: 22, height: 18)
-            }
         }
         if view.superview !== fx { fx.addSubview(view) }
         view.frame = NSRect(x: 0, y: belowH + bottomPad, width: width, height: height)
@@ -2216,7 +2308,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         Theme.chrome(fx, radius: Theme.playerRadius)
         // 맨 위 줄 단추는 플레이어 위로 (아래쪽 몇 칸이 플레이어 여백과 겹쳐도 눌리게)
-        if part == .player { for b in [pinButton, alphaButton] + playerSiteButtons where b.superview === fx { b.removeFromSuperview(); fx.addSubview(b) } }
+        if part == .player, hubButton.superview === fx { hubButton.removeFromSuperview(); fx.addSubview(hubButton) }
         if widget { hoverRaise(fx, base: { [unowned self] in part == .player ? playerLevel : widgetLevels[widgetLevel].1 }) }
         // 마우스를 올려 잠깐 맨 앞으로 나와 있는 중이면 그대로 둠
         if !(p.level == .floating && NSMouseInRect(NSEvent.mouseLocation, p.frame, false)) {
@@ -2898,6 +2990,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func showWindow() {
+        if launcherHidden { launcherHidden = false }
         EdgeDock.shared.windowShown()
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
@@ -3390,7 +3483,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return m
     }
 
+    /// 위쪽 앱 창(검색 · 앱 목록)을 안 씀 — 플레이어 창이 메인 (메뉴 막대 🧰 '런처 창 열기' 로 다시)
+    var launcherHidden: Bool {
+        get { d.bool(forKey: "launcherHidden") }
+        set { d.set(newValue, forKey: "launcherHidden"); refresh() }
+    }
     func refresh() {
+        defer { if launcherHidden, window.isVisible { window.orderOut(nil) } }
         Tile.hideRunDot = tab == 1 && query.trimmingCharacters(in: .whitespaces).isEmpty
         applyAutoScale()
         // 위젯에선 아래 버튼 줄을 숨기고(빼기 편집 중일 때만 보임) 우클릭 메뉴로 대신함
@@ -3939,31 +4038,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             m.addItem(Item("업데이트 확인…") { up.check(manual: true) })
         }
         m.addItem(.separator())
-        for cat in cats {
-            if cats.count > 1 { m.addItem(headerItem(cat.name)) }
-            for id in cat.ids {
-                let r = running(id) != nil
-                let i = Item((r ? "● " : "    ") + name(id)) { [unowned self] in launch(id) }
-                let img = icon(id).copy() as! NSImage
-                img.size = NSSize(width: 16, height: 16)
-                i.image = img
-                i.isEnabled = url(id) != nil
-                if r {
-                    let sub = NSMenu()
-                    sub.addItem(Item("앞으로 가져오기") { [unowned self] in launch(id) })
-                    sub.addItem(Item("종료") { [unowned self] in quit(id) })
-                    i.submenu = sub
-                }
-                m.addItem(i)
-            }
-            if cats.count > 1 { m.addItem(.separator()) }
-        }
-        if cats.count == 1 { m.addItem(.separator()) }
+        // 앱 목록은 뺌 (도구함 창 · 자주 쓰는 앱 막대에서 열면 돼서)
         m.addItem(Item("모두 실행") { [unowned self] in allIds.forEach(launch) })
         let bulk = NSMenuItem(title: "창 정리", action: nil, keyEquivalent: "")
         bulk.submenu = BulkWindows.menu()
         m.addItem(bulk)
         m.addItem(Item("런처 창 열기") { [unowned self] in showWindow() })
+        let lh = Item("    앱 창 숨기기 (플레이어 창만)") { [unowned self] in launcherHidden.toggle() }
+        lh.state = launcherHidden ? .on : .off
+        m.addItem(lh)
         m.addItem(Item("Dock 앱 가져오기") { [unowned self] in importDock() })
         m.addItem(Item("옵션…") { [unowned self] in openSettings() })
         m.addItem(.separator())
