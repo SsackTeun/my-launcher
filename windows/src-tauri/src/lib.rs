@@ -337,6 +337,7 @@ async fn open_window(
     y: Option<f64>,
     frameless: Option<bool>,
     on_top: Option<bool>,
+    hidden: Option<bool>,
 ) -> Result<(), String> {
     // 거의 동시에 두 번 불려도 창이 둘 생기지 않게: '있나 보고 → 만들기' 를 한 번에 하나씩
     static OPENING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
@@ -349,7 +350,7 @@ async fn open_window(
     }
     // 바깥 사이트(YouTube Music · YouTube · Netflix)는 사이트 창으로 (작은 창 단추 · 로그인 유지)
     if url.starts_with("https://") {
-        return web::open_site(&app, &label, &url, &title, width, height);
+        return web::open_site(&app, &label, &url, &title, width, height, hidden.unwrap_or(false));
     }
     let target = WebviewUrl::App(url.into());
     let frameless = frameless.unwrap_or(false);
@@ -568,8 +569,9 @@ fn open_mirror(app: &tauri::AppHandle, m: mirror::Mirror, x: i32, y: i32, w: i32
     Ok(())
 }
 
+// 창을 만드는 명령은 async 여야 함 (Windows 에서 동기 명령 안에서 창을 만들면 도구함 전체가 멈춤)
 #[tauri::command]
-fn mirror_pick(app: tauri::AppHandle) -> Result<(), String> {
+async fn mirror_pick(app: tauri::AppHandle) -> Result<(), String> {
     open_pick(&app)
 }
 
@@ -631,12 +633,12 @@ fn mirror_close(app: tauri::AppHandle, id: String) {
 }
 
 #[tauri::command]
-fn cover_open(app: tauri::AppHandle, id: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
+async fn cover_open(app: tauri::AppHandle, id: String, x: f64, y: f64, w: f64, h: f64) -> Result<(), String> {
     open_cover(&app, &id, x, y, w, h)
 }
 
 #[tauri::command]
-fn cover_add(app: tauri::AppHandle) -> Result<(), String> {
+async fn cover_add(app: tauri::AppHandle) -> Result<(), String> {
     add_cover(&app)
 }
 

@@ -62,8 +62,12 @@ fn set_rect(w: &tauri::WebviewWindow, r: [i32; 4]) {
 // MARK: 창 열기
 
 /// 열려 있으면 앞으로, 없으면 새로 염
-pub fn open_site(app: &tauri::AppHandle, label: &str, url: &str, title: &str, width: f64, height: f64) -> Result<(), String> {
+/// hidden: 창을 띄우지 않고 뒤에서만 열기 (크게 보기가 YouTube Music 을 쓸 때 — Mac 판의 숨은 페이지처럼)
+pub fn open_site(app: &tauri::AppHandle, label: &str, url: &str, title: &str, width: f64, height: f64, hidden: bool) -> Result<(), String> {
     if let Some(w) = app.get_webview_window(label) {
+        if hidden {
+            return Ok(());
+        }
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -76,6 +80,8 @@ pub fn open_site(app: &tauri::AppHandle, label: &str, url: &str, title: &str, wi
         .title(title)
         .inner_size(width, height)
         .min_inner_size(200.0, 112.0)
+        .visible(!hidden)
+        .focused(!hidden)
         .initialization_script(PAGE_JS)
         .on_document_title_changed(move |w, title| {
             // page.js 가 보낸 알림: 제목 = 표시 + "명령?값=..."

@@ -441,6 +441,8 @@ $("#mzTabs").onclick = (e) => {
   drawTabs(); show();
 };
 const body = $("#mzBody");
+let ytWait = 0;
+let ytAutoTried = false; // 크게 보기에서 YouTube Music 을 뒤에서 한 번 열어 봤는지 (사용자가 끄면 다시 안 엶)
 async function show() {
   if (!big) return;
   drawSide();
@@ -448,8 +450,15 @@ async function show() {
   body.className = "mz-body";
   if (tab === 1) { body.classList.add("lyfull"); body.dataset.key = ""; Player.renderFull(body); return; }
   if (!(await ytOpen())) {
-    body.innerHTML = `<div class="mz-empty">YouTube Music 창이 꺼져 있어요<br><button class="pl-open" id="openYm">YouTube Music 열기</button></div>`;
+    // 꺼져 있으면 창을 띄우지 않고 뒤에서 열고(Mac 판의 숨은 페이지처럼), 페이지가 뜨면 목록을 그림
+    body.innerHTML = `<div class="mz-empty">YouTube Music 불러오는 중…<br><small>로그인이 안 돼 있으면 창을 열어 로그인해 주세요</small><br><button class="pl-open ghost" id="openYm">YouTube Music 창 열기</button></div>`;
     $("#openYm").onclick = () => { Player.openYTMusic(); setTimeout(show, 4000); };
+    if (!ytAutoTried) {
+      ytAutoTried = true;
+      await invoke("open_window", { label: "ytmusic", url: "https://music.youtube.com", title: "YouTube Music", width: 1100, height: 760, hidden: true }).catch(() => {});
+    }
+    clearTimeout(ytWait);
+    ytWait = setTimeout(() => { if (big && tab !== 1) show(); }, 2500);
     return;
   }
   if (tab === 0) loadQueue();
