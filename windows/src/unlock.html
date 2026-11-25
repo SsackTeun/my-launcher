@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>잠금</title>
+  <!-- 뒤쪽 클릭 중인 플레이어 창 위에 얹는 🔒 손잡이: 이것만 눌림 → 누르면 플레이어 잠금 풀기 -->
+  <style>
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+    button { width: 100%; height: 100%; border: 0; border-radius: 10px; background: rgba(0,0,0,.45); color: #8ecbff; cursor: pointer; font-size: 12px; }
+    button:hover { background: rgba(0,0,0,.65); }
+  </style>
+</head>
+<body>
+  <button id="u" title="눌러서 잠깐 풀기 — 플레이어를 조작할 수 있어요 (마우스가 창 밖으로 나가면 다시 잠겨요)">🔒</button>
+  <script>
+    document.getElementById("u").onclick = () => window.__TAURI__?.event.emit("player-unlock", true);
+  </script>
+</body>
+</html>

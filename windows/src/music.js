@@ -422,6 +422,8 @@ async function addTo(pid, title, vids, albums) {
 // MARK: 탭
 
 let drawSide = () => {}; // 왼쪽 아래 가사 칸 (시작할 때 채움)
+let applyLevel = async () => {}; // 창 위치 (시작할 때 채움)
+let drawNext = () => {};          // 작게 볼 때 다음 곡 줄
 const TABS = ["다음 트랙", "가사", "앨범", "플레이리스트", "랜덤"];
 let tab = 0;
 try { tab = Math.min(4, +localStorage.getItem("mzTab") || 0); } catch { /* 없음 */ }
@@ -1716,11 +1718,9 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     try {
       if (big) {
         const [bw, bh] = getSize("playerBigSize", [940, 640]);
-        await w.setAlwaysOnTop(false);
         await w.setMinSize(new T.dpi.LogicalSize(600, 400));
         await w.setSize(new T.dpi.LogicalSize(bw, bh));
       } else {
-        await w.setAlwaysOnTop(true);
         await w.setMinSize(new T.dpi.LogicalSize(260, 60));
         const [sw] = getSize("playerSmallW", [360, 100]);
         const f = await w.scaleFactor();
@@ -1728,8 +1728,10 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
         await w.setSize(new T.dpi.LogicalSize(sw, s.height));
       }
     } catch (e) { console.warn(e); }
+    applyLevel();
     drawPlayer();
     drawSide();
+    drawNext();
     if (big) { drawTabs(); show(); } else fit();
   }
   if (T) T.event.listen("player-big", () => { if (!big) setBig(true); else w.setFocus(); });
@@ -1740,7 +1742,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     if (big) return;
     clearTimeout(fitT);
     fitT = setTimeout(async () => {
-      const h = Math.ceil(["#app > .ptool", "#player", "#lyline"].reduce((a, s) => { const e = $(s); return a + (e && !e.hidden ? e.getBoundingClientRect().height : 0); }, 0) + 12);
+      const h = Math.ceil(["#app > .ptool", "#player", "#lyline", "#nextline"].reduce((a, s) => { const e = $(s); return a + (e && !e.hidden ? e.getBoundingClientRect().height : 0); }, 0) + 12);
       if (Math.abs(h - lastH) < 2) return;
       lastH = h;
       try {
@@ -1754,6 +1756,8 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
   new ResizeObserver(fit).observe(line);
   // 크게: 오른쪽 아래 모서리를 끌어 크기 조절 (제목 막대가 없는 창)
   $("#mzResize").addEventListener("mousedown", (e) => { if (e.button === 0 && big) w.startResizeDragging("SouthEast").catch(() => {}); });
+  // 왼쪽 아래 모서리도 (Mac 판처럼 아래 두 모서리)
+  $("#mzResizeSW").addEventListener("mousedown", (e) => { if (e.button === 0 && big) w.startResizeDragging("SouthWest").catch(() => {}); });
   // 아래 가장자리: 높이만 (위 끝은 그대로) · 더블클릭하면 기본 높이
   $("#mzResizeS").addEventListener("mousedown", (e) => { if (e.button === 0 && e.detail === 1 && big) w.startResizeDragging("South").catch(() => {}); });
   $("#mzResizeS").addEventListener("dblclick", async () => {
@@ -1766,7 +1770,16 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
   });
   // 크게 볼 때 바꾼 크기는 바로 기억 (다시 켜도 그대로)
   let sizeT = null;
-  w.onResized(() => { if (!big) return; clearTimeout(sizeT); sizeT = setTimeout(rememberSize, 500); });
+  w.onResized(async () => {
+    // 최소 크기에 닿으면 테두리를 붉게 (잠깐)
+    try {
+      const f = await w.scaleFactor(), sz = (await w.innerSize()).toLogical(f);
+      const atMin = big ? sz.width <= 601 || sz.height <= 401 : sz.width <= 261;
+      if (atMin) { document.body.classList.add("atmin"); clearTimeout(minT); minT = setTimeout(() => document.body.classList.remove("atmin"), 700); }
+    } catch { /* 없음 */ }
+    if (!big) return; clearTimeout(sizeT); sizeT = setTimeout(rememberSize, 500);
+  });
+  let minT = null;
 
   // MARK: 위쪽 줄 — 재생기 아이콘 · 위치 고정 · 창 정리 · 크게 보기 · 설정 · 숨기기
   Sites.mount($("#sites"));
@@ -1788,6 +1801,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
   function drawUpd() {
     const b = $("#updBtn");
     b.classList.toggle("has-upd", !!upd);
+    $("#hubBtn").classList.toggle("has-upd", !!upd);
     b.title = upd ? `새 버전 ${upd.version} 으로 업데이트 (지금 ${upd.current}) — 누르면 받아서 다시 켜요` : `업데이트 확인${ver ? ` (지금 ${ver})` : ""}`;
   }
   T.event.listen("update-available", (e) => { upd = e.payload; drawUpd(); });
@@ -1801,6 +1815,123 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     try { await invoke("self_update"); } catch (err) { b.classList.remove("busy"); toast(`업데이트하지 못했어요: ${err}`); }
   };
   drawUpd();
+  // MARK: ☰ 판 — 창 위치 · 배치 프리셋 · 투명도(평소 / 조작할 때) · 뒤쪽 클릭 · 다른 프로그램 · 도구
+  const hub = $("#hub");
+  const ls = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* 없음 */ } };
+  $("#hubBtn").onclick = (e) => { e.stopPropagation(); hub.hidden = !hub.hidden; if (!hub.hidden) drawHub(); };
+  document.addEventListener("mousedown", (e) => { if (!hub.hidden && !hub.contains(e.target) && !e.target.closest("#hubBtn") && !e.target.closest("#menu")) hub.hidden = true; });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") hub.hidden = true; });
+  // 창 위치: 0 다른 창 뒤 · 1 일반 · 2 다른 창 위 (-1: 예전처럼 작게면 위, 크게면 일반)
+  let level = ls("mzLevel", -1);
+  function curLevel() { return level >= 0 ? level : (big ? 1 : 2); }
+  applyLevel = async () => {
+    const lv = curLevel();
+    try { await w.setAlwaysOnBottom(lv === 0); await w.setAlwaysOnTop(lv === 2); } catch { /* 없음 */ }
+  };
+  // 투명도 (40 ~ 100): 평소 / 조작할 때 — 마우스가 창 위에 있으면(뒤쪽 클릭이면 🔒 를 풀었을 때) '조작할 때'
+  let alpha = ls("mzAlpha", 100), alphaA = ls("mzAlphaA", 100), ct = ls("mzClickThrough", false), unlocked = false, hovering = false;
+  function applyAlpha() { document.documentElement.style.opacity = String((hovering && (!ct || unlocked) ? alphaA : alpha) / 100); }
+  document.documentElement.addEventListener("mouseenter", () => { hovering = true; applyAlpha(); });
+  document.documentElement.addEventListener("mouseleave", () => { hovering = false; applyAlpha(); });
+  // 뒤쪽 클릭: 창 전체가 마우스를 통과, 위쪽 가운데 🔒 작은 창만 눌림 → 풀면 마우스가 창 밖으로 나갈 때까지 조작
+  async function lockPos() {
+    const f = await w.scaleFactor(), p = (await w.outerPosition()).toLogical(f), sz = (await w.outerSize()).toLogical(f);
+    return { x: Math.round(p.x + sz.width / 2 - 22), y: Math.round(p.y + 6) };
+  }
+  async function showLock() {
+    const p = await lockPos();
+    await invoke("open_window", { label: "unlock", url: "unlock.html", title: "잠금", width: 44, height: 20, x: p.x, y: p.y, frameless: true, onTop: true }).catch(() => {});
+  }
+  const hideLock = () => invoke("close_window", { label: "unlock" }).catch(() => {});
+  let ctTimer = null;
+  async function applyClickThrough() {
+    clearInterval(ctTimer); ctTimer = null;
+    if (!ct) { unlocked = false; await w.setIgnoreCursorEvents(false).catch(() => {}); hideLock(); applyAlpha(); return; }
+    if (!unlocked) { await w.setIgnoreCursorEvents(true).catch(() => {}); showLock(); }
+    // 0.2초마다: 풀린 상태에서 마우스가 창 밖이면 다시 잠금, 잠긴 동안엔 🔒 를 창 위쪽 가운데에
+    ctTimer = setInterval(async () => {
+      try {
+        const c = await T.window.cursorPosition(), p = await w.outerPosition(), sz = await w.outerSize();
+        const inside = c.x >= p.x - 6 && c.x <= p.x + sz.width + 6 && c.y >= p.y - 6 && c.y <= p.y + sz.height + 6;
+        if (unlocked && !inside) { unlocked = false; await w.setIgnoreCursorEvents(true); showLock(); applyAlpha(); }
+        else if (!unlocked) { const lp = await lockPos(); const lw = await T.webviewWindow?.WebviewWindow?.getByLabel?.("unlock"); lw?.setPosition(new T.dpi.LogicalPosition(lp.x, lp.y)).catch(() => {}); }
+      } catch { /* 없음 */ }
+    }, 200);
+  }
+  T.event.listen("player-unlock", async () => { unlocked = true; hovering = true; await w.setIgnoreCursorEvents(false).catch(() => {}); hideLock(); applyAlpha(); });
+  // 배치 프리셋: 자리 · 크기 · 크게/작게 · 창 위치 · 투명도 · 뒤쪽 클릭 (눌러서 적용)
+  async function capture(name) {
+    const f = await w.scaleFactor(), p = (await w.outerPosition()).toLogical(f), sz = (await w.innerSize()).toLogical(f);
+    return { name, x: Math.round(p.x), y: Math.round(p.y), w: Math.round(sz.width), h: Math.round(sz.height), big, level, alpha, alphaA, ct };
+  }
+  async function applyPreset(pr) {
+    if (pr.big !== big) await setBig(pr.big);
+    level = pr.level; lsSet("mzLevel", level); await applyLevel();
+    alpha = pr.alpha; alphaA = pr.alphaA; lsSet("mzAlpha", alpha); lsSet("mzAlphaA", alphaA);
+    ct = pr.ct; lsSet("mzClickThrough", ct);
+    try { await w.setSize(new T.dpi.LogicalSize(pr.w, pr.h)); await w.setPosition(new T.dpi.LogicalPosition(pr.x, pr.y)); } catch { /* 없음 */ }
+    applyAlpha(); applyClickThrough();
+  }
+  function drawHub() {
+    const lv = curLevel();
+    hub.querySelectorAll("[data-lv]").forEach((b) => b.classList.toggle("on", +b.dataset.lv === lv));
+    const list = ls("mzPresets", []);
+    $("#hubPresets").innerHTML = list.map((p, i) => `<div class="hub-pr"><button class="pl-open ghost" data-pr="${i}" title="이 배치로">${esc(p.name)}</button><button class="icon sm" data-prx="${i}" title="지우기">✕</button></div>`).join("") +
+      `<button class="pl-open ghost" id="hubSave">＋ 지금 배치 저장</button>`;
+    $("#hubA").value = alpha; $("#hubAv").textContent = alpha + "%";
+    $("#hubAA").value = alphaA; $("#hubAAv").textContent = alphaA + "%";
+    $("#hubCT").checked = ct;
+  }
+  hub.addEventListener("click", async (e) => {
+    const lb = e.target.closest("[data-lv]");
+    if (lb) { level = +lb.dataset.lv; lsSet("mzLevel", level); await applyLevel(); drawHub(); return; }
+    const pb = e.target.closest("[data-pr]");
+    if (pb) { hub.hidden = true; applyPreset(ls("mzPresets", [])[+pb.dataset.pr]); return; }
+    const px = e.target.closest("[data-prx]");
+    if (px) { const l = ls("mzPresets", []); l.splice(+px.dataset.prx, 1); lsSet("mzPresets", l); drawHub(); return; }
+    if (e.target.closest("#hubSave")) {
+      const l = ls("mzPresets", []);
+      const name = await ask("배치 프리셋 이름", `배치 ${l.length + 1}`);
+      if (!name) return;
+      l.push(await capture(name)); lsSet("mzPresets", l); drawHub(); toast(`‘${name}’ 저장했어요`);
+      return;
+    }
+    if (e.target.closest("#hubShorts")) {
+      hub.hidden = true;
+      await invoke("open_window", { label: "yt-video", url: "https://www.youtube.com/shorts", title: "YouTube", width: 1100, height: 720 }).catch(() => {});
+      invoke("web_eval", { label: "yt-video", js: "if (!location.pathname.startsWith('/shorts')) location.href = 'https://www.youtube.com/shorts'" }).catch(() => {});
+      return;
+    }
+    if (e.target.closest("#lineBtn")) { setConfig("lyricsLine", !(cfg.lyricsLine !== false)); return; }
+  });
+  hub.addEventListener("input", (e) => {
+    if (e.target.id === "hubA") { alpha = +e.target.value; lsSet("mzAlpha", alpha); $("#hubAv").textContent = alpha + "%"; hovering = false; applyAlpha(); }
+    if (e.target.id === "hubAA") { alphaA = +e.target.value; lsSet("mzAlphaA", alphaA); $("#hubAAv").textContent = alphaA + "%"; hovering = true; applyAlpha(); }
+  });
+  hub.addEventListener("change", (e) => {
+    if (e.target.id === "hubCT") { ct = e.target.checked; lsSet("mzClickThrough", ct); $("#hubBtn").classList.toggle("on", ct); applyClickThrough(); }
+  });
+  $("#hubBtn").classList.toggle("on", ct);
+  applyAlpha();
+  applyClickThrough();
+  // 작게 볼 때 다음 곡 한 줄 (6초마다 다음 트랙을 읽음, 누르면 크게 보기)
+  const nextEl = $("#nextline");
+  drawNext = () => { nextEl.hidden = big || !nextEl.textContent; };
+  nextEl.onclick = () => setBig(true);
+  setInterval(async () => {
+    if (big || document.hidden) return;
+    let q; try { q = await call("queue", {}, 15); } catch { return; }
+    const main = (q || []).filter((x) => !x.auto), c = main.findIndex((x) => x.cur);
+    let t = "";
+    if (c >= 0 && c + 1 < main.length) { const n = main[c + 1], left = main.length - c - 2; t = `${n.title} — ${artistOf(n.artist)}${n.dur ? ` · ${n.dur}` : ""}${left > 0 ? `  (+${left}곡)` : ""}`; }
+    else { const a = (q || []).find((x) => x.auto && !x.cur); if (a) t = `${a.title} — ${artistOf(a.artist)} · 자동재생`; }
+    const had = !nextEl.hidden;
+    nextEl.innerHTML = t ? `<span class="nx-k">⏭ 다음 곡</span> ${esc(t)}` : "";
+    drawNext();
+    if (had !== !nextEl.hidden) fit();
+  }, 6000);
+
   $("#tidyBtn").onclick = async () => {
     // 작게 볼 땐 창이 작아서 Windows 기본 메뉴로
     const M = T.menu;

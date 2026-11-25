@@ -11,14 +11,11 @@
   <div id="app">
     <!-- 위쪽 줄: 재생기 아이콘 · (잡고 끌어 옮기기) · 위치 고정 · 창 정리 · 크게 보기 · 설정 · 숨기기 -->
     <header class="ptool" data-tauri-drag-region>
-      <div class="sites" id="sites"></div>
+      <!-- ☰ : 창 위치 · 투명도 · 다른 프로그램 · 도구 (Mac 판과 같게, 위쪽 줄은 깔끔하게) -->
+      <button class="icon" id="hubBtn" title="창 위치 · 투명도 · 다른 프로그램 · 도구"><svg viewBox="0 0 16 16"><path d="M3 4.5h10M3 8h10M3 11.5h10" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></button>
       <span class="ptool-grip" data-tauri-drag-region><i data-tauri-drag-region></i></span>
       <div class="pl-tools">
-        <button class="icon" id="lockBtn" title="창 위치 고정"></button>
-        <button class="icon" id="tidyBtn" title="창 정리"><svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="9" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="5.5" y="6.5" width="9" height="7" rx="1.2" fill="currentColor"/></svg></button>
         <button class="icon" id="bigBtn" title="크게 보기"></button>
-        <button class="icon" id="updBtn" title="업데이트 확인"><svg viewBox="0 0 16 16"><path d="M8 13V3.5M4 7.2 8 3.2l4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <button class="icon" id="gearBtn" title="설정"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
         <button class="icon" id="close" title="숨기기 (트레이 🧰 에서 다시 열기)">×</button>
       </div>
     </header>
@@ -30,6 +27,8 @@
         <section id="lyline" class="lyline" hidden></section>
         <!-- 크게 볼 때 왼쪽 아래 빈칸: 노래를 따라 흐르는 가사 (기본 지금 · 다음 두 줄) -->
         <section id="lyside" class="lyside" hidden></section>
+        <!-- 작게 볼 때 가사 줄 아래 한 줄: 다음 곡 (누르면 크게 보기) -->
+        <div id="nextline" class="nextline" hidden></div>
       </aside>
       <!-- 오른쪽(크게만): 다음 트랙 · 가사 · 앨범 · 플레이리스트 · 랜덤 -->
       <main class="mz-right">
@@ -44,8 +43,30 @@
     </div>
     <!-- 크게 볼 때 오른쪽 아래 모서리: 끌어서 크기 조절 -->
     <div class="mz-resize" id="mzResize" title="끌어서 크기 조절"></div>
+    <div class="mz-resize sw" id="mzResizeSW" title="끌어서 크기 조절"></div>
     <!-- 크게 볼 때 아래 가장자리: 위아래로 끌어서 높이 조절 · 더블클릭하면 기본 높이 (Mac 판과 같음) -->
     <div class="mz-resize-s" id="mzResizeS" title="위아래로 끌어서 창 높이 조절 · 더블클릭하면 기본 높이"></div>
+  </div>
+  <!-- ☰ 판 -->
+  <div id="hub" class="hub" hidden>
+    <div class="hub-sec">창 위치</div>
+    <div class="hub-lv"><button data-lv="0" title="다른 창 뒤 (바탕화면처럼)">⬇︎<small>다른 창 뒤</small></button><button data-lv="1" title="일반 창처럼">▭<small>일반 창처럼</small></button><button data-lv="2" title="다른 창 위 (항상 위)">⬆︎<small>다른 창 위</small></button></div>
+    <div class="hub-sec">배치 프리셋</div>
+    <div id="hubPresets"></div>
+    <div class="hub-sec">투명도</div>
+    <label class="hub-row"><span>평소</span><input type="range" id="hubA" min="40" max="100"><b id="hubAv"></b></label>
+    <label class="hub-row"><span>조작할 때</span><input type="range" id="hubAA" min="40" max="100"><b id="hubAAv"></b></label>
+    <label class="set-ck hub-ct"><input type="checkbox" id="hubCT"><span>창을 뚫고 뒤쪽 클릭<small>켜 두면 위쪽 🔒 를 눌러 풀어야 조작해요 (창 밖으로 나가면 다시 잠김)</small></span></label>
+    <div class="hub-sec">다른 프로그램</div>
+    <div class="hub-sites"><div class="sites" id="sites"></div><button class="pl-open ghost" id="hubShorts" title="YouTube 쇼츠 열기">쇼츠</button></div>
+    <div class="hub-sec">도구</div>
+    <div class="hub-tools">
+      <button class="icon" id="lockBtn" title="창 위치 고정"></button>
+      <button class="icon" id="tidyBtn" title="창 정리"><svg viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="9" height="7" rx="1.2" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="5.5" y="6.5" width="9" height="7" rx="1.2" fill="currentColor"/></svg></button>
+      <button class="icon" id="lineBtn" title="가사 줄 켜고 끄기 (작게 볼 때)"><svg viewBox="0 0 16 16"><path d="M3 5h10M3 8h7M3 11h9" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+      <button class="icon" id="updBtn" title="업데이트 확인"><svg viewBox="0 0 16 16"><path d="M8 13V3.5M4 7.2 8 3.2l4 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      <button class="icon" id="gearBtn" title="설정"><svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.2" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M8 1.5v2M8 12.5v2M1.5 8h2M12.5 8h2M3.4 3.4l1.4 1.4M11.2 11.2l1.4 1.4M3.4 12.6l1.4-1.4M11.2 4.8l1.4-1.4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+    </div>
   </div>
   <div id="menu" class="menu" hidden></div>
   <div id="modal" class="modal" hidden></div>

@@ -333,7 +333,7 @@
     .mini .ui{opacity:0;transition:opacity .18s}
     .mini:hover .ui,.mini.show .ui{opacity:1}
     .shade{position:absolute;left:0;right:0;bottom:0;height:64px;background:linear-gradient(transparent,rgba(0,0,0,.7));pointer-events:none}
-    .top{position:absolute;top:8px;right:8px;display:flex;gap:6px}
+    .top{position:absolute;top:8px;left:8px;right:8px;display:flex;justify-content:space-between;gap:6px}
     .top button,.ctl button{border:0;background:rgba(0,0,0,.55);color:#fff;width:28px;height:28px;border-radius:7px;display:grid;place-items:center;cursor:pointer;padding:0}
     .top button:hover,.ctl button:hover{background:#e00030}
     .top button svg,.ctl button svg{width:14px;height:14px}
