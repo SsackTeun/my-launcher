@@ -1,7 +1,7 @@
 // 사이트 창(YouTube · Netflix · YouTube Music)에 넣는 스크립트 — Mac 판 youtube.swift 의 작은 창(PIP)을 Windows 로
 // - 보통 창: 오른쪽 아래 [PIP] 단추 (영상이 있을 때)
 // - 작은 창: 제목 막대 없는 항상 위 창에 영상만 꽉 (자막은 보임), 마우스를 올리면 조작 단추
-//   누르면 재생/멈춤 · 두 번 누르면 원래 창 · 끌면 옮기기 · 가장자리 끌면 크기 · 휠은 볼륨 · Esc 원래 창
+//   누르면 재생/멈춤 · 두 번 누르면 원래 창 · 끌면 옮기기 · 가장자리 끌면 크기 · 휠은 볼륨(쇼츠는 다음 · 이전 쇼츠, 볼륨은 Shift + 휠) · Esc 원래 창
 // - 도구함에 알릴 때: https://mylauncher.invalid/<명령> 으로 이동하려 하면 도구함이 막고 처리
 (function () {
   if (window.top !== window || window.__ml) return;
@@ -132,6 +132,8 @@
       const v = video(); if (v) v.paused ? v.play() : v.pause();
     },
     pause() { const p = site === 'netflix' && nfPlayer(); if (p && p.pause) p.pause(); else video()?.pause(); },
+    /// 실시간 방송에서 지금(실시간 끝)으로
+    toLive() { const mp = ytPlayer(); if (mp?.seekToLiveHead) mp.seekToLiveHead(); else { const st = P.state(); if (st) P.seek(st.e); } },
     seek(t) {
       const p = site === 'netflix' && nfPlayer();
       if (p && p.seek) return p.seek(Math.round(t * 1000)); // Netflix 는 영상 위치를 직접 바꾸면 오류
@@ -145,10 +147,22 @@
         return { t: p?.getCurrentTime ? p.getCurrentTime() / 1000 : v.currentTime, s: 0, e: p?.getDuration ? p.getDuration() / 1000 : (isFinite(v.duration) ? v.duration : 0),
           paused: p?.isPaused ? p.isPaused() : v.paused, vol: (p?.getVolume ? p.getVolume() : v.volume) * 100, muted: p?.isMuted ? p.isMuted() : v.muted, live: false };
       }
-      let s = 0, e = v.duration;
-      if (!isFinite(e)) { const r = v.seekable; if (r && r.length) { s = r.start(0); e = r.end(r.length - 1); } else e = 0; }
+      let s = 0, e = v.duration, head = false;
       const mp = ytPlayer();
-      return { t: v.currentTime, s, e, paused: v.paused, vol: mp?.getVolume ? mp.getVolume() : v.volume * 100, muted: mp?.isMuted ? mp.isMuted() : v.muted, live: !isFinite(v.duration) };
+      // 실시간 방송: YouTube 가 영상 길이를 보통 숫자로 줄 때가 있어서(그러면 '1:28 / 2:27' 처럼 남아 보였음) 플레이어에게 직접 물어봄
+      let live = !isFinite(v.duration);
+      try { if (mp?.getVideoData?.()?.isLive) live = true; } catch (x) {}
+      if (live) {
+        e = NaN;
+        try {
+          const ps = mp?.getProgressState?.();
+          if (ps && isFinite(ps.seekableEnd) && ps.seekableEnd > 0) { s = ps.seekableStart || 0; e = ps.seekableEnd; head = !!ps.isAtLiveHead; }
+        } catch (x) {}
+        if (!isFinite(e)) { const r = v.seekable; if (r && r.length) { s = r.start(0); e = r.end(r.length - 1); } else { s = 0; e = v.currentTime; } }
+        // 실시간 끝에서 몇 초 안이면 '실시간' (버퍼만큼 늘 조금 뒤에 있음)
+        if (e - v.currentTime < 12) head = true;
+      }
+      return { t: v.currentTime, s, e, head, paused: v.paused, vol: mp?.getVolume ? mp.getVolume() : v.volume * 100, muted: mp?.isMuted ? mp.isMuted() : v.muted, live };
     },
     volume(n) {
       n = Math.max(0, Math.min(100, Math.round(n)));
@@ -344,6 +358,7 @@
     .bar b{position:absolute;left:0;top:0;bottom:0;background:#e00030;border-radius:2px}
     .bar:hover i{height:6px}
     .t{color:#fff;font-weight:500;font-size:11px;min-width:76px;text-align:right;font-variant-numeric:tabular-nums;text-shadow:0 1px 2px #000}
+    .t.golive{cursor:pointer;text-decoration:underline dotted}
     .vol{width:60px;accent-color:#fff}
     .edge{position:absolute;pointer-events:auto}
     .n{top:0;left:8px;right:8px;height:5px;cursor:ns-resize}.s{bottom:0;left:8px;right:8px;height:5px;cursor:ns-resize}
@@ -365,7 +380,7 @@
       <div class="bar" data-a="seek"><i><b></b></i></div>
       <span class="t"></span>
       <button data-a="mute" title="소리 끄기 / 켜기"></button>
-      <input class="vol" type="range" min="0" max="100" title="볼륨 (휠)">
+      <input class="vol" type="range" min="0" max="100" title="볼륨 (휠 · 쇼츠는 Shift + 휠)">
     </div>
     <div class="edge n" data-r="North"></div><div class="edge s" data-r="South"></div><div class="edge w" data-r="West"></div><div class="edge e" data-r="East"></div>
     <div class="edge nw" data-r="NorthWest"></div><div class="edge ne" data-r="NorthEast"></div><div class="edge sw" data-r="SouthWest"></div><div class="edge se" data-r="SouthEast"></div>
@@ -391,8 +406,11 @@
     $('[data-a=play]').innerHTML = H(s.paused ? ICON.play : ICON.pause);
     $('[data-a=mute]').innerHTML = H(s.muted || s.vol === 0 ? ICON.mute : ICON.vol);
     const len = s.e - s.s;
-    $('.bar b').style.width = len > 0 ? Math.min(100, ((s.t - s.s) / len) * 100) + '%' : '0';
-    $('.t').textContent = s.live ? '실시간' : `${fmt(s.t)} / ${fmt(s.e)}`;
+    // 실시간: 지금 보고 있으면 막대 끝까지 · '● 실시간', 뒤로 돌려 봤으면 얼마나 늦었는지 (누르면 실시간으로)
+    $('.bar b').style.width = s.live && s.head ? '100%' : len > 0 ? Math.min(100, ((s.t - s.s) / len) * 100) + '%' : '0';
+    $('.t').textContent = !s.live ? `${fmt(s.t)} / ${fmt(s.e)}` : s.head ? '● 실시간' : `실시간 −${fmt(s.e - s.t)}`;
+    $('.t').classList.toggle('golive', s.live && !s.head);
+    $('.t').title = s.live && !s.head ? '누르면 실시간으로' : '';
     if (document.activeElement !== host && !$('.vol').matches(':active')) $('.vol').value = s.muted ? 0 : s.vol;
   }
 
@@ -429,7 +447,7 @@
     if (!down) return;
     const wasDrag = down.moved;
     down = null;
-    if (wasDrag || e.target.closest('button,input,.bar,[data-r]')) return;
+    if (wasDrag || e.target.closest('button,input,.bar,[data-r],.t.golive')) return;
     // 한 번 = 재생/멈춤, 두 번 = 원래 창
     if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; send('pip-off'); return; }
     clickTimer = setTimeout(() => { clickTimer = null; P.toggle(); setTimeout(tick, 120); }, 260);
@@ -439,6 +457,7 @@
     if (a === 'play') { P.toggle(); setTimeout(tick, 120); }
     if (a === 'mute') { P.mute(); setTimeout(tick, 120); }
     if (a === 'expand') send('pip-off');
+    if (e.target.closest('.t.golive')) { P.toLive(); setTimeout(tick, 300); }
     if (a === 'close') { P.pause(); send('pip-close'); }
     if (a === 'seek' && last && last.e > last.s) {
       const r = e.target.closest('.bar').getBoundingClientRect();
@@ -447,10 +466,31 @@
     }
   });
   $('.vol').addEventListener('input', (e) => P.volume(+e.target.value));
+  // 휠: 볼륨 — 쇼츠에서는 다음 · 이전 쇼츠 (볼륨은 Shift + 휠)
+  let wheelAt = 0, wheelSum = 0;
+  function shortsStep(down) {
+    const b = document.querySelector(down ? '#navigation-button-down button' : '#navigation-button-up button');
+    if (b && !b.disabled) { b.click(); return; }
+    // 단추가 없으면 YouTube 쇼츠의 키보드 이동 (↓ · ↑)
+    const k = down ? 'ArrowDown' : 'ArrowUp';
+    const t = document.querySelector('ytd-shorts') || document.body;
+    for (const type of ['keydown', 'keyup']) t.dispatchEvent(new KeyboardEvent(type, { key: k, code: k, keyCode: down ? 40 : 38, which: down ? 40 : 38, bubbles: true }));
+  }
   ov.addEventListener('wheel', (e) => {
     e.preventDefault();
+    if (location.pathname.startsWith('/shorts') && !e.shiftKey) {
+      // 터치패드처럼 잘게 오는 휠은 모아서, 한 번 넘긴 뒤 잠깐은 무시 (한 번에 여러 개 넘어가지 않게)
+      const now = Date.now();
+      if (now - wheelAt < 450) return;
+      wheelSum += e.deltaY;
+      if (Math.abs(wheelSum) < 40) return;
+      wheelAt = now;
+      shortsStep(wheelSum > 0);
+      wheelSum = 0;
+      return;
+    }
     const s = P.state(); if (!s) return;
-    P.volume((s.muted ? 0 : s.vol) + (e.deltaY < 0 ? 5 : -5));
+    P.volume((s.muted ? 0 : s.vol) + ((e.deltaY || e.deltaX) < 0 ? 5 : -5));
     tick();
   }, { passive: false });
   addEventListener('keydown', (e) => {
