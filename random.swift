@@ -259,6 +259,8 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
     private struct Rec { let g: Genre; var pool: [(ArtistHit, Int)] = []; var shown = Set<String>(); var used: [String] = [] }
     private var rec: Rec?
     private var recHits: [ArtistHit] = []
+    /// 추천 가수가 장르 플레이리스트에 나온 횟수
+    private var recN: [String: Int] = [:]
 
     /// 만드는 판 (따로 창 · 크게 보기 '랜덤' 탭이 같이 씀 — 한 번에 한 곳에만 붙음)
     private(set) var content: NSView?
@@ -284,7 +286,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
     /// 크게 보기 탭에선 칸 높이에 맞춰 늘림: 위(가수 찾기 · 장르)와 아래(얼마나 · 어디에 · 만들기)는 그대로,
     /// 남는 높이는 추천 가수 칸과 고른 가수 목록이 절반씩 (따로 창은 원래 크기)
     private var baseFrames: [ObjectIdentifier: NSRect] = [:]
-    private static let baseH: CGFloat = 616
+    private static let baseH: CGFloat = 680
     func fit(height: CGFloat) {
         guard let v = content else { return }
         if baseFrames.isEmpty { for s in v.subviews { baseFrames[ObjectIdentifier(s)] = s.frame } }
@@ -316,7 +318,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
     }
 
     private func build() {
-        let W: CGFloat = 440, H: CGFloat = 616
+        let W: CGFloat = 440, H: CGFloat = 680
         let p = NSPanel(contentRect: NSRect(x: 0, y: 0, width: W, height: H), styleMask: [.titled, .closable, .utilityWindow], backing: .buffered, defer: false)
         p.title = "랜덤 플레이리스트 만들기"
         p.isFloatingPanel = true
@@ -354,6 +356,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         moreBtn.toolTip = "이 장르에서 다른 가수 보기 (아직 안 보여 준 가수)"
         moreBtn.isEnabled = false
         moreBtn.frame = NSRect(x: 156, y: H - 95, width: 30, height: 24)
+        moreBtn.isHidden = true   // ↻ 다른 가수는 추천 칸 머리줄로 옮김
         v.addSubview(moreBtn)
         for (b, x, w, sel, tip) in [(fromQueueBtn, 190.0, 150.0, #selector(fromQueue), "지금 다음 트랙 목록에 있는 가수들을 한 번에 넣어요"),
                                     (clearBtn, 344.0, W - 358, #selector(clearPicks), "고른 가수를 모두 빼요")] {
@@ -368,15 +371,15 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
         listScroll.autohidesScrollers = true
         recScroll.drawsBackground = false
         recScroll.borderType = .noBorder
-        recScroll.frame = NSRect(x: 12, y: H - 198, width: W - 24, height: 98)
+        recScroll.frame = NSRect(x: 12, y: H - 262, width: W - 24, height: 162)
         v.addSubview(recScroll)
         drawRec(note: "장르를 고르면 추천 가수가 여기 나와요 · 눌러서 넣기")
-        label("가수마다 비중: 많이 듣고 싶은 가수일수록 크게 (1 ~ 5)", y: H - 218, bold: false)
+        label("가수마다 비중: 많이 듣고 싶은 가수일수록 크게 (1 ~ 5)", y: H - 282, bold: false)
         listScroll.documentView = list
         listScroll.hasVerticalScroller = true
         listScroll.drawsBackground = false
         listScroll.borderType = .noBorder
-        listScroll.frame = NSRect(x: 12, y: 206, width: W - 24, height: H - 218 - 206 - 6)
+        listScroll.frame = NSRect(x: 12, y: 206, width: W - 24, height: H - 282 - 206 - 6)
         v.addSubview(listScroll)
 
         label("② 얼마나", y: 176)
@@ -524,7 +527,7 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
     @objc private func genrePicked() {
         if genrePop.selectedItem?.tag == -1 { loadGenres(); return }
         guard let it = genrePop.selectedItem, it.tag > 0, let g = Self.genreCache[safe: it.tag - 1] else { return }
-        genrePop.item(at: 0)?.title = "장르: \(g.title)"
+        genrePop.item(at: 0)?.title = "장르  \(g.title)"
         rec = Rec(g: g)
         moreBtn.isEnabled = true
         moreRec()
@@ -558,53 +561,77 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
             var x = Double.random(in: 0..<left.reduce(0) { $0 + sqrt(Double(max(1, $1.1))) })
             var k = 0
             for (j, a) in left.enumerated() { x -= sqrt(Double(max(1, a.1))); if x < 0 { k = j; break } }
-            out.append(left.remove(at: k).0)
+            let a = left.remove(at: k); out.append(a.0); recN[a.0.id] = a.1
         }
         out.forEach { r.shown.insert($0.id) }
         rec = r
         recHits = out
         if out.isEmpty { drawRec(note: "‘\(r.g.title)’에서 새로 추천할 가수가 없어요"); return }
-        drawRec(note: "‘\(r.g.title)’ 추천 가수 \(out.count)명 (모은 가수 \(r.pool.count)명) · 눌러서 넣기", buttons: true)
+        drawRec(note: "‘\(r.g.title)’ 추천 가수", sub: "\(out.count)명 · 모은 가수 \(r.pool.count)명", buttons: true)
     }
-    /// 추천 칸 그리기: 안내 한 줄 + 가수 단추들(줄바꿈) + 모두 넣기 · 다른 가수 보기
-    private func drawRec(note: String, buttons: Bool = false) {
+    /// 추천 칸 그리기: 머리줄(‘장르’ 추천 가수 · ↻ 다른 가수 · ＋ 모두 넣기) + 가수 카드 3열 (동그라미 · 이름 · 나온 횟수 · ＋/✓)
+    private func drawRec(note: String, sub: String = "", buttons: Bool = false) {
         recDoc.subviews.forEach { $0.removeFromSuperview() }
         let w = recScroll.contentSize.width
         let l = NSTextField(labelWithString: note)
-        l.font = .systemFont(ofSize: 11); l.textColor = .secondaryLabelColor; l.lineBreakMode = .byTruncatingTail
-        l.frame = NSRect(x: 4, y: 2, width: w - 8, height: 15)
+        l.font = buttons ? .boldSystemFont(ofSize: 12) : .systemFont(ofSize: 11)
+        l.textColor = buttons ? .labelColor : .secondaryLabelColor; l.lineBreakMode = .byTruncatingTail
+        l.sizeToFit()
+        l.frame = NSRect(x: 4, y: 4, width: min(l.frame.width, w - 200), height: 16)
         recDoc.addSubview(l)
-        var x: CGFloat = 2, y: CGFloat = 20
-        func place(_ b: NSButton) {
-            b.bezelStyle = .recessed; b.controlSize = .small; b.font = .systemFont(ofSize: 11)
-            b.sizeToFit()
-            let bw = min(b.frame.width + 6, w - 4)
-            if x + bw > w { x = 2; y += 24 }
-            b.frame = NSRect(x: x, y: y, width: bw, height: 21)
-            x += bw + 4
-            recDoc.addSubview(b)
+        if !sub.isEmpty {
+            let sl = NSTextField(labelWithString: sub)
+            sl.font = .systemFont(ofSize: 10); sl.textColor = .secondaryLabelColor; sl.lineBreakMode = .byTruncatingTail
+            sl.frame = NSRect(x: l.frame.maxX + 6, y: 5, width: max(0, w - 186 - l.frame.maxX), height: 14)
+            recDoc.addSubview(sl)
         }
+        var y: CGFloat = 26
         if buttons {
-            for (i, a) in recHits.enumerated() {
-                let b = NSButton(title: "＋ \(a.name)", target: self, action: #selector(recPicked(_:))); b.tag = i
-                place(b)
+            let left = recHits.filter { a in !picks.contains { $0.artist.id == a.id } }.count
+            let all = NSButton(title: "＋ 모두 넣기", target: self, action: #selector(recPicked(_:))); all.tag = -1
+            let more = NSButton(title: "↻ 다른 가수", target: self, action: #selector(recMore))
+            more.toolTip = "이 장르에서 아직 안 보여 준 가수"
+            all.isEnabled = left > 0
+            var x = w - 2
+            for b in [all, more] {
+                b.bezelStyle = .rounded; b.controlSize = .small; b.font = .systemFont(ofSize: 11)
+                b.sizeToFit()
+                x -= b.frame.width
+                b.frame = NSRect(x: x, y: 0, width: b.frame.width, height: 22)
+                x -= 4
+                recDoc.addSubview(b)
             }
-            let all = NSButton(title: "모두 넣기", target: self, action: #selector(recPicked(_:))); all.tag = -1
-            place(all)
+            let cols = w >= 300 ? 3 : 2
+            let gap: CGFloat = 6, cw = (w - 4 - gap * CGFloat(cols - 1)) / CGFloat(cols), ch: CGFloat = 40
+            for (i, a) in recHits.enumerated() {
+                let on = picks.contains { $0.artist.id == a.id }
+                let c = RecCard(name: a.name, sub: "플레이리스트에 \(recN[a.id] ?? 1)번", added: on) { [weak self] in
+                    guard let self, let a = self.recHits[safe: i] else { return }
+                    if !self.picks.contains(where: { $0.artist.id == a.id }) { self.add(a); self.status.stringValue = "‘\(a.name)’을 넣었어요" }
+                    self.redrawRec()
+                }
+                c.toolTip = "눌러서 랜덤 가수에 넣기 · 이 장르 플레이리스트에 \(recN[a.id] ?? 1)번 나옴"
+                c.frame = NSRect(x: 2 + CGFloat(i % cols) * (cw + gap), y: y + CGFloat(i / cols) * (ch + gap), width: cw, height: ch)
+                recDoc.addSubview(c)
+            }
+            y += CGFloat((recHits.count + cols - 1) / cols) * (ch + gap)
         }
-        recDoc.frame = NSRect(x: 0, y: 0, width: w, height: max(recScroll.contentSize.height, y + (buttons ? 24 : 0)))
+        recDoc.frame = NSRect(x: 0, y: 0, width: w, height: max(recScroll.contentSize.height, y))
         recScroll.contentView.scroll(to: .zero)
     }
+    /// 넣은 가수 ✓ 표시만 다시 (스크롤 자리 그대로)
+    private func redrawRec() {
+        guard let r = rec, !recHits.isEmpty else { return }
+        let at = recScroll.contentView.bounds.origin
+        drawRec(note: "‘\(r.g.title)’ 추천 가수", sub: "\(recHits.count)명 · 모은 가수 \(r.pool.count)명", buttons: true)
+        recScroll.contentView.scroll(to: at)
+    }
     @objc private func recPicked(_ b: NSButton) {
-        if b.tag < 0 {
-            recHits.forEach { add($0) }
-            status.stringValue = "추천 가수 \(recHits.count)명을 넣었어요"
-            recHits = []
-            moreRec()
-        } else if let a = recHits[safe: b.tag] {
-            add(a)
-            b.isEnabled = false
-        }
+        guard b.tag < 0 else { return }
+        var n = 0
+        for a in recHits where !picks.contains(where: { $0.artist.id == a.id }) { add(a); n += 1 }
+        status.stringValue = n > 0 ? "추천 가수 \(n)명을 넣었어요" : "이미 넣은 가수예요"
+        redrawRec()
     }
     @objc private func recMore() { moreRec() }
 
@@ -784,4 +811,62 @@ final class RandomPlaylistWindow: NSObject, NSWindowDelegate {
             self.panel?.orderOut(nil)
         }
     }
+}
+
+/// 추천 가수 카드: 색 동그라미(첫 글자) · 이름 · 나온 횟수 · ＋/✓ — 누르면 넣기
+final class RecCard: NSView {
+    private let action: () -> Void
+    private var hover = false { didSet { paint() } }
+    private let added: Bool
+    init(name: String, sub: String, added: Bool, action: @escaping () -> Void) {
+        self.action = action; self.added = added
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.cornerRadius = 7
+        var h = 0
+        for u in name.unicodeScalars { h = (h * 31 + Int(u.value)) % 360 }
+        let av = NSTextField(labelWithString: String(name.trimmingCharacters(in: .whitespaces).first ?? "?"))
+        av.font = .boldSystemFont(ofSize: 11); av.alignment = .center; av.textColor = .white
+        av.wantsLayer = true
+        av.drawsBackground = false
+        let circle = NSView(frame: NSRect(x: 7, y: 9, width: 22, height: 22))
+        circle.wantsLayer = true
+        circle.layer?.cornerRadius = 11
+        circle.layer?.backgroundColor = NSColor(hue: CGFloat(h) / 360, saturation: 0.5, brightness: 0.62, alpha: 1).cgColor
+        av.frame = NSRect(x: 0, y: 3, width: 22, height: 16)
+        circle.addSubview(av)
+        addSubview(circle)
+        let t = NSTextField(labelWithString: name)
+        t.font = .boldSystemFont(ofSize: 11); t.lineBreakMode = .byTruncatingTail
+        addSubview(t)
+        let s = NSTextField(labelWithString: sub)
+        s.font = .systemFont(ofSize: 10); s.textColor = .secondaryLabelColor; s.lineBreakMode = .byTruncatingTail
+        addSubview(s)
+        let p = NSTextField(labelWithString: added ? "✓" : "＋")
+        p.font = .boldSystemFont(ofSize: 12); p.textColor = added ? .systemGreen : .launcherAccent; p.alignment = .center
+        addSubview(p)
+        names = (t, s, p)
+        alphaValue = added ? 0.6 : 1
+        paint()
+    }
+    private var names: (NSTextField, NSTextField, NSTextField)?
+    required init?(coder: NSCoder) { fatalError() }
+    override func layout() {
+        super.layout()
+        guard let (t, s, p) = names else { return }
+        t.frame = NSRect(x: 36, y: 21, width: bounds.width - 60, height: 15)
+        s.frame = NSRect(x: 36, y: 5, width: bounds.width - 60, height: 14)
+        p.frame = NSRect(x: bounds.width - 22, y: 12, width: 16, height: 16)
+    }
+    private func paint() { layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(hover ? 0.13 : 0.07).cgColor }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { hover = true }
+    override func mouseExited(with event: NSEvent) { hover = false }
+    override func mouseDown(with event: NSEvent) {}
+    override func mouseUp(with event: NSEvent) { if bounds.contains(convert(event.locationInWindow, from: nil)) { action() } }
+    override func hitTest(_ point: NSPoint) -> NSView? { frame.contains(point) ? self : nil }
 }

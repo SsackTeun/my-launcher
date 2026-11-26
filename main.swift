@@ -1260,86 +1260,207 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return b
     }()
     func showHub(from b: NSView) {
-        let W: CGFloat = 236, H: CGFloat = 238
-        let v = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: H))
+        let W: CGFloat = 236
+        let v = FlippedView(frame: NSRect(x: 0, y: 0, width: W, height: 400))
         let pop = NSPopover()
-        let top: CGFloat = 58   // 맨 위: 창 위치 · 프리셋 / 투명도 두 줄
-        let t = NSTextField(labelWithString: "다른 프로그램")
-        t.font = .systemFont(ofSize: 11, weight: .semibold); t.textColor = .secondaryLabelColor
-        t.frame = NSRect(x: 12, y: top + 9, width: W - 24, height: 15)
-        v.addSubview(t)
-        // 큰 아이콘 네 칸 (Netflix · YouTube · 쇼츠 · YouTube Music 창 접기) — 누르면 판도 닫힘
+        var y: CGFloat = 9
+        func header(_ s: String) {
+            let t = NSTextField(labelWithString: s)
+            t.font = .systemFont(ofSize: 11, weight: .semibold); t.textColor = .secondaryLabelColor
+            t.frame = NSRect(x: 12, y: y, width: W - 24, height: 15)
+            v.addSubview(t)
+            y += 19
+        }
+        func separator() {
+            y += 6
+            let sep = NSBox(frame: NSRect(x: 12, y: y, width: W - 24, height: 1)); sep.boxType = .separator
+            v.addSubview(sep)
+            y += 7
+        }
+        // ── 창 위치: 세 칸 (누르면 바로 바뀌고 판은 그대로)
+        header("창 위치")
+        let cur = playerLevelChoice >= 0 ? playerLevelChoice : (widget ? widgetLevel : 2)
+        var lvBtns: [NSButton] = [], lvLabels: [NSTextField] = []
+        func paintLevels(_ c: Int) {
+            for (i, btn) in lvBtns.enumerated() {
+                btn.layer?.backgroundColor = (i == c ? NSColor.launcherAccent.withAlphaComponent(0.25) : NSColor.labelColor.withAlphaComponent(0.07)).cgColor
+                btn.contentTintColor = i == c ? .launcherAccent : .labelColor
+                lvLabels[i].textColor = i == c ? .launcherAccent : .secondaryLabelColor
+            }
+        }
+        let lw = (W - 24 - 12) / 3
+        for (i, c) in Self.levelChoices.enumerated() {
+            let btn = ActionButton(title: "", symbol: c.0) { [unowned self] _ in
+                playerLevelChoice = i
+                syncPinButton()
+                if let p = playerPanel { p.level = playerLevel; p.orderFrontRegardless() }
+                paintLevels(i)
+            }
+            btn.symbolConfiguration = .init(pointSize: 18, weight: .regular)
+            btn.isBordered = false
+            btn.wantsLayer = true
+            btn.layer?.cornerRadius = 8
+            btn.toolTip = c.1
+            btn.frame = NSRect(x: 12 + CGFloat(i) * (lw + 6), y: y, width: lw, height: 32)
+            v.addSubview(btn)
+            let l = NSTextField(labelWithString: c.1)
+            l.font = .systemFont(ofSize: 10); l.alignment = .center
+            l.frame = NSRect(x: 12 + CGFloat(i) * (lw + 6), y: y + 35, width: lw, height: 14)
+            v.addSubview(l)
+            lvBtns.append(btn); lvLabels.append(l)
+        }
+        paintLevels(cur)
+        y += 54
+        // ── 배치 프리셋 (누르면 적용 · ⋯ 로 덮어쓰기 / 자동으로 쓸 앱 / 이름 / 지우기 · ＋ 로 지금 배치 저장)
+        let pt = NSTextField(labelWithString: "배치 프리셋 · 앱이 앞에 오면 자동")
+        pt.font = .systemFont(ofSize: 11, weight: .semibold); pt.textColor = .secondaryLabelColor
+        pt.frame = NSRect(x: 12, y: y + 2, width: W - 50, height: 15)
+        v.addSubview(pt)
+        let save = ActionButton(title: "", symbol: "plus.circle") { [unowned self] _ in
+            pop.close()
+            PlaylistPane.askName(title: "배치 프리셋 이름", initial: "배치 \(playerPresets.count + 1)", button: "저장") { [unowned self] name in
+                var all = playerPresets
+                all.append(capturePreset(name: name))
+                playerPresets = all
+            }
+        }
+        save.isBordered = false
+        save.contentTintColor = .launcherAccent
+        save.toolTip = "지금 배치 저장 (자리 · 크기 · 창 위치 · 투명도 · 뒤쪽 클릭)"
+        save.frame = NSRect(x: W - 34, y: y, width: 22, height: 20)
+        v.addSubview(save)
+        y += 22
+        let rowH: CGFloat = 26
+        let list = playerPresets
+        if list.isEmpty {
+            let e = NSTextField(labelWithString: "＋ 를 누르면 지금 배치를 저장해요")
+            e.font = .systemFont(ofSize: 10); e.textColor = .tertiaryLabelColor
+            e.frame = NSRect(x: 12, y: y, width: W - 24, height: 14)
+            v.addSubview(e)
+            y += 18
+        }
+        for pr in list {
+            let row = ActionButton(title: "", symbol: nil) { [unowned self] _ in applyPreset(pr); pop.close() }
+            row.isBordered = false
+            row.wantsLayer = true
+            row.layer?.cornerRadius = 6
+            row.layer?.backgroundColor = (autoActive == pr.id ? NSColor.launcherAccent.withAlphaComponent(0.2) : NSColor.labelColor.withAlphaComponent(0.06)).cgColor
+            row.toolTip = "누르면 이 배치로" + (pr.apps.isEmpty ? "" : " · 자동: " + pr.apps.map { appName($0) }.joined(separator: ", "))
+            row.frame = NSRect(x: 10, y: y, width: W - 46, height: rowH - 4)
+            v.addSubview(row)
+            let name = NSTextField(labelWithString: pr.name)
+            name.font = .systemFont(ofSize: 12); name.lineBreakMode = .byTruncatingTail
+            name.frame = NSRect(x: 18, y: y + 3, width: W - 64 - CGFloat(min(3, pr.apps.count)) * 16, height: 16)
+            v.addSubview(name)
+            for (k, id) in pr.apps.prefix(3).enumerated() {
+                let iv = NSImageView(image: appIcon(id))
+                iv.frame = NSRect(x: W - 54 - CGFloat(k + 1) * 16, y: y + 3, width: 15, height: 15)
+                v.addSubview(iv)
+            }
+            let more = ActionButton(title: "", symbol: "ellipsis.circle") { [unowned self] b in
+                presetMenu(pr) { pop.close() }.popUp(positioning: nil, at: NSPoint(x: 0, y: b.bounds.height), in: b)
+            }
+            more.isBordered = false
+            more.contentTintColor = .secondaryLabelColor
+            more.toolTip = "덮어쓰기 · 자동으로 쓸 앱 · 이름 · 지우기"
+            more.frame = NSRect(x: W - 34, y: y + 1, width: 22, height: 20)
+            v.addSubview(more)
+            y += rowH
+        }
+        separator()
+        // ── 투명도: 밀대 두 개 (평소 · 조작할 때) + 창을 뚫고 뒤쪽 클릭
+        header("투명도")
+        func slider(_ name: String, value: CGFloat, set: @escaping (CGFloat) -> Void) {
+            let l = NSTextField(labelWithString: name)
+            l.font = .systemFont(ofSize: 11); l.textColor = .labelColor
+            l.frame = NSRect(x: 12, y: y + 2, width: 64, height: 15)
+            v.addSubview(l)
+            let pct = NSTextField(labelWithString: "\(Int((value * 100).rounded()))%")
+            pct.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium); pct.alignment = .right
+            pct.frame = NSRect(x: W - 48, y: y + 2, width: 36, height: 15)
+            v.addSubview(pct)
+            let sl = ActionSlider(value: Double(value), min: 0.4, max: 1) { x in
+                set(CGFloat(x)); pct.stringValue = "\(Int((x * 100).rounded()))%"
+            }
+            sl.controlSize = .small
+            sl.frame = NSRect(x: 76, y: y, width: W - 76 - 52, height: 20)
+            v.addSubview(sl)
+            y += 24
+        }
+        slider("평소", value: playerAlpha) { [unowned self] x in
+            playerAlpha = x; applyClickThrough(); if !playerActive { playerPanel?.alphaValue = x }
+        }
+        slider("조작할 때", value: playerAlphaActive) { [unowned self] x in
+            playerAlphaActive = x; applyClickThrough(); if playerActive { playerPanel?.alphaValue = x }
+        }
+        let ct = NSButton(checkboxWithTitle: "창을 뚫고 뒤쪽 클릭", target: nil, action: nil)
+        ct.font = .systemFont(ofSize: 12)
+        ct.state = playerClickThrough ? .on : .off
+        ct.toolTip = "켜 두면 맨 위 🔒 를 눌러 풀어야 조작해요 (창 밖으로 나가면 다시 잠김)\n마우스를 올리면 '조작할 때', 떼면 '평소' 투명도"
+        ct.frame = NSRect(x: 10, y: y, width: W - 20, height: 18)
+        let ctAction = ActionTarget { [unowned self, weak ct] in playerClickThrough = ct?.state == .on }
+        ct.target = ctAction; ct.action = #selector(ActionTarget.fire)
+        objc_setAssociatedObject(ct, "act", ctAction, .OBJC_ASSOCIATION_RETAIN)
+        v.addSubview(ct)
+        y += 20
+        separator()
+        // 큰 아이콘 칸 한 줄: (아이콘 칸, 이름)
+        func cellRow(_ cells: [(ActionButton, String)]) {
+            for (i, c) in cells.enumerated() {
+                let cell = c.0
+                cell.imagePosition = .imageOnly
+                cell.isBordered = false
+                cell.wantsLayer = true
+                cell.layer?.cornerRadius = 8
+                cell.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
+                cell.frame = NSRect(x: 12 + CGFloat(i) * 54, y: y, width: 48, height: 36)
+                v.addSubview(cell)
+                let l = NSTextField(labelWithString: c.1)
+                l.font = .systemFont(ofSize: 10); l.alignment = .center; l.textColor = .secondaryLabelColor
+                l.lineBreakMode = .byTruncatingTail
+                l.frame = NSRect(x: 12 + CGFloat(i) * 54 - 4, y: y + 39, width: 56, height: 14)
+                v.addSubview(l)
+            }
+            y += 56
+        }
+        // ── 다른 프로그램 (Netflix · YouTube · 쇼츠 · YouTube Music 창 접기) — 누르면 판도 닫힘
+        header("다른 프로그램")
         let names = ["Netflix", "YouTube", "쇼츠", "창 접기"]
+        var sites: [(ActionButton, String)] = []
         for (i, sb) in makePlayerSiteButtons().enumerated() {
-            guard let ab = sb as? ActionButton else { continue }
+            guard let ab = sb as? ActionButton, i < names.count else { continue }
             let cell = ActionButton(title: "", symbol: nil) { _ in pop.close(); ab.performClick(nil) }
             cell.image = ab.image.map { img -> NSImage in let c = img.copy() as! NSImage; c.size = NSSize(width: 22, height: 22); return c }
-            if cell.image == nil, let sym = ab.image { cell.image = sym }
             if ab.symbolConfiguration != nil { cell.image = ab.image; cell.symbolConfiguration = .init(pointSize: 18, weight: .semibold); cell.contentTintColor = ab.contentTintColor }
-            cell.imagePosition = .imageOnly
-            cell.isBordered = false
-            cell.wantsLayer = true
-            cell.layer?.cornerRadius = 8
-            cell.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
             cell.toolTip = ab.toolTip
-            cell.frame = NSRect(x: 12 + CGFloat(i) * 54, y: top + 30, width: 48, height: 36)
-            v.addSubview(cell)
-            let l = NSTextField(labelWithString: names[i])
-            l.font = .systemFont(ofSize: 10); l.alignment = .center; l.textColor = .secondaryLabelColor
-            l.frame = NSRect(x: 12 + CGFloat(i) * 54, y: top + 69, width: 48, height: 14)
-            v.addSubview(l)
+            sites.append((cell, names[i]))
         }
-        let sep = NSBox(frame: NSRect(x: 12, y: top + 92, width: W - 24, height: 1)); sep.boxType = .separator
-        v.addSubview(sep)
-        // 도구: 메일 · 창 정리 · Finder (위쪽 앱 창에 있던 것)
-        let tt = NSTextField(labelWithString: "도구")
-        tt.font = .systemFont(ofSize: 11, weight: .semibold); tt.textColor = .secondaryLabelColor
-        tt.frame = NSRect(x: 12, y: top + 99, width: W - 24, height: 15)
-        v.addSubview(tt)
+        cellRow(sites)
+        separator()
+        // ── 도구: 메일 · 창 정리 · Finder · 업데이트
+        header("도구")
         let unread = MailWatch.shared.unreadCount
-        let tools: [(String, String, (NSView) -> Void)] = [
-            ("envelope.fill", unread > 0 ? "메일 \(unread)" : "메일", { [unowned self] _ in
+        let up = SelfUpdate.shared
+        let tools: [(String, String, NSColor, String?, (NSView) -> Void)] = [
+            ("envelope.fill", unread > 0 ? "메일 \(unread)" : "메일", unread > 0 ? .launcherAccent : .labelColor, nil, { [unowned self] _ in
                 pop.close(); MailWatch.shared.configured ? MailWindow.shared.show() : openSettingsTab("메일") }),
-            ("rectangle.stack", "창 정리", { b in BulkWindows.menu().popUp(positioning: nil, at: NSPoint(x: 0, y: b.bounds.height), in: b) }),
-            ("folder.fill", "Finder", { [unowned self] _ in pop.close(); launch("com.apple.finder") }),
+            ("rectangle.stack", "창 정리", .labelColor, nil, { b in BulkWindows.menu().popUp(positioning: nil, at: NSPoint(x: 0, y: b.bounds.height), in: b) }),
+            ("folder.fill", "Finder", .labelColor, nil, { [unowned self] _ in pop.close(); launch("com.apple.finder") }),
+            up.available != nil
+                ? ("arrow.down.circle.fill", up.status.isEmpty ? "\(up.available!.version) 받기" : up.status, .systemOrange,
+                   "새 버전 \(up.available!.version)으로 업데이트 — 받아서 바꿔 끼운 뒤 다시 켜요", { _ in pop.close(); if up.status.isEmpty { up.install() } })
+                : ("arrow.down.circle", "업데이트", .labelColor,
+                   "새 버전이 있는지 확인 (지금 \(up.current))", { _ in pop.close(); up.check(manual: true) }),
         ]
-        for (i, t) in tools.enumerated() {
-            let cell = ActionButton(title: "", symbol: t.0) { b in t.2(b) }
-            cell.isBordered = false
+        cellRow(tools.map { t in
+            let cell = ActionButton(title: "", symbol: t.0) { b in t.4(b) }
             cell.symbolConfiguration = .init(pointSize: 16, weight: .semibold)
-            cell.contentTintColor = i == 0 && unread > 0 ? .launcherAccent : .labelColor
-            cell.wantsLayer = true
-            cell.layer?.cornerRadius = 8
-            cell.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.07).cgColor
-            cell.frame = NSRect(x: 12 + CGFloat(i) * 54, y: top + 118, width: 48, height: 36)
-            v.addSubview(cell)
-            let l = NSTextField(labelWithString: t.1)
-            l.font = .systemFont(ofSize: 10); l.alignment = .center; l.textColor = .secondaryLabelColor
-            l.frame = NSRect(x: 12 + CGFloat(i) * 54 - 4, y: top + 157, width: 56, height: 14)
-            v.addSubview(l)
-        }
-        // 맨 위 두 줄 아래 구분선
-        let sep2 = NSBox(frame: NSRect(x: 12, y: top - 4, width: W - 24, height: 1)); sep2.boxType = .separator
-        v.addSubview(sep2)
-        // 창 위치 · 프리셋 / 투명도 · 뒤쪽 클릭 — 누르면 그 판으로
-        let c = playerLevelChoice >= 0 ? playerLevelChoice : (widget ? widgetLevel : 2)
-        let lv = ActionButton(title: " 창 위치 · 프리셋 — \(Self.levelChoices[c].1)", symbol: Self.levelChoices[c].0) { [unowned self] _ in
-            pop.close(); DispatchQueue.main.async { self.showLevelPicker(from: b) }
-        }
-        let al = ActionButton(title: " 투명도 \(Int((playerAlpha * 100).rounded()))% · \(Int((playerAlphaActive * 100).rounded()))%\(playerClickThrough ? " · 뒤쪽 클릭" : "")",
-                              symbol: "circle.lefthalf.filled") { [unowned self] _ in
-            pop.close(); DispatchQueue.main.async { self.showAlphaPicker(from: b) }
-        }
-        for (k, x) in [lv, al].enumerated() {
-            x.isBordered = false
-            x.imagePosition = .imageLeading
-            x.alignment = .left
-            x.font = .systemFont(ofSize: 12)
-            x.symbolConfiguration = .init(pointSize: 12, weight: .semibold)
-            x.contentTintColor = .secondaryLabelColor
-            x.frame = NSRect(x: 10, y: 6 + CGFloat(k) * 24, width: W - 20, height: 22)
-            v.addSubview(x)
-        }
+            cell.contentTintColor = t.2
+            cell.toolTip = t.3
+            return (cell, t.1)
+        })
+        y += 2
+        v.frame.size.height = y
         let vc = NSViewController(); vc.view = v
         pop.contentViewController = vc
         pop.behavior = .transient
@@ -2277,7 +2398,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 안 읽은 메일이 있으면 ☰ 옆에 작은 점
             if hubDot.superview !== fx { fx.addSubview(hubDot) }
             hubDot.frame = NSRect(x: hubButton.frame.maxX - 3, y: hubButton.frame.maxY - 7, width: 7, height: 7)
-            hubDot.isHidden = MailWatch.shared.unreadCount == 0
+            hubDot.isHidden = MailWatch.shared.unreadCount == 0 && SelfUpdate.shared.available == nil
             if clickTimer == nil { p.alphaValue = playerAlpha; applyClickThrough() }
         }
         if view.superview !== fx { fx.addSubview(view) }
@@ -2565,6 +2686,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             buildStatusMenu()
             statusItem?.button?.title = SelfUpdate.shared.available != nil ? "🧰•" : "🧰"
             statusItem?.button?.toolTip = SelfUpdate.shared.available.map { "도구함 새 버전 \($0.version) — 눌러서 업데이트" }
+            hubDot.isHidden = MailWatch.shared.unreadCount == 0 && SelfUpdate.shared.available == nil
         }
         SelfUpdate.shared.start()
         // 새로 재생한 재생기만 남기고 나머지는 일시정지 (Windows 판과 같게)
