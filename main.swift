@@ -1375,12 +1375,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             l.font = .systemFont(ofSize: 11); l.textColor = .labelColor
             l.frame = NSRect(x: 12, y: y + 2, width: 64, height: 15)
             v.addSubview(l)
-            let pct = NSTextField(labelWithString: "\(Int((value * 100).rounded()))%")
+            let pct = NSTextField(labelWithString: Self.alphaText(value))
             pct.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium); pct.alignment = .right
             pct.frame = NSRect(x: W - 48, y: y + 2, width: 36, height: 15)
             v.addSubview(pct)
-            let sl = ActionSlider(value: Double(value), min: 0.4, max: 1) { x in
-                set(CGFloat(x)); pct.stringValue = "\(Int((x * 100).rounded()))%"
+            let sl = ActionSlider(value: Double(value), min: 0.2, max: 1) { x in
+                set(CGFloat(x)); pct.stringValue = Self.alphaText(CGFloat(x))
             }
             sl.controlSize = .small
             sl.frame = NSRect(x: 76, y: y, width: W - 76 - 52, height: 20)
@@ -1388,10 +1388,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             y += 24
         }
         slider("평소", value: playerAlpha) { [unowned self] x in
-            playerAlpha = x; applyClickThrough(); if !playerActive { playerPanel?.alphaValue = x }
+            playerAlpha = x; applyClickThrough(); if !playerActive { playerPanel?.alphaValue = x; setPlayerOpaque(x) }
         }
         slider("조작할 때", value: playerAlphaActive) { [unowned self] x in
-            playerAlphaActive = x; applyClickThrough(); if playerActive { playerPanel?.alphaValue = x }
+            playerAlphaActive = x; applyClickThrough(); if playerActive { playerPanel?.alphaValue = x; setPlayerOpaque(x) }
         }
         let ct = NSButton(checkboxWithTitle: "창을 뚫고 뒤쪽 클릭", target: nil, action: nil)
         ct.font = .systemFont(ofSize: 12)
@@ -1488,9 +1488,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.symbolConfiguration = .init(pointSize: 11, weight: .semibold)
         return b
     }()
-    /// 플레이어 창 투명도 (0.4 ~ 1)
+    /// 플레이어 창 투명도 (0.2 ~ 1)
     var playerAlpha: CGFloat {
-        get { let v = d.double(forKey: "playerAlpha"); return v >= 0.4 && v <= 1 ? CGFloat(v) : 1 }
+        get { let v = d.double(forKey: "playerAlpha"); return v >= 0.2 && v <= 1 ? CGFloat(v) : 0.99 }
         set { d.set(Double(newValue), forKey: "playerAlpha") }
     }
     lazy var alphaButton: ActionButton = {
@@ -1502,7 +1502,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     /// 조작할 때 투명도 (마우스를 올렸을 때 · 뒤쪽 클릭이면 🔒 를 풀었을 때) — 평소는 playerAlpha
     var playerAlphaActive: CGFloat {
-        get { let v = d.double(forKey: "playerAlphaActive"); return v >= 0.4 && v <= 1 ? CGFloat(v) : 1 }
+        get { let v = d.double(forKey: "playerAlphaActive"); return v >= 0.2 && v <= 1 ? CGFloat(v) : 0.99 }
         set { d.set(Double(newValue), forKey: "playerAlphaActive") }
     }
     /// 지금 조작 중인지 (마우스가 창 위 · 뒤쪽 클릭이면 🔒 를 풀었을 때)
@@ -1517,6 +1517,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         set { d.set(newValue, forKey: "playerClickThrough"); applyClickThrough() }
     }
     private var clickTimer: Timer?
+    /// 투명도 글자: 100% 는 '불투명'
+    static func alphaText(_ a: CGFloat) -> String { a >= 0.995 ? "불투명" : "\(Int((a * 100).rounded()))%" }
+    /// 투명도 100% = 바탕까지 불투명 (유리처럼 비치는 배경을 단색으로 덮음) · 99% 아래는 예전 모양 (Windows 0.4.3 과 같게)
+    func setPlayerOpaque(_ a: CGFloat) {
+        guard let fx = playerPanel?.contentView else { return }
+        let on = a >= 0.995
+        let id = NSUserInterfaceItemIdentifier("opaqueBG")
+        var bg = fx.subviews.first { $0.identifier == id }
+        if bg == nil && on {
+            let v = NSView(frame: fx.bounds)
+            v.identifier = id
+            v.autoresizingMask = [.width, .height]
+            v.wantsLayer = true
+            v.layer?.cornerRadius = Theme.playerRadius
+            fx.addSubview(v, positioned: .below, relativeTo: fx.subviews.first)
+            bg = v
+        }
+        guard let bg else { return }
+        var c = NSColor.windowBackgroundColor.cgColor
+        (playerPanel?.effectiveAppearance ?? NSApp.effectiveAppearance).performAsCurrentDrawingAppearance { c = NSColor.windowBackgroundColor.cgColor }
+        bg.layer?.backgroundColor = c
+        bg.frame = fx.bounds
+        bg.isHidden = !on
+    }
     /// 뒤쪽 클릭 중 🔒 를 눌러 잠깐 풀었는지 (마우스가 창 밖으로 나가면 다시 잠금) — 키를 안 써서 게임에 아무 신호도 안 감
     var playerUnlocked = false
     /// 🔒 손잡이: 마우스를 통과시키는 플레이어 창 위에 얹는 작은 창 (이것만 눌림) — 맨 위 줄 가운데 막대 자리
@@ -1564,7 +1588,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applyClickThrough() {
         clickTimer?.invalidate(); clickTimer = nil
         if !playerClickThrough { playerPanel?.ignoresMouseEvents = false; playerUnlocked = false; syncUnlockHandle() }
-        guard playerClickThrough || abs(playerAlpha - playerAlphaActive) > 0.01 else { playerPanel?.alphaValue = playerAlpha; return }
+        guard playerClickThrough || abs(playerAlpha - playerAlphaActive) > 0.01 else { playerPanel?.alphaValue = playerAlpha; setPlayerOpaque(playerAlpha); return }
         var shown: CGFloat = -1
         let update = { [weak self] in
             guard let self, let p = self.playerPanel else { return }
@@ -1580,6 +1604,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let want = self.playerActive ? self.playerAlphaActive : self.playerAlpha
             if abs(want - shown) > 0.005 {
                 shown = want
+                self.setPlayerOpaque(want)
                 NSAnimationContext.runAnimationGroup { c in c.duration = 0.18; p.animator().alphaValue = want }
             }
         }
@@ -1602,22 +1627,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             l.font = .systemFont(ofSize: 11); l.textColor = .labelColor
             l.frame = NSRect(x: 12, y: y + 2, width: 70, height: 15)
             v.addSubview(l)
-            let pct = NSTextField(labelWithString: "\(Int((value * 100).rounded()))%")
+            let pct = NSTextField(labelWithString: Self.alphaText(value))
             pct.font = .monospacedDigitSystemFont(ofSize: 11, weight: .medium); pct.alignment = .right
             pct.frame = NSRect(x: W - 48, y: y + 2, width: 36, height: 15)
             v.addSubview(pct)
-            let sl = ActionSlider(value: Double(value), min: 0.4, max: 1) { x in
-                set(CGFloat(x)); pct.stringValue = "\(Int((x * 100).rounded()))%"
+            let sl = ActionSlider(value: Double(value), min: 0.2, max: 1) { x in
+                set(CGFloat(x)); pct.stringValue = Self.alphaText(CGFloat(x))
             }
             sl.controlSize = .small
             sl.frame = NSRect(x: 82, y: y, width: W - 82 - 52, height: 20)
             v.addSubview(sl)
         }
         row("평소", y: H - 50, value: playerAlpha) { [unowned self] x in
-            playerAlpha = x; applyClickThrough(); if !playerActive { playerPanel?.alphaValue = x }
+            playerAlpha = x; applyClickThrough(); if !playerActive { playerPanel?.alphaValue = x; setPlayerOpaque(x) }
         }
         row("조작할 때", y: H - 76, value: playerAlphaActive) { [unowned self] x in
-            playerAlphaActive = x; applyClickThrough(); if playerActive { playerPanel?.alphaValue = x }
+            playerAlphaActive = x; applyClickThrough(); if playerActive { playerPanel?.alphaValue = x; setPlayerOpaque(x) }
         }
         let note = NSTextField(labelWithString: "마우스를 올리면 '조작할 때', 떼면 '평소'로 바뀌어요")
         note.font = .systemFont(ofSize: 10); note.textColor = .tertiaryLabelColor
@@ -4174,46 +4199,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(.separator())
         widgetItems().forEach(m.addItem)
         m.addItem(.separator())
-        if showPlayer, let st = music.state {
-            m.addItem(headerItem("♪ " + (st.title.isEmpty ? "YouTube Music" : st.title)))
-            m.addItem(Item("    재생 / 일시정지") { [unowned self] in music.press("playPause") })
-            m.addItem(Item("    다음 곡") { [unowned self] in music.press("next") })
-            m.addItem(Item("    이전 곡") { [unowned self] in music.press("prev") })
-            m.addItem(Item("    전체 가사 보기") { [unowned self] in lyrics.show() })
-            m.addItem(Item("    YouTube Music 창 열기") { [unowned self] in music.showWindow() })
-            m.addItem(.separator())
-        }
+        // 지금 재생 중 곡 조작(재생 · 다음 · 이전 · 가사 · YouTube Music 창)은 플레이어 창에 있어서 뺌
+        // YouTube · Netflix 열기 · 플레이어 창 접기 · 뒤쪽 클릭 · PIP 옵션은 플레이어 ☰ 판 · 각 창 · 설정에 있어서 뺌 (켜져 있는 창 조작만)
         let yt = YouTubeWindow.shared
-        m.addItem(Item("YouTube 창 열기") { yt.show() })
         if yt.isOpen {
+            let h = NSMenuItem(title: "YouTube", action: nil, keyEquivalent: ""); h.isEnabled = false; m.addItem(h)
             m.addItem(Item(yt.inMini ? "    큰 창으로 돌아가기" : "    작은 창으로 보기 (PIP)") { yt.toggleMini() })
-            m.addItem(Item(yt.inMini ? "    작은 창 닫고 큰 창으로" : "    작은 창으로 보기 (PIP)") { yt.togglePiP() })
             m.addItem(Item("    YouTube 끄기") { yt.quit() })
         }
-        do {
-            let ap = Item("    영상 누르면 바로 PIP") { yt.autoPiP.toggle() }
-            ap.state = yt.autoPiP ? .on : .off
-            m.addItem(ap)
-            let an = Item("    쇼츠 끝나면 자동 넘김") { yt.autoNextShorts.toggle() }
-            an.state = yt.autoNextShorts ? .on : .off
-            m.addItem(an)
-        }
         let nf = VideoWindow.netflix
-        m.addItem(Item("Netflix 창 열기") { nf.show() })
         if nf.isOpen {
+            let h = NSMenuItem(title: "Netflix", action: nil, keyEquivalent: ""); h.isEnabled = false; m.addItem(h)
             m.addItem(Item(nf.inMini ? "    큰 창으로 돌아가기" : "    작은 창으로 보기 (PIP)") { nf.toggleMini() })
             m.addItem(Item("    Netflix 끄기") { nf.quit() })
         }
         let pl = Item("YouTube Music 미니 플레이어") { [unowned self] in setPlayer(!playerEnabled) }
         pl.state = playerEnabled ? .on : .off
         m.addItem(pl)
-        if playerEnabled {
-            // 플레이어 창의 YouTube Music 단추로 접었으면 여기서 다시 열기
-            let open = showPlayer && playerDetached && !playerHidden
-            m.addItem(Item(open ? "    플레이어 창 접기" : "    플레이어 창 열기") { [unowned self] in togglePlayerWindow() })
-            let ct = Item("    플레이어 창을 뚫고 뒤쪽 클릭 (맨 위 🔒 로 풀기)") { [unowned self] in playerClickThrough.toggle(); refresh() }
-            ct.state = playerClickThrough ? .on : .off
-            m.addItem(ct)
+        // 접어 둔 플레이어 창은 ☰ 판이 안 보이니 여기서 다시 열기
+        if playerEnabled && !(showPlayer && playerDetached && !playerHidden) {
+            m.addItem(Item("    플레이어 창 열기") { [unowned self] in togglePlayerWindow() })
         }
         let ac = Item("도구함 창 자동 접기 (화면 끝에 붙였을 때)") { EdgeDock.shared.autoCollapse.toggle() }
         ac.state = EdgeDock.shared.autoCollapse ? .on : .off

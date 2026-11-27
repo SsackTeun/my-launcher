@@ -1892,7 +1892,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     const lv = curLevel();
     try { await w.setAlwaysOnBottom(lv === 0); await w.setAlwaysOnTop(lv === 2); } catch { /* 없음 */ }
   };
-  // 투명도 (40 ~ 100): 평소 / 조작할 때 — 마우스가 창 위에 있으면(뒤쪽 클릭이면 🔒 를 풀었을 때) '조작할 때'
+  // 투명도 (20 ~ 100): 평소 / 조작할 때 — 마우스가 창 위에 있으면(뒤쪽 클릭이면 🔒 를 풀었을 때) '조작할 때'
   // 100% 는 완전히 불투명 (바탕까지), 그 아래는 창 전체를 그만큼 비침 — 처음 값 99 는 예전 모양(반투명 유리)
   let alpha = ls("mzAlpha", 99), alphaA = ls("mzAlphaA", 99), ct = ls("mzClickThrough", false), unlocked = false, hovering = false;
   function applyAlpha() {
