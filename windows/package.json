@@ -1,7 +1,7 @@
 {
   "name": "my-launcher-windows",
   "private": true,
-  "version": "0.4.10",
+  "version": "0.4.11",
   "scripts": {
     "tauri": "tauri",
     "dev": "tauri dev --config src-tauri/tauri.dev.conf.json"
