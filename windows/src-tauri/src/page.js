@@ -367,6 +367,16 @@
     .w{left:0;top:8px;bottom:8px;width:5px;cursor:ew-resize}.e{right:0;top:8px;bottom:8px;width:5px;cursor:ew-resize}
     .nw{left:0;top:0;width:9px;height:9px;cursor:nwse-resize}.se{right:0;bottom:0;width:9px;height:9px;cursor:nwse-resize}
     .ne{right:0;top:0;width:9px;height:9px;cursor:nesw-resize}.sw{left:0;bottom:0;width:9px;height:9px;cursor:nesw-resize}
+    .ext{position:absolute;left:0;right:0;bottom:42px;display:none;justify-content:center;gap:6px}
+    .ext button{border:0;background:transparent;color:#fff;min-width:30px;height:26px;border-radius:7px;cursor:pointer;padding:0 6px;font-size:11px;text-shadow:0 1px 2px #000}
+    .ext button:hover{background:#e00030}
+    .ttl{position:absolute;top:44px;left:12px;right:12px;display:none;text-align:center;color:#fff;font-size:12px;text-shadow:0 1px 3px #000,0 0 3px #000;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:none}
+    .nf .shade{height:96px}
+    .pop{position:absolute;bottom:76px;left:50%;transform:translateX(-50%);min-width:170px;max-height:70%;overflow:auto;padding:4px;border-radius:8px;background:rgba(20,20,24,.96);display:none;box-shadow:0 4px 14px rgba(0,0,0,.4)}
+    .pop div{padding:5px 10px;color:#fff;cursor:pointer;border-radius:5px;font-weight:500;white-space:nowrap}
+    .pop div:hover{background:#e00030}
+    .pop .h{color:#999;cursor:default;font-weight:600}.pop .h:hover{background:none}
+    .pop .on::before{content:"✓ "}
     .msg{position:fixed;left:50%;bottom:70px;transform:translateX(-50%);background:rgba(20,20,24,.92);color:#fff;padding:8px 14px;border-radius:8px;pointer-events:none;display:none}
   </style>
   <button class="pipbtn" title="보던 영상을 항상 위에 뜨는 작은 창으로 (끌어서 옮기고, 가장자리로 크기 조절)">
@@ -384,6 +394,12 @@
       <button data-a="mute" title="소리 끄기 / 켜기"></button>
       <input class="vol" type="range" min="0" max="100" title="볼륨 (휠 · 쇼츠는 Shift + 휠)">
     </div>
+    <div class="ui ext">
+      <button data-a="back10" title="10초 뒤로">↺ 10</button><button data-a="fwd10" title="10초 앞으로">10 ↻</button>
+      <button data-a="nfnext" title="다음 화">다음 화 ▷|</button><button data-a="subs" title="자막 · 음성">자막</button><button data-a="speed" title="재생 속도">속도</button>
+    </div>
+    <div class="ui ttl"></div>
+    <div class="pop"></div>
     <div class="edge n" data-r="North"></div><div class="edge s" data-r="South"></div><div class="edge w" data-r="West"></div><div class="edge e" data-r="East"></div>
     <div class="edge nw" data-r="NorthWest"></div><div class="edge ne" data-r="NorthEast"></div><div class="edge sw" data-r="SouthWest"></div><div class="edge se" data-r="SouthEast"></div>
   </div>
@@ -402,6 +418,7 @@
   function tick() {
     $('.pipbtn').style.display = !mini && video() ? 'flex' : 'none';
     if (!mini) return;
+    { const v = video(); if (v && !v.hasAttribute('data-mini-v')) applyCss(true); }   // 다른 회차 · 영상으로 넘어가면 다시 맞춤
     const s = P.state();
     last = s;
     if (!s) return;
@@ -414,6 +431,11 @@
     $('.t').classList.toggle('golive', s.live && !s.head);
     $('.t').title = s.live && !s.head ? '누르면 실시간으로' : '';
     if (document.activeElement !== host && !$('.vol').matches(':active')) $('.vol').value = s.muted ? 0 : s.vol;
+    if (site === 'netflix') {   // 제목 (조작줄이 사라져도 마지막 것을 기억)
+      const m = meta();
+      if (m.t && m.t !== 'Netflix') tick.title = m.t + (m.a ? ' · ' + m.a : '');
+      $('.ttl').textContent = tick.title || '';
+    }
   }
 
   // 도구함이 부름: 들어가기 · 나오기 · 멈춤
@@ -425,6 +447,11 @@
     mini = on;
     applyCss(on);
     $('.mini').style.display = on ? 'block' : 'none';
+    // Netflix 추가 조작 (Mac 과 같음): 10초 뒤로 · 앞으로 · 다음 화 · 자막 · 음성 · 속도 · 제목
+    $('.mini').classList.toggle('nf', site === 'netflix');
+    $('.ext').style.display = site === 'netflix' ? 'flex' : 'none';
+    $('.ttl').style.display = site === 'netflix' ? 'block' : 'none';
+    $('.pop').style.display = 'none';
     if (on) { $('.mini').classList.add('show'); setTimeout(() => $('.mini').classList.remove('show'), 1800); }
     tick();
   };
@@ -449,7 +476,8 @@
     if (!down) return;
     const wasDrag = down.moved;
     down = null;
-    if (wasDrag || e.target.closest('button,input,.bar,[data-r],.t.golive')) return;
+    if (wasDrag || e.target.closest('button,input,.bar,[data-r],.t.golive,.pop')) return;
+    if ($('.pop').style.display === 'block') { $('.pop').style.display = 'none'; return; }   // 열린 메뉴 밖을 누르면 닫기만
     // 한 번 = 재생/멈춤, 두 번 = 원래 창
     if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; send('pip-off'); return; }
     clickTimer = setTimeout(() => { clickTimer = null; P.toggle(); setTimeout(tick, 120); }, 260);
@@ -461,6 +489,12 @@
     if (a === 'expand') send('pip-off');
     if (e.target.closest('.t.golive')) { P.toLive(); setTimeout(tick, 300); }
     if (a === 'close') { P.pause(); send('pip-close'); }
+    if (a === 'back10' || a === 'fwd10') { const st = P.state(); if (st) P.seek(Math.max(st.s, st.t + (a === 'fwd10' ? 10 : -10))); setTimeout(tick, 150); }
+    if (a === 'nfnext') nfNext();
+    if (a === 'subs') nfPop('subs');
+    if (a === 'speed') nfPop('speed');
+    const it = e.target.closest('.pop [data-k]');
+    if (it) { nfPick(it.dataset.k, it.dataset.v); $('.pop').style.display = 'none'; }
     if (a === 'seek' && last && last.e > last.s) {
       const r = e.target.closest('.bar').getBoundingClientRect();
       P.seek(last.s + ((e.clientX - r.left) / r.width) * (last.e - last.s));
@@ -468,6 +502,41 @@
     }
   });
   $('.vol').addEventListener('input', (e) => P.volume(+e.target.value));
+
+  // MARK: Netflix 추가 조작
+  /// 다음 화: Netflix 조작줄의 '다음 화' 단추를 대신 누름 (숨어 있으면 마우스를 움직인 것처럼 해서 꺼냄)
+  function nfNext() {
+    (q('.watch-video--player-view') || document.body).dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 10, clientY: 10 }));
+    setTimeout(() => {
+      const b = q('[data-uia="control-next"]') || q('[data-uia="next-episode-seamless-button"]');
+      if (b) b.click(); else say('다음 화가 없거나 아직 찾지 못했어요');
+    }, 250);
+  }
+  const escH = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  function nfPop(kind) {
+    const pop = $('.pop');
+    if (pop.style.display === 'block' && pop.dataset.kind === kind) { pop.style.display = 'none'; return; }
+    let html = '';
+    if (kind === 'speed') {
+      const cur = video()?.playbackRate || 1;
+      html = [0.5, 0.75, 1, 1.25, 1.5].map((r) => `<div data-k="rate" data-v="${r}" class="${Math.abs(cur - r) < 0.01 ? 'on' : ''}">${r === 1 ? '보통 (1x)' : r + 'x'}</div>`).join('');
+    } else {
+      const p = nfPlayer();
+      if (!p || !p.getTextTrackList) { say('영상을 재생하면 자막 · 음성을 고를 수 있어요'); return; }
+      const t = p.getTextTrack() || {}, a = p.getAudioTrack() || {};
+      html = '<div class="h">자막</div>' + p.getTextTrackList().map((x) => `<div data-k="text" data-v="${escH(x.trackId)}" class="${x.trackId === t.trackId ? 'on' : ''}">${escH(x.displayName)}${x.isClosedCaptions ? ' [CC]' : ''}</div>`).join('') +
+        '<div class="h">음성</div>' + p.getAudioTrackList().map((x) => `<div data-k="audio" data-v="${escH(x.trackId)}" class="${x.trackId === a.trackId ? 'on' : ''}">${escH(x.displayName)}</div>`).join('');
+    }
+    pop.innerHTML = H(html);
+    pop.dataset.kind = kind;
+    pop.style.display = 'block';
+  }
+  function nfPick(k, v) {
+    if (k === 'rate') { const vd = video(); if (vd) vd.playbackRate = +v; return; }
+    const p = nfPlayer(); if (!p) return;
+    const x = (k === 'text' ? p.getTextTrackList() : p.getAudioTrackList()).find((t) => t.trackId === v);
+    if (x) (k === 'text' ? p.setTextTrack(x) : p.setAudioTrack(x));
+  }
   // 휠: 볼륨 — 쇼츠에서는 다음 · 이전 쇼츠 (볼륨은 Shift + 휠)
   let wheelAt = 0, wheelSum = 0;
   function shortsStep(down) {

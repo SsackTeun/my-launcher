@@ -655,6 +655,13 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
         o.onVolume = { [unowned self] v in setVolume(v) }
         o.onMute = { [unowned self] in toggleMute() }
         o.onScrollStep = { [unowned self] down in shortsStep(down) }
+        if site == .netflix {
+            o.useExtras()
+            o.onSkip = { [unowned self] d in nfSkip(d) }
+            o.onNext = { [unowned self] in nfNext() }
+            o.onSubtitles = { [unowned self] v in nfTrackMenu(from: v) }
+            o.onSpeed = { [unowned self] v in nfSpeedMenu(from: v) }
+        }
         o.onClose = { [unowned self] in
             webView?.pauseAllMediaPlayback()
             exitMini(showMain: false)
@@ -687,6 +694,96 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
     """
 
     private var timeTimer: Timer?
+    private var titleTick = 0
+
+    // MARK: Netflix 추가 조작 (작은 창)
+    /// 제목: 조작줄의 제목 글 (조작줄이 사라져도 마지막 것을 기억)
+    private static let nfTitleJS = """
+    (() => { const e = document.querySelector('[data-uia="video-title"]');
+      if (e) { const t = e.innerText.replace(/\\s+/g, ' ').trim(); if (t) window.__lnTitle = t; }
+      return window.__lnTitle || ''; })()
+    """
+    private func nfSkip(_ d: Double) {
+        webView?.evaluateJavaScript("(() => { const p = \(Self.nfPlayer); if (p && p.seek) p.seek(Math.max(0, p.getCurrentTime() + \(Int(d * 1000)))); })()")
+    }
+    /// 다음 화: Netflix 조작줄의 '다음 화' 단추를 대신 누름 (조작줄이 숨어 있으면 마우스를 움직인 것처럼 해서 꺼냄)
+    private func nfNext() {
+        let js = """
+        (() => { const root = document.querySelector('.watch-video--player-view') || document.body;
+          root.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 10, clientY: 10 }));
+          return new Promise((ok) => setTimeout(() => {
+            const b = document.querySelector('[data-uia="control-next"]') || document.querySelector('[data-uia="next-episode-seamless-button"]');
+            if (b) { b.click(); ok(true); } else ok(false); }, 250)); })()
+        """
+        webView?.callAsyncJavaScript("return await \(js)", arguments: [:], in: nil, in: .page) { [weak self] r in
+            if case .success(let v) = r, (v as? Bool) == true { return }
+            MainActor.assumeIsolated { self?.miniToast("다음 화가 없거나 아직 찾지 못했어요") }
+        }
+    }
+    /// 자막 · 음성 고르기 메뉴
+    private func nfTrackMenu(from view: NSView) {
+        let js = """
+        (() => { const p = \(Self.nfPlayer); if (!p || !p.getTextTrackList) return null;
+          const t = p.getTextTrack() || {}, a = p.getAudioTrack() || {};
+          return JSON.stringify({
+            text: p.getTextTrackList().filter(x => !x.isForcedNarrative && !x.isNoneTrack || x.isNoneTrack).map(x => [x.trackId, x.displayName + (x.isClosedCaptions ? ' [CC]' : ''), x.trackId === t.trackId]),
+            audio: p.getAudioTrackList().map(x => [x.trackId, x.displayName, x.trackId === a.trackId]) }); })()
+        """
+        webView?.evaluateJavaScript(js) { [weak self] r, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let m = NSMenu()
+                guard let s = r as? String, let d = s.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: [[Any]]] else {
+                    let it = NSMenuItem(title: "영상을 재생하면 자막 · 음성을 고를 수 있어요", action: nil, keyEquivalent: ""); it.isEnabled = false
+                    m.addItem(it); m.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view); return
+                }
+                for (key, head, setter) in [("text", "자막", "setTextTrack"), ("audio", "음성", "setAudioTrack")] {
+                    let h = NSMenuItem(title: head, action: nil, keyEquivalent: ""); h.isEnabled = false; m.addItem(h)
+                    for t in o[key] ?? [] where t.count == 3 {
+                        let id = t[0] as? String ?? "", name = t[1] as? String ?? ""
+                        let it = MenuAction("    " + name) { [weak self] in
+                            let list = key == "text" ? "getTextTrackList" : "getAudioTrackList"
+                            self?.webView?.evaluateJavaScript("(() => { const p = \(Self.nfPlayer); if (!p) return; const x = p.\(list)().find(t => t.trackId === \(Self.jsString(id))); if (x) p.\(setter)(x); })()")
+                        }
+                        it.state = (t[2] as? Bool) == true ? .on : .off
+                        m.addItem(it)
+                    }
+                    if key == "text" { m.addItem(.separator()) }
+                }
+                m.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
+            }
+        }
+    }
+    /// 재생 속도 메뉴
+    private func nfSpeedMenu(from view: NSView) {
+        webView?.evaluateJavaScript("(() => { const v = \(Self.nfVideo); return v ? v.playbackRate : 1; })()") { [weak self] r, _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let cur = (r as? NSNumber)?.doubleValue ?? 1
+                let m = NSMenu()
+                for rate in [0.5, 0.75, 1.0, 1.25, 1.5] {
+                    let it = MenuAction(rate == 1 ? "보통 (1x)" : "\(rate)x") { [weak self] in
+                        self?.webView?.evaluateJavaScript("(() => { const v = \(Self.nfVideo); if (v) v.playbackRate = \(rate); })()")
+                    }
+                    it.state = abs(cur - rate) < 0.01 ? .on : .off
+                    m.addItem(it)
+                }
+                m.popUp(positioning: nil, at: NSPoint(x: 0, y: view.bounds.height + 4), in: view)
+            }
+        }
+    }
+    /// 작은 창에 잠깐 알림 (큰 창 알림 대신)
+    private func miniToast(_ text: String) {
+        guard let p = mini else { tell(text); return }
+        let l = NSTextField(labelWithString: text)
+        l.font = .systemFont(ofSize: 12, weight: .semibold); l.textColor = .white; l.alignment = .center
+        l.wantsLayer = true; l.layer?.backgroundColor = NSColor.black.withAlphaComponent(0.7).cgColor; l.layer?.cornerRadius = 8
+        let w = min(p.frame.width - 20, l.fittingSize.width + 24)
+        l.frame = NSRect(x: (p.frame.width - w) / 2, y: p.frame.height / 2 - 14, width: w, height: 28)
+        p.contentView?.addSubview(l)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { l.removeFromSuperview() }
+    }
+
     private func startTimePoll(_ on: Bool) {
         timeTimer?.invalidate()
         timeTimer = nil
@@ -694,6 +791,14 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
         let t = Timer(timeInterval: 0.5, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, self.inMini, let o = self.miniOverlay else { return }
+                if self.site == .netflix {
+                    self.titleTick += 1
+                    if self.titleTick % 4 == 1 {   // 2초마다 제목
+                        self.webView?.evaluateJavaScript(Self.nfTitleJS) { r, _ in
+                            MainActor.assumeIsolated { o.setTitle(r as? String ?? "") }
+                        }
+                    }
+                }
                 self.webView?.evaluateJavaScript(self.timeJS) { r, _ in
                     guard let a = r as? [NSNumber], a.count == 7 else { return }
                     MainActor.assumeIsolated {
@@ -1078,6 +1183,53 @@ final class MiniOverlay: NSView {
     }
     private var controls: [NSView] = []
     private let bar = NSView()
+
+    // MARK: 추가 조작 (Netflix): 10초 뒤로 · 앞으로 · 다음 화 · 자막 · 음성 · 재생 속도 · 제목
+    var onSkip: ((Double) -> Void)?
+    var onNext: (() -> Void)?
+    var onSubtitles: ((NSView) -> Void)?
+    var onSpeed: ((NSView) -> Void)?
+    private let extraRow = NSView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private var extrasOn = false
+    /// 재생바 위에 한 줄 더: ⟲10 ⟳10 ▷| 자막 속도 (+ 위쪽에 제목)
+    func useExtras() {
+        guard !extrasOn else { return }
+        extrasOn = true
+        func icon(_ symbol: String, _ tip: String, _ action: @escaping (NSView) -> Void) -> NSButton {
+            var me: NSButton?
+            let b = ActionButton(title: "", symbol: symbol) { _ in if let me { action(me) } }
+            me = b
+            b.isBordered = false
+            b.symbolConfiguration = .init(pointSize: 14, weight: .semibold)
+            b.contentTintColor = .white
+            b.toolTip = tip
+            b.frame.size = NSSize(width: 30, height: 26)
+            return b
+        }
+        let items = [
+            icon("gobackward.10", "10초 뒤로") { [unowned self] _ in onSkip?(-10) },
+            icon("goforward.10", "10초 앞으로") { [unowned self] _ in onSkip?(10) },
+            icon("forward.end.fill", "다음 화") { [unowned self] _ in onNext?() },
+            icon("captions.bubble", "자막 · 음성") { [unowned self] v in onSubtitles?(v) },
+            icon("gauge.with.dots.needle.67percent", "재생 속도") { [unowned self] v in onSpeed?(v) },
+        ]
+        for (i, b) in items.enumerated() { b.setFrameOrigin(NSPoint(x: CGFloat(i) * 34, y: 0)); extraRow.addSubview(b) }
+        extraRow.frame.size = NSSize(width: CGFloat(items.count) * 34 - 4, height: 26)
+        titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
+        titleLabel.textColor = .white
+        titleLabel.alignment = .center
+        titleLabel.lineBreakMode = .byTruncatingTail
+        titleLabel.shadow = { let s = NSShadow(); s.shadowColor = .black; s.shadowBlurRadius = 3; return s }()
+        for v in [extraRow, titleLabel] { v.alphaValue = showing ? 1 : 0; addSubview(v, positioned: .below, relativeTo: edgeBars.first); controls.append(v) }
+        layoutControls()
+    }
+    /// 위쪽 제목 (비어 있으면 숨김)
+    func setTitle(_ t: String) {
+        guard extrasOn, titleLabel.stringValue != t else { return }
+        titleLabel.stringValue = t
+        titleLabel.isHidden = t.isEmpty
+    }
     private let slider = NSSlider(value: 0, minValue: 0, maxValue: 1, target: nil, action: nil)
     private let curLabel = NSTextField(labelWithString: "0:00")
     private let endLabel = NSTextField(labelWithString: "0:00")
@@ -1264,14 +1416,19 @@ final class MiniOverlay: NSView {
     required init?(coder: NSCoder) { fatalError() }
 
     private func layoutControls() {
-        guard controls.count == 5 else { return }
+        guard controls.count >= 5 else { return }
         layoutGrip()
         controls[3].setFrameOrigin(NSPoint(x: bounds.width - 84, y: bounds.height - 46))
         // 왼쪽 위: 크게 (큰 창으로) · 오른쪽 위: ✕ 닫기 (그 왼쪽에 화질)
         controls[1].setFrameOrigin(NSPoint(x: 16, y: bounds.height - 46))
         controls[0].setFrameOrigin(NSPoint(x: bounds.width - 46, y: bounds.height - 46))
-        let h: CGFloat = 48
+        let h: CGFloat = extrasOn ? 80 : 48     // 추가 줄이 있으면 어둡게 까는 판도 그만큼 높게
         bar.frame = NSRect(x: 0, y: 0, width: bounds.width, height: h)
+        if extrasOn {
+            extraRow.setFrameOrigin(NSPoint(x: ((bounds.width - extraRow.frame.width) / 2).rounded(), y: 46))
+            extraRow.isHidden = bounds.width < 200 || bounds.height < 150
+            titleLabel.frame = NSRect(x: 16, y: bounds.height - 72, width: bounds.width - 32, height: 18)
+        }
         playButton.setFrameOrigin(NSPoint(x: 14, y: 15))
         let lw: CGFloat = live ? 46 : 52
         // 오른쪽 끝: [🔊][━━ 볼륨] (좁으면 볼륨 막대는 숨기고 🔊 만)
