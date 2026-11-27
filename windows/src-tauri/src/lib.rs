@@ -686,14 +686,14 @@ fn build_tray_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
     let covers = app.webview_windows().keys().any(|l| l.starts_with("cover-") || (l.starts_with("mirror-") && l != "mirror-pick"));
-    menu.append(&MenuItem::with_id(app, "cover-add", "가림막 추가", true, None::<&str>)?)?;
-    menu.append(&MenuItem::with_id(app, "mirror-add", "영역 비추기 (오버레이)…", true, None::<&str>)?)?;
+    // 가림막 · 비추기 만들기는 ☰ 판에 있어요. 트레이엔 켜져 있을 때 잠금 · 숨기기만 (Mac 🧰 정리와 같은 기준)
     if covers {
         let st = cover_now();
-        menu.append(&CheckMenuItem::with_id(app, "cover-lock", "가림막 · 비추기 잠금 (클릭이 아래 창으로 통과)", true, st.locked, None::<&str>)?)?;
-        menu.append(&CheckMenuItem::with_id(app, "cover-hide", "가림막 · 비추기 숨기기", true, st.hidden, None::<&str>)?)?;
+        menu.append(&MenuItem::with_id(app, "cover-head", "가림막 · 비추기", false, None::<&str>)?)?;
+        menu.append(&CheckMenuItem::with_id(app, "cover-lock", "    잠금 (클릭이 아래 창으로 통과)", true, st.locked, None::<&str>)?)?;
+        menu.append(&CheckMenuItem::with_id(app, "cover-hide", "    숨기기", true, st.hidden, None::<&str>)?)?;
+        menu.append(&PredefinedMenuItem::separator(app)?)?;
     }
-    menu.append(&PredefinedMenuItem::separator(app)?)?;
     menu.append(&CheckMenuItem::with_id(app, "autostart", "로그인 시 자동 실행", true, desk::autostart(None), None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "checkupdate", format!("업데이트 확인 (지금 {})", app.package_info().version), true, None::<&str>)?)?;
     menu.append(&MenuItem::with_id(app, "restart", "도구함 다시 시작", true, None::<&str>)?)?;
@@ -853,12 +853,6 @@ pub fn run() {
                         "autostart" => {
                             desk::autostart(Some(!desk::autostart(None)));
                             refresh_tray(app);
-                        }
-                        "cover-add" => {
-                            let _ = add_cover(app);
-                        }
-                        "mirror-add" => {
-                            let _ = open_pick(app);
                         }
                         "cover-lock" => {
                             set_cover(app, Some(!COVER_LOCKED.load(Ordering::Relaxed)), None);

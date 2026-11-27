@@ -1952,7 +1952,7 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     $("#hubCT").checked = ct;
     drawCover();
   }
-  // 가림막: ＋ 추가 · 잠금 · 숨기기 (모든 가림막 같이, 트레이 🧰 에도 있음)
+  // 가림막: ＋ 추가 · 잠금 · 숨기기 (모든 가림막 같이, 잠금 · 숨기기는 트레이에도 있음)
   let cov = { locked: true, hidden: false };
   function drawCover() {
     const cnt = (k) => { try { return Object.keys(JSON.parse(localStorage.getItem(k) || "{}")).length; } catch { return 0; } };
