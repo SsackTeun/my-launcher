@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>자리 정하기</title>
+  <!-- 자리 정하기 (Mac 과 같음): 모니터마다 이 창이 하나씩 덮음. 마우스가 있던 모니터에 도구판.
+       도구판에서 항목을 고르면 상자가 마우스를 따라다니고, 화면을 누르면 그 자리로 (휠 = 크기, Esc · 오른쪽 클릭 = 취소).
+       window.__PLACE = { name, targets: [{ key, title, color, w, h, minW, minH, rect }] } · window.__HOME = 도구판을 띄울 모니터인지 -->
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; user-select: none; background: rgba(0, 0, 0, .18); font: 13px "Segoe UI", "Malgun Gothic", sans-serif; }
+    .box { position: fixed; border-radius: 12px; border: 2px dashed; box-sizing: border-box; display: flex; align-items: center; justify-content: center;
+           color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000; font-weight: 600; text-align: center; padding: 6px; pointer-events: none; }
+    #ghost { border-style: solid; display: none; white-space: pre-line; }
+    #pal { position: fixed; top: 20px; left: 50%; transform: translateX(-50%); width: 230px; padding: 12px 10px 10px; border-radius: 12px;
+           background: rgba(30, 30, 34, .94); color: #eee; box-shadow: 0 8px 30px rgba(0, 0, 0, .4); }
+    #pal h1 { font-size: 13px; margin: 0 4px 2px; }
+    #pal p { font-size: 11px; color: #aaa; margin: 0 4px 8px; }
+    #pal button.t { display: block; width: 100%; text-align: left; margin: 0 0 4px; padding: 5px 8px; border: 0; border-radius: 6px;
+                    background: rgba(255, 255, 255, .06); color: #aaa; font: inherit; font-size: 12px; cursor: pointer; }
+    #pal button.t.saved { color: #eee; }
+    #pal button.t.on { outline: 2px solid currentColor; }
+    #pal button.t:hover { background: rgba(255, 255, 255, .12); }
+    #pal hr { border: 0; border-top: 1px solid rgba(255, 255, 255, .12); margin: 6px 4px; }
+    #pal .done { display: block; margin: 8px 0 0 auto; padding: 5px 18px; border: 0; border-radius: 6px; background: #4c8dff; color: #fff; font: inherit; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div id="saved"></div>
+  <div id="ghost" class="box"></div>
+  <div id="pal" hidden></div>
+  <script>
+    const T = window.__TAURI__;
+    let P = window.__PLACE || { name: "", targets: [] };
+    let cur = null, size = null, origin = { x: 0, y: 0 }, mouse = null;
+    const ghost = document.getElementById("ghost"), pal = document.getElementById("pal");
+    const quit = () => T.core.invoke("place_close").catch(() => {});
+    const byKey = (k) => P.targets.find((t) => t.key === k);
+    const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+    // 이 창(모니터)의 왼쪽 위를 논리 픽셀로 — 저장하는 자리도 논리 픽셀
+    (async () => {
+      const o = await T.window.getCurrentWindow().outerPosition();
+      origin = { x: o.x / devicePixelRatio, y: o.y / devicePixelRatio };
+      draw();
+    })();
+
+    function draw() {
+      // 정해 둔 자리 (점선)
+      document.getElementById("saved").innerHTML = P.targets.filter((t) => t.rect).map((t) =>
+        `<div class="box" style="left:${t.rect.x - origin.x}px;top:${t.rect.y - origin.y}px;width:${t.rect.w}px;height:${t.rect.h}px;border-color:${t.color};background:color-mix(in srgb, ${t.color} 14%, transparent)">${esc(t.title)}</div>`).join("");
+      // 도구판 (마우스가 있던 모니터에만)
+      if (window.__HOME) {
+        pal.hidden = false;
+        let html = `<h1>${esc(P.name)} · 자리 정하기</h1><p>고른 뒤 화면을 누르면 그 자리로 · 휠로 크기 · Esc 취소</p>`;
+        let g = null;
+        for (const t of P.targets) {
+          if (g !== null && t.group !== g) html += "<hr>";
+          g = t.group;
+          html += `<button class="t${t.rect ? " saved" : ""}${cur === t.key ? " on" : ""}" data-k="${t.key}" style="${cur === t.key ? `color:${t.color}` : ""}"><span style="color:${t.color}">${t.rect ? "●" : "○"}</span>&nbsp; ${esc(t.title)}</button>`;
+        }
+        html += `<button class="done">완료</button>`;
+        pal.innerHTML = html;
+      }
+      drawGhost();
+    }
+    function drawGhost() {
+      const t = cur && byKey(cur);
+      if (!t || !mouse) { ghost.style.display = "none"; return; }
+      Object.assign(ghost.style, { display: "flex", left: mouse.x - size.w / 2 + "px", top: mouse.y - size.h / 2 + "px", width: size.w + "px", height: size.h + "px",
+        borderColor: t.color, background: `color-mix(in srgb, ${t.color} 30%, transparent)` });
+      ghost.textContent = `${P.name} · ${t.title}\n누르면 여기로 · 휠로 크기 · Esc 취소`;
+    }
+    function pick(k) {
+      cur = k;
+      const t = k && byKey(k);
+      size = t ? { w: t.rect?.w || t.w, h: t.rect?.h || t.h } : null;
+      draw();
+    }
+
+    pal.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (e.target.closest(".done")) { quit(); return; }
+      const b = e.target.closest("[data-k]");
+      if (b) T.event.emit("place-pick", b.dataset.k === cur ? null : b.dataset.k);
+    });
+    pal.addEventListener("mousedown", (e) => e.stopPropagation());
+    addEventListener("mousemove", (e) => { mouse = { x: e.clientX, y: e.clientY }; drawGhost(); });
+    addEventListener("mouseleave", () => { mouse = null; drawGhost(); });
+    addEventListener("wheel", (e) => {
+      const t = cur && byKey(cur); if (!t) return;
+      const k = e.deltaY < 0 ? 1.06 : 1 / 1.06;
+      const w = Math.max(t.minW || 200, Math.round(size.w * k));
+      T.event.emit("place-size", { w, h: Math.max(t.minH || 60, Math.round(size.h * w / size.w)) });
+    });
+    addEventListener("mousedown", (e) => {
+      if (e.button !== 0 || !cur || !mouse) return;
+      const rect = { x: Math.round(origin.x + mouse.x - size.w / 2), y: Math.round(origin.y + mouse.y - size.h / 2), w: size.w, h: size.h };
+      T.event.emit("place-drop", { key: cur, rect });
+      T.event.emit("place-pick", null);
+    });
+    addEventListener("contextmenu", (e) => { e.preventDefault(); if (cur) T.event.emit("place-pick", null); else quit(); });
+    addEventListener("keydown", (e) => { if (e.key === "Escape") { if (cur) T.event.emit("place-pick", null); else quit(); } });
+
+    // 모든 모니터 판이 같은 상태를 따라감
+    T.event.listen("place-pick", (e) => pick(e.payload));
+    T.event.listen("place-size", (e) => { size = e.payload; drawGhost(); });
+    T.event.listen("place-data", (e) => { P = e.payload; draw(); });
+  </script>
+</body>
+</html>

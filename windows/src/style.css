@@ -682,6 +682,8 @@ body.compact .lyside { display: none; }
 .hub-lv button.on small { color: var(--accent); }
 .hub-pr { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
 .hub-pr .pl-open { flex: 1; text-align: left; }
+.hub-pr .pl-open.on { background: color-mix(in srgb, var(--accent) 20%, transparent); }
+.hub-pr .pr-slots { margin-left: 6px; opacity: .55; font-size: 10px; }
 #hubSave { width: 100%; }
 .hub-row { display: flex; align-items: center; gap: 8px; margin: 2px 0; }
 .hub-row span { width: 58px; color: var(--text); }

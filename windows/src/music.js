@@ -1790,6 +1790,8 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
         const s = (await w.innerSize()).toLogical(f);
         await w.setSize(new T.dpi.LogicalSize(sw, s.height));
       }
+      const sl = !first && activeSlot(on);
+      if (sl) { await w.setSize(new T.dpi.LogicalSize(sl.w, on ? sl.h : (await w.innerSize()).toLogical(await w.scaleFactor()).height)); await w.setPosition(new T.dpi.LogicalPosition(sl.x, sl.y)); }
     } catch (e) { console.warn(e); }
     applyLevel();
     drawPlayer();
@@ -1931,27 +1933,115 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
   // 배치 프리셋: 자리 · 크기 · 크게/작게 · 창 위치 · 투명도 · 뒤쪽 클릭 (눌러서 적용)
   async function capture(name) {
     const f = await w.scaleFactor(), p = (await w.outerPosition()).toLogical(f), sz = (await w.innerSize()).toLogical(f);
-    return { name, x: Math.round(p.x), y: Math.round(p.y), w: Math.round(sz.width), h: Math.round(sz.height), big, level, alpha, alphaA, ct };
+    const pos = { x: Math.round(p.x), y: Math.round(p.y), w: Math.round(sz.width), h: Math.round(sz.height) };
+    return { id: Date.now().toString(36), name, ...pos, big, level, alpha, alphaA, ct, slots: { [big ? "big" : "small"]: pos }, yt: await videoRect("yt-video"), nf: await videoRect("netflix") };
   }
+  // YouTube · Netflix 창 자리: 큰 창(main) · PIP(mini) 따로. 꺼져 있으면 null (적용할 때 그 창은 그대로) — Mac 과 같음
+  async function videoWin(label) {
+    if (!(await invoke("window_exists", { label }).catch(() => false))) return null;
+    return (await T.webviewWindow?.WebviewWindow?.getByLabel?.(label)) || null;
+  }
+  async function videoRect(label) {
+    try {
+      const vw = await videoWin(label); if (!vw) return null;
+      const f = await vw.scaleFactor(), p = (await vw.outerPosition()).toLogical(f), sz = (await vw.innerSize()).toLogical(f);
+      const pip = await invoke("web_pip_state", { label }).catch(() => false);
+      return { [pip ? "mini" : "main"]: { x: Math.round(p.x), y: Math.round(p.y), w: Math.round(sz.width), h: Math.round(sz.height) }, inMini: !!pip };
+    } catch { return null; }
+  }
+  async function placeVideo(label, v) {
+    try {
+      const vw = v && await videoWin(label); if (!vw) return;
+      const r = (await invoke("web_pip_state", { label }).catch(() => false)) ? v.mini : v.main;
+      if (!r) return;
+      await vw.setSize(new T.dpi.LogicalSize(r.w, r.h)); await vw.setPosition(new T.dpi.LogicalPosition(r.x, r.y));
+    } catch { /* 없음 */ }
+  }
+  // 모양별 자리: 켜진 프리셋에 작게 / 크게 보기 자리가 따로 있으면 모양을 바꿀 때 그 자리로 (Mac 과 같음)
+  let activePr = ls("mzActivePr", null);   // 껐다 켜도 기억 (sites.js 가 나중에 연 YouTube · Netflix 창 자리에 씀)
+  const prKey = (pr) => pr.id || pr.name;
+  const slotOf = (pr, b) => pr?.slots?.[b ? "big" : "small"] || (pr && pr.big === b ? { x: pr.x, y: pr.y, w: pr.w, h: pr.h } : null);
+  const activeSlot = (b) => slotOf(ls("mzPresets", []).find((p) => prKey(p) === activePr), b);
   async function applyPreset(pr) {
+    invoke("preview_hide").catch(() => {});
+    activePr = prKey(pr); lsSet("mzActivePr", activePr);
     if (pr.big !== big) await setBig(pr.big);
     level = pr.level; lsSet("mzLevel", level); await applyLevel();
     alpha = pr.alpha; alphaA = pr.alphaA; lsSet("mzAlpha", alpha); lsSet("mzAlphaA", alphaA);
     ct = pr.ct; lsSet("mzClickThrough", ct);
     try { await w.setSize(new T.dpi.LogicalSize(pr.w, pr.h)); await w.setPosition(new T.dpi.LogicalPosition(pr.x, pr.y)); } catch { /* 없음 */ }
     applyAlpha(); applyClickThrough();
+    placeVideo("yt-video", pr.yt); placeVideo("netflix", pr.nf);
   }
   function drawHub() {
     const lv = curLevel();
     hub.querySelectorAll("[data-lv]").forEach((b) => b.classList.toggle("on", +b.dataset.lv === lv));
     const list = ls("mzPresets", []);
-    $("#hubPresets").innerHTML = list.map((p, i) => `<div class="hub-pr"><button class="pl-open ghost" data-pr="${i}" title="이 배치로">${esc(p.name)}</button><button class="icon sm" data-prx="${i}" title="지우기">✕</button></div>`).join("") +
+    $("#hubPresets").innerHTML = list.map((p, i) => `<div class="hub-pr"><button class="pl-open ghost${prKey(p) === activePr ? " on" : ""}" data-pr="${i}" title="이 배치로">${esc(p.name)}<small class="pr-slots">${[slotOf(p, false) && "작게", slotOf(p, true) && "크게"].filter(Boolean).join("·")}</small></button><button class="icon sm" data-prm="${i}" title="자리 정하기 — 앱을 열지 않고 화면에 놓기">✥</button><button class="icon sm" data-pro="${i}" title="현재 상태 저장 (${big ? "크게" : "작게"} 보기 자리) — 다른 모양 자리는 그대로">⤓</button><button class="icon sm" data-prx="${i}" title="지우기">✕</button></div>`).join("") +
       `<button class="pl-open ghost" id="hubSave">＋ 지금 배치 저장</button>`;
     $("#hubA").value = alpha; $("#hubAv").textContent = alpha >= 100 ? "불투명" : alpha + "%";
     $("#hubAA").value = alphaA; $("#hubAAv").textContent = alphaA >= 100 ? "불투명" : alphaA + "%";
     $("#hubCT").checked = ct;
     drawCover();
+    // 프리셋 줄에 마우스를 올리면 자리 미리보기 (Mac 과 같음)
+    hub.querySelectorAll(".hub-pr").forEach((row, i) => {
+      row.onmouseenter = () => invoke("preview_show", { boxes: previewBoxes(list[i]) }).catch(() => {});
+      row.onmouseleave = () => invoke("preview_hide").catch(() => {});
+    });
   }
+  // MARK: 배치 미리보기 · 자리 정하기 (Mac 과 같음) — 창마다 색: 플레이어 파랑 · YouTube 빨강 · Netflix 보라
+  const PC = { player: "#4c8dff", youtube: "#ff3b30", netflix: "#af52de" };
+  function previewBoxes(pr) {
+    const out = [];
+    for (const b of [false, true]) {
+      const r = slotOf(pr, b); if (!r) continue;
+      const label = b ? "크게 보기" : "작게 보기";
+      out.push({ ...r, title: b === pr.big ? `누르면 여기 · ${label}` : `${label}로 바꾸면 여기`, color: PC.player, strong: b === pr.big });
+    }
+    for (const [v, name, color] of [[pr.yt, "YouTube", PC.youtube], [pr.nf, "Netflix", PC.netflix]]) {
+      if (!v) continue;
+      if (v.main) out.push({ ...v.main, title: `${name} 큰 창`, color, strong: !v.inMini });
+      if (v.mini) out.push({ ...v.mini, title: `${name} 작은 창`, color, strong: !!v.inMini });
+    }
+    return out;
+  }
+  let placing = null;   // 자리 정하는 프리셋 키
+  function placeData(pr) {
+    const t = (key, title, color, group, rect, w, h, minW, minH) => ({ key, title, color, group, rect: rect || null, w, h, minW, minH });
+    return { name: pr.name, targets: [
+      t("small", "음악 플레이어 · 작게 보기", PC.player, 0, slotOf(pr, false), 360, 100, 260, 60),
+      t("big", "음악 플레이어 · 크게 보기", PC.player, 0, slotOf(pr, true), 940, 640, 760, 420),
+      t("ytMain", "YouTube 큰 창", PC.youtube, 1, pr.yt?.main, 1100, 720, 480, 300),
+      t("ytMini", "YouTube 작은 창 (PIP)", PC.youtube, 1, pr.yt?.mini, 480, 270, 200, 112),
+      t("nfMain", "Netflix 큰 창", PC.netflix, 2, pr.nf?.main, 1100, 720, 480, 300),
+      t("nfMini", "Netflix 작은 창 (PIP)", PC.netflix, 2, pr.nf?.mini, 480, 270, 200, 112),
+    ] };
+  }
+  async function startPlacing(i) {
+    const pr = ls("mzPresets", [])[i]; if (!pr) return;
+    hub.hidden = true;
+    placing = prKey(pr);
+    await invoke("place_open", { data: JSON.stringify(placeData(pr)) }).catch((e) => toast(`자리 정하기를 열지 못했어요: ${e}`));
+  }
+  T.event.listen("place-drop", (e) => {
+    const l = ls("mzPresets", []), i = l.findIndex((p) => prKey(p) === placing);
+    if (i < 0) return;
+    const pr = l[i], { key, rect: r } = e.payload;
+    if (key === "small" || key === "big") {
+      const b = key === "big";
+      pr.slots = pr.slots || (pr.big !== undefined ? { [pr.big ? "big" : "small"]: { x: pr.x, y: pr.y, w: pr.w, h: pr.h } } : {});
+      pr.slots[key] = r;
+      if (pr.big === b) Object.assign(pr, r);
+    } else {
+      const k = key.startsWith("yt") ? "yt" : "nf";
+      pr[k] = { inMini: false, ...(pr[k] || {}), [key.endsWith("Mini") ? "mini" : "main"]: r };
+    }
+    l[i] = pr; lsSet("mzPresets", l); drawHub();
+    T.event.emit("place-data", placeData(pr));
+  });
+  T.event.listen("place-closed", () => { placing = null; });
+  // ☰ 판이 닫히면 미리보기도 (마우스가 줄 위에 있던 채로 닫혀도)
+  new MutationObserver(() => { if (hub.hidden) invoke("preview_hide").catch(() => {}); }).observe(hub, { attributes: true, attributeFilter: ["hidden"] });
   // 가림막: ＋ 추가 · 잠금 · 숨기기 (모든 가림막 같이, 잠금 · 숨기기는 트레이에도 있음)
   let cov = { locked: true, hidden: false };
   function drawCover() {
@@ -1969,6 +2059,18 @@ try { big = localStorage.getItem("playerBig") === "1"; } catch { /* 없음 */ }
     if (lb) { level = +lb.dataset.lv; lsSet("mzLevel", level); await applyLevel(); drawHub(); return; }
     const pb = e.target.closest("[data-pr]");
     if (pb) { hub.hidden = true; applyPreset(ls("mzPresets", [])[+pb.dataset.pr]); return; }
+    const pm = e.target.closest("[data-prm]");
+    if (pm) { invoke("preview_hide").catch(() => {}); startPlacing(+pm.dataset.prm); return; }
+    const po = e.target.closest("[data-pro]");
+    if (po) {
+      const l = ls("mzPresets", []), old = l[+po.dataset.pro], now = await capture(old.name);
+      const slots = { ...(old.slots || (old.big !== undefined ? { [old.big ? "big" : "small"]: { x: old.x, y: old.y, w: old.w, h: old.h } } : {})), ...now.slots };
+      // 켜져 있는 YouTube · Netflix 창만 새 자리로 (큰 창 · PIP 중 지금 모양만, 다른 쪽은 그대로)
+      const vid = (o, n) => n ? { ...(o || {}), ...n } : o;
+      l[+po.dataset.pro] = { ...now, id: old.id || now.id, slots, yt: vid(old.yt, now.yt), nf: vid(old.nf, now.nf) };
+      lsSet("mzPresets", l); drawHub(); toast(`‘${old.name}’ ${big ? "크게" : "작게"} 보기 자리를 저장했어요`);
+      return;
+    }
     const px = e.target.closest("[data-prx]");
     if (px) { const l = ls("mzPresets", []); l.splice(+px.dataset.prx, 1); lsSet("mzPresets", l); drawHub(); return; }
     if (e.target.closest("#hubSave")) {

@@ -86,7 +86,8 @@ enum Spaces {
     /// 데스크탑 번호(1, 2, 3…, 전체 화면 공간은 빼고 센 번호) 에 창이 열려 있는 앱 (번들 ID, 겹치지 않게)
     /// 데스크탑 n 의 앱: 떠 있는 앱 + 내려 둔 창만 있는 앱 (뒤쪽), 내려 둔 창만 있는 앱 목록 · 그 창 번호들
     static func deskContent(_ n: Int) -> (ids: [String], minimized: Set<String>, minWins: [Int]) {
-        let ds = load().filter { !$0.fullscreen }
+        let all = load()
+        let ds = all.filter { !$0.fullscreen }
         guard ds.indices.contains(n - 1) else { return ([], [], []) }
         let d = ds[n - 1]
         var seen = Set<String>(), ids: [String] = [], mins = Set<String>()
@@ -98,7 +99,38 @@ enum Spaces {
             guard let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier, seen.insert(id).inserted else { continue }
             ids.append(id); mins.insert(id)
         }
+        // 창을 X 로 닫았지만 켜져 있는 앱 (창 0개): 마지막으로 창이 있던 데스크탑에 점선으로 (모르면 지금 데스크탑)
+        let last = noteLastDesks(ds)
+        let currentN = (ds.firstIndex { $0.current } ?? 0) + 1
+        for id in windowlessApps(all) where (last[id] ?? currentN) == n && seen.insert(id).inserted {
+            ids.append(id); mins.insert(id)
+        }
         return (ids, mins, d.minWins)
+    }
+
+    /// 앱마다 마지막으로 창이 있던 데스크탑 번호 (껐다 켜도 기억)
+    private static let lastDeskKey = "deskLastSeen"
+    private static func noteLastDesks(_ ds: [Desk]) -> [String: Int] {
+        var last = UserDefaults.standard.dictionary(forKey: lastDeskKey) as? [String: Int] ?? [:]
+        let before = last
+        for (i, d) in ds.enumerated() {
+            for pid in d.pids + d.minPids {
+                if let id = NSRunningApplication(processIdentifier: pid)?.bundleIdentifier { last[id] = i + 1 }
+            }
+        }
+        if last.count > 200 { last = last.filter { id, _ in !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty } }
+        if last != before { UserDefaults.standard.set(last, forKey: lastDeskKey) }
+        return last
+    }
+    /// 켜져 있는데 어느 데스크탑에도 창이 없는 앱 (Finder · 도구함 빼고)
+    private static func windowlessApps(_ ds: [Desk]) -> [String] {
+        let withWins = Set(ds.flatMap { $0.pids + $0.minPids })
+        let me = ProcessInfo.processInfo.processIdentifier
+        return NSWorkspace.shared.runningApplications.compactMap { a in
+            guard a.activationPolicy == .regular, a.processIdentifier != me, !withWins.contains(a.processIdentifier),
+                  let id = a.bundleIdentifier, id != "com.apple.finder" else { return nil }
+            return id
+        }
     }
 
     static func apps(onDesktop n: Int) -> [String] {
@@ -197,28 +229,34 @@ enum Spaces {
     }
 
     /// 최소화된 창 번호들 (손쉬운 사용 권한이 있을 때만, 1초 동안 기억 — 막대마다 여러 번 불러서)
-    private static var minCache: (t: Date, ids: Set<Int>)?
+    private static var minCache: (t: Date, ids: Set<Int>, allMin: Set<pid_t>)?
     /// 창을 올리거나 내린 직후: 다음 확인 때 새로 읽게
     static func forgetMinimized() { minCache = nil }
-    static func minimizedWindowIDs(pids: Set<pid_t>) -> Set<Int> {
-        if let c = minCache, Date().timeIntervalSince(c.t) < 1 { return c.ids }
-        var out = Set<Int>()
+    /// ids = 내려 둔 창 번호, allMin = 창을 모두 내려 둔 앱 (보이는 창이 하나도 없음)
+    /// 메이플스토리(Wine) 처럼 창을 내리면 딸린 보조 창이 '내림' 표시 없이 숨기만 하는 앱이 있어서,
+    /// allMin 앱의 나머지 창은 떠 있는 걸로 치지 않아요.
+    static func minimizedWindowIDs(pids: Set<pid_t>) -> (ids: Set<Int>, allMin: Set<pid_t>) {
+        if let c = minCache, Date().timeIntervalSince(c.t) < 1 { return (c.ids, c.allMin) }
+        var out = Set<Int>(), allMin = Set<pid_t>()
         if AXIsProcessTrusted() {
             for pid in pids {
                 let ax = AXUIElementCreateApplication(pid)
                 AXUIElementSetMessagingTimeout(ax, 0.2)   // 응답 없는 앱 때문에 멈추지 않게
                 var v: CFTypeRef?
                 guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let ws = v as? [AXUIElement] else { continue }
+                var mins = 0
                 for w in ws {
                     var m: CFTypeRef?
                     guard AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &m) == .success, (m as? Bool) == true else { continue }
+                    mins += 1
                     var id: CGWindowID = 0
                     if _AXUIElementGetWindow(w, &id) == .success, id != 0 { out.insert(Int(id)) }
                 }
+                if mins > 0 && mins == ws.count { allMin.insert(pid) }
             }
         }
-        minCache = (Date(), out)
-        return out
+        minCache = (Date(), out, allMin)
+        return (out, allMin)
     }
 
     static func load() -> [Desk] {
@@ -260,7 +298,7 @@ enum Spaces {
         let me = ProcessInfo.processInfo.processIdentifier
         let regular = Set(NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular }.map(\.processIdentifier))
         let wins = CGWindowListCopyWindowInfo([.optionAll, .excludeDesktopElements], kCGNullWindowID) as? [[String: Any]] ?? []
-        let minimized = minimizedWindowIDs(pids: regular)
+        let (minimized, allMin) = minimizedWindowIDs(pids: regular)
         var fsOwner: [Int: String] = [:]
         for w in wins {
             guard (w[kCGWindowLayer as String] as? Int) == 0,
@@ -276,6 +314,8 @@ enum Spaces {
                 }
                 continue
             }
+            // 창을 모두 내려 둔 앱의 남은 창 (Wine 보조 창 등) 은 떠 있는 게 아님
+            if allMin.contains(pid) { continue }
             // 진짜 창만 (주소창 추천 목록 · 알림 풍선 같은 숨은 작은 창은 빼기)
             if let b = w[kCGWindowBounds as String] as? [String: Any],
                (b["Width"] as? Double ?? 0) < 200 || (b["Height"] as? Double ?? 0) < 150 { continue }

@@ -75,6 +75,26 @@ final class EdgeDock {
         sync()
     }
 
+    /// 코드로 창을 옮긴 뒤 (배치 프리셋 등): 새 자리 기준으로 붙을지 다시 정함.
+    /// 화면 끝이면 그쪽에 붙이고, 아니면 뗌 (예전엔 붙은 채로 남아서 크기가 바뀔 때 화면 끝으로 도로 끌려갔음)
+    func settle() {
+        guard let w = window, !animating else { return }
+        if collapsed { collapsed = false }
+        let f = w.frame
+        let mid = NSPoint(x: f.midX, y: f.midY)
+        let s = NSScreen.screens.first { NSMouseInRect(mid, $0.frame, false) } ?? screen(of: w)
+        let vf = Self.area(s, f)
+        var new: Side?
+        if Self.magnet {
+            if f.minX <= vf.minX + Self.zone + Self.inset, !otherScreen(beyond: .left, of: s) { new = .left }
+            else if f.maxX >= vf.maxX - Self.zone - Self.inset, !otherScreen(beyond: .right, of: s) { new = .right }
+        }
+        side = new
+        lastSize = f.size
+        lastEdgeX = .nan
+        sync()
+    }
+
     /// 지금 붙은 쪽 (없으면 nil)
     private(set) var side: Side? {
         get { Side(rawValue: d.string(forKey: k("dockSide")) ?? "") }

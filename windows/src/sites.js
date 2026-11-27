@@ -57,13 +57,36 @@ const Sites = (() => {
   }
 
   const find = (label) => LIST.find((x) => x.label === label);
+  // 켜진 배치 프리셋의 YouTube · Netflix 자리 (music.js 가 저장) — 나중에 연 창 · PIP 로 바꾼 창도 그 자리로 (Mac 과 같음)
+  function presetRect(label, mini) {
+    try {
+      const key = JSON.parse(localStorage.getItem("mzActivePr") || "null");
+      if (!key || (label !== "yt-video" && label !== "netflix")) return null;
+      const pr = JSON.parse(localStorage.getItem("mzPresets") || "[]").find((p) => (p.id || p.name) === key);
+      const v = pr && pr[label === "yt-video" ? "yt" : "nf"];
+      return (v && (mini ? v.mini : v.main)) || null;
+    } catch { return null; }
+  }
+  async function placeAt(label, r) {
+    if (!r) return;
+    try {
+      const w = await window.__TAURI__?.webviewWindow?.WebviewWindow?.getByLabel?.(label);
+      const dpi = window.__TAURI__.dpi;
+      await w?.setSize(new dpi.LogicalSize(r.w, r.h)); await w?.setPosition(new dpi.LogicalPosition(r.x, r.y));
+    } catch { /* 없음 */ }
+  }
   function openWin(s) {
-    return invoke("open_window", { label: s.label, url: s.url, title: s.name, width: s.w, height: s.h }).then(() => setTimeout(poll, 500)).catch((e) => toast(String(e)));
+    const isNew = !open[s.label];
+    return invoke("open_window", { label: s.label, url: s.url, title: s.name, width: s.w, height: s.h })
+      .then(() => { if (isNew) placeAt(s.label, presetRect(s.label, false)); setTimeout(poll, 500); })
+      .catch((e) => toast(String(e)));
   }
   async function togglePip(s) {
     if (s.label === "ytmusic") { toast("YouTube Music 은 PIP 가 없어요"); return; }
     if (!open[s.label]) { await openWin(s); toast("영상을 연 뒤 다시 Shift+누르기 하면 PIP 예요"); return; }
-    await invoke("web_pip", { label: s.label, on: !pip[s.label] });
+    const on = !pip[s.label];
+    await invoke("web_pip", { label: s.label, on });
+    if (on) setTimeout(() => placeAt(s.label, presetRect(s.label, true)), 400);   // 작은 창이 된 뒤 프리셋 자리로
     setTimeout(poll, 600);
   }
   function closeWin(s) { return invoke("close_window", { label: s.label }).then(() => setTimeout(poll, 300)); }

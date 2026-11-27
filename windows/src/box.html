@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>미리보기</title>
+  <!-- 배치 미리보기 상자 하나 (클릭은 통과). window.__BOX = { title, color, strong } 은 도구함이 넣어 줌 -->
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: transparent; font: 600 13px "Segoe UI", "Malgun Gothic", sans-serif; }
+    #b { position: fixed; inset: 2px; border-radius: 12px; border: 2px solid; display: flex; align-items: center; justify-content: center;
+         color: #fff; text-shadow: 0 0 3px #000, 0 0 3px #000; text-align: center; padding: 6px; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <div id="b"></div>
+  <script>
+    const B = window.__BOX || { title: "", color: "#4c8dff", strong: true };
+    const el = document.getElementById("b");
+    el.textContent = B.title;
+    el.style.borderColor = B.color;
+    el.style.borderStyle = B.strong ? "solid" : "dashed";
+    el.style.background = `color-mix(in srgb, ${B.color} ${B.strong ? 24 : 14}%, transparent)`;
+  </script>
+</body>
+</html>

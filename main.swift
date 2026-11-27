@@ -1340,21 +1340,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             y += 18
         }
         for pr in list {
-            let row = ActionButton(title: "", symbol: nil) { [unowned self] _ in applyPreset(pr); pop.close() }
+            let row = HoverButton(title: "", symbol: nil) { [unowned self] _ in applyPreset(pr); pop.close() }
+            row.onEnter = { [unowned self] in previewPreset(pr) }
+            row.onExit = { PresetPreview.hide() }
             row.isBordered = false
             row.wantsLayer = true
             row.layer?.cornerRadius = 6
-            row.layer?.backgroundColor = (autoActive == pr.id ? NSColor.launcherAccent.withAlphaComponent(0.2) : NSColor.labelColor.withAlphaComponent(0.06)).cgColor
+            row.layer?.backgroundColor = ((activePresetID ?? autoActive) == pr.id ? NSColor.launcherAccent.withAlphaComponent(0.2) : NSColor.labelColor.withAlphaComponent(0.06)).cgColor
             row.toolTip = "누르면 이 배치로" + (pr.apps.isEmpty ? "" : " · 자동: " + pr.apps.map { appName($0) }.joined(separator: ", "))
-            row.frame = NSRect(x: 10, y: y, width: W - 46, height: rowH - 4)
+            row.frame = NSRect(x: 10, y: y, width: W - 68, height: rowH - 4)
             v.addSubview(row)
-            let name = NSTextField(labelWithString: pr.name)
+            let name = PassLabel(labelWithString: pr.name)
             name.font = .systemFont(ofSize: 12); name.lineBreakMode = .byTruncatingTail
-            name.frame = NSRect(x: 18, y: y + 3, width: W - 64 - CGFloat(min(3, pr.apps.count)) * 16, height: 16)
+            name.frame = NSRect(x: 18, y: y + 3, width: W - 86 - CGFloat(min(3, pr.apps.count)) * 16, height: 16)
             v.addSubview(name)
             for (k, id) in pr.apps.prefix(3).enumerated() {
-                let iv = NSImageView(image: appIcon(id))
-                iv.frame = NSRect(x: W - 54 - CGFloat(k + 1) * 16, y: y + 3, width: 15, height: 15)
+                let iv = PassImage(image: appIcon(id))
+                iv.frame = NSRect(x: W - 76 - CGFloat(k + 1) * 16, y: y + 3, width: 15, height: 15)
                 v.addSubview(iv)
             }
             let more = ActionButton(title: "", symbol: "ellipsis.circle") { [unowned self] b in
@@ -1362,9 +1364,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             more.isBordered = false
             more.contentTintColor = .secondaryLabelColor
-            more.toolTip = "덮어쓰기 · 자동으로 쓸 앱 · 이름 · 지우기"
+            more.toolTip = "현재 상태 저장 · 자동으로 쓸 앱 · 이름 · 지우기"
             more.frame = NSRect(x: W - 34, y: y + 1, width: 22, height: 20)
             v.addSubview(more)
+            // ✥ 자리 정하기: 앱을 열지 않고 플레이어 · YouTube · Netflix 자리를 화면에 놓기
+            let mv = ActionButton(title: "", symbol: "arrow.up.and.down.and.arrow.left.and.right") { [unowned self] _ in
+                pop.close()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.startPlacing(pr.id) }
+            }
+            mv.isBordered = false
+            mv.contentTintColor = .secondaryLabelColor
+            mv.toolTip = "자리 정하기 — 앱을 열지 않고 화면에 놓기"
+            mv.frame = NSRect(x: W - 56, y: y + 1, width: 22, height: 20)
+            v.addSubview(mv)
             y += rowH
         }
         separator()
@@ -1717,22 +1729,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         v.addSubview(pt)
         var y: CGFloat = 118
         for pr in list {
-            let row = ActionButton(title: "", symbol: nil) { [unowned self] _ in applyPreset(pr); pop.close() }
+            let row = HoverButton(title: "", symbol: nil) { [unowned self] _ in applyPreset(pr); pop.close() }
+            row.onEnter = { [unowned self] in previewPreset(pr) }
+            row.onExit = { PresetPreview.hide() }
             row.isBordered = false
             row.wantsLayer = true
             row.layer?.cornerRadius = 6
-            row.layer?.backgroundColor = (autoActive == pr.id ? NSColor.launcherAccent.withAlphaComponent(0.2) : NSColor.labelColor.withAlphaComponent(0.06)).cgColor
+            row.layer?.backgroundColor = ((activePresetID ?? autoActive) == pr.id ? NSColor.launcherAccent.withAlphaComponent(0.2) : NSColor.labelColor.withAlphaComponent(0.06)).cgColor
             row.toolTip = "누르면 이 배치로" + (pr.apps.isEmpty ? "" : " · 자동: " + pr.apps.map { appName($0) }.joined(separator: ", "))
-            row.frame = NSRect(x: 10, y: y, width: W - 46, height: rowH - 4)
+            row.frame = NSRect(x: 10, y: y, width: W - 68, height: rowH - 4)
             v.addSubview(row)
-            let name = NSTextField(labelWithString: pr.name)
+            let name = PassLabel(labelWithString: pr.name)
             name.font = .systemFont(ofSize: 12); name.lineBreakMode = .byTruncatingTail
-            name.frame = NSRect(x: 18, y: y + 4, width: W - 64 - CGFloat(min(3, pr.apps.count)) * 16, height: 16)
+            name.frame = NSRect(x: 18, y: y + 4, width: W - 86 - CGFloat(min(3, pr.apps.count)) * 16, height: 16)
             v.addSubview(name)
             // 자동으로 쓰는 앱 아이콘 (최대 3)
             for (k, id) in pr.apps.prefix(3).enumerated() {
-                let iv = NSImageView(image: appIcon(id))
-                iv.frame = NSRect(x: W - 54 - CGFloat(k + 1) * 16, y: y + 4, width: 15, height: 15)
+                let iv = PassImage(image: appIcon(id))
+                iv.frame = NSRect(x: W - 76 - CGFloat(k + 1) * 16, y: y + 4, width: 15, height: 15)
                 v.addSubview(iv)
             }
             let more = ActionButton(title: "", symbol: "ellipsis.circle") { [unowned self] b in
@@ -1740,9 +1754,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             more.isBordered = false
             more.contentTintColor = .secondaryLabelColor
-            more.toolTip = "덮어쓰기 · 자동으로 쓸 앱 · 이름 · 지우기"
+            more.toolTip = "현재 상태 저장 · 자동으로 쓸 앱 · 이름 · 지우기"
             more.frame = NSRect(x: W - 34, y: y + 2, width: 22, height: 20)
             v.addSubview(more)
+            let mv = ActionButton(title: "", symbol: "arrow.up.and.down.and.arrow.left.and.right") { [unowned self] _ in
+                pop.close()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.startPlacing(pr.id) }
+            }
+            mv.isBordered = false
+            mv.contentTintColor = .secondaryLabelColor
+            mv.toolTip = "자리 정하기 — 앱을 열지 않고 화면에 놓기"
+            mv.frame = NSRect(x: W - 56, y: y + 2, width: 22, height: 20)
+            v.addSubview(mv)
             y += rowH
         }
         let save = ActionButton(title: "＋ 지금 배치 저장", symbol: nil) { [unowned self] _ in
@@ -1775,6 +1798,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         var level: Int
         var alpha: CGFloat, alphaActive: CGFloat
         var clickThrough: Bool
+        /// 모양별 자리: 이 프리셋이 켜진 동안 작게 ↔ 크게 보기를 바꾸면 그 모양 자리로 (없으면 그 자리 그대로)
+        var smallSlot: Slot? = nil
+        var bigSlot: Slot? = nil
+        struct Slot: Codable, Equatable { var x: CGFloat, top: CGFloat, width: CGFloat, bigH: CGFloat; var h: CGFloat? = nil }   // h = 저장할 때 창 높이 (미리보기용)
+        mutating func setSlot(_ s: Slot, big: Bool) { if big { bigSlot = s } else { smallSlot = s } }
+        /// YouTube · Netflix 창 자리 (큰 창 · 작은 창). 저장할 때 꺼져 있던 창은 nil → 적용할 때 그 창은 그대로
+        var yt: Video? = nil
+        var nf: Video? = nil
+        struct Video: Codable, Equatable {
+            var main: CGRect? = nil
+            var mini: CGRect? = nil
+            var inMini = false
+        }
+        /// 예전 프리셋(모양별 자리 없음)은 저장한 모양 하나만 그 자리
+        func slot(big: Bool) -> Slot? {
+            (big ? bigSlot : smallSlot) ?? (self.big == big ? Slot(x: x, top: top, width: width, bigH: bigH) : nil)
+        }
     }
     var playerPresets: [PlayerPreset] {
         get { (d.data(forKey: "playerPresets")).flatMap { try? JSONDecoder().decode([PlayerPreset].self, from: $0) } ?? [] }
@@ -1782,11 +1822,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
     func capturePreset(name: String) -> PlayerPreset {
         let f = playerPanel?.frame ?? .zero
-        return PlayerPreset(name: name, x: f.minX, top: f.maxY, width: detachedWidth ?? f.width, big: BigPlayerView.enabled,
-                            bigH: BigPlayerView.userHeight, level: playerLevelChoice, alpha: playerAlpha, alphaActive: playerAlphaActive,
-                            clickThrough: playerClickThrough)
+        var p = PlayerPreset(name: name, x: f.minX, top: f.maxY, width: detachedWidth ?? f.width, big: BigPlayerView.enabled,
+                             bigH: BigPlayerView.userHeight, level: playerLevelChoice, alpha: playerAlpha, alphaActive: playerAlphaActive,
+                             clickThrough: playerClickThrough)
+        p.setSlot(.init(x: p.x, top: p.top, width: p.width, bigH: p.bigH, h: f.height), big: p.big)
+        p.yt = VideoWindow.shared.presetFrames.map { .init(main: $0.main, mini: $0.mini, inMini: $0.inMini) }
+        p.nf = VideoWindow.netflix.presetFrames.map { .init(main: $0.main, mini: $0.mini, inMini: $0.inMini) }
+        return p
+    }
+    /// 지금 켜져 있는 프리셋 (자동이든 눌러서든) — 모양을 바꿀 때 그 모양 자리를 찾으려고
+    var activePresetID: String? {   // 껐다 켜도 기억
+        get { d.string(forKey: "activePresetID") }
+        set { d.set(newValue, forKey: "activePresetID") }
+    }
+    var activePreset: PlayerPreset? { activePresetID.flatMap { id in playerPresets.first { $0.id == id } } }
+    /// 작게 ↔ 크게 보기 바꾸기: 켜진 프리셋에 그 모양 자리가 있으면 그 자리 · 폭 · 높이로
+    func setPlayerBig(_ on: Bool) {
+        BigPlayerView.enabled = on; playerBar.big = on
+        guard let s = activePreset?.slot(big: on) else { refresh(); return }
+        detachedWidth = s.width; d.set(Double(s.width), forKey: "detachedWidth")
+        if on { BigPlayerView.userHeight = s.bigH }
+        refresh()
+        if let w = playerPanel { w.setFrameOrigin(NSPoint(x: s.x, y: s.top - w.frame.height)); EdgeDock.dock(for: w)?.settle() }
+    }
+    /// 프리셋 줄에 마우스를 올리면: 누르면 갈 자리(진하게) · 다른 모양으로 바꾸면 갈 자리(점선)
+    func previewPreset(_ pr: PlayerPreset) {
+        let cur = playerPanel?.frame
+        var boxes: [(frame: NSRect, title: String, now: Bool, color: NSColor)] = []
+        for big in [false, true] {
+            guard let s = pr.slot(big: big) else { continue }
+            let guess = big ? s.bigH + 120 : ((!BigPlayerView.enabled ? cur?.height : nil) ?? 110)
+            let h = s.h ?? guess
+            let label = big ? "크게 보기" : "작게 보기"
+            boxes.append((NSRect(x: s.x, y: s.top - h, width: s.width, height: h),
+                          big == pr.big ? "누르면 여기 · \(label)" : "\(label)로 바꾸면 여기", big == pr.big, PlaceColor.player))
+        }
+        for (v, name, c) in [(pr.yt, "YouTube", PlaceColor.youtube), (pr.nf, "Netflix", PlaceColor.netflix)] {
+            guard let v else { continue }
+            if let m = v.main { boxes.append((m, "\(name) 큰 창", !v.inMini, c)) }
+            if let m = v.mini { boxes.append((m, "\(name) 작은 창", v.inMini, c)) }
+        }
+        PresetPreview.show(boxes)
     }
     func applyPreset(_ p: PlayerPreset) {
+        PresetPreview.hide()
+        activePresetID = playerPresets.contains { $0.id == p.id } ? p.id : nil
         if BigPlayerView.enabled != p.big { BigPlayerView.enabled = p.big; playerBar.big = p.big }
         detachedWidth = p.width; d.set(Double(p.width), forKey: "detachedWidth")
         if p.big { BigPlayerView.userHeight = p.bigH }
@@ -1796,11 +1876,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         refresh()
         if let w = playerPanel {
             w.setFrameOrigin(NSPoint(x: p.x, y: p.top - w.frame.height))
+            EdgeDock.dock(for: w)?.settle()
             w.level = playerLevel
             w.alphaValue = playerAlpha
         }
         syncPinButton()
         applyClickThrough()
+        if let v = p.yt { VideoWindow.shared.place(main: v.main, mini: v.mini) }
+        if let v = p.nf { VideoWindow.netflix.place(main: v.main, mini: v.mini) }
     }
     /// 자동으로 바꿔 둔 프리셋 · 그 전의 배치 (연결 안 된 앱으로 돌아가면 되돌림)
     var autoActive: String?
@@ -1808,6 +1891,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var presetWatch: NSObjectProtocol?
     func startPresetWatch() {
         guard presetWatch == nil else { return }
+        VideoWindow.presetFrame = { [weak self] v, mini in
+            let p = self?.activePreset
+            let vv = v === VideoWindow.shared ? p?.yt : p?.nf
+            return mini ? vv?.mini : vv?.main
+        }
         presetWatch = NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main) { [weak self] n in
             let id = (n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication)?.bundleIdentifier ?? ""
             MainActor.assumeIsolated { self?.appActivated(id) }
@@ -1833,12 +1921,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let i = all.firstIndex(where: { $0.id == pr.id }) else { return }
             f(&all[i]); playerPresets = all
         }
-        m.addItem(MenuAction("지금 배치로 덮어쓰기") { [unowned self] in
+        let nowBig = BigPlayerView.enabled
+        m.addItem(MenuAction("현재 상태 저장 (\(nowBig ? "크게" : "작게") 보기 자리)") { [unowned self] in
             let now = capturePreset(name: pr.name)
-            update { $0.x = now.x; $0.top = now.top; $0.width = now.width; $0.big = now.big; $0.bigH = now.bigH
-                     $0.level = now.level; $0.alpha = now.alpha; $0.alphaActive = now.alphaActive; $0.clickThrough = now.clickThrough }
+            update { p in
+                // 다른 모양 자리는 그대로 두고, 예전 프리셋이면 그 모양 자리를 먼저 옮겨 둠
+                if p.big != now.big, p.slot(big: p.big) != nil, (p.big ? p.bigSlot : p.smallSlot) == nil { p.setSlot(p.slot(big: p.big)!, big: p.big) }
+                p.x = now.x; p.top = now.top; p.width = now.width; p.big = now.big; p.bigH = now.bigH
+                p.level = now.level; p.alpha = now.alpha; p.alphaActive = now.alphaActive; p.clickThrough = now.clickThrough
+                if let ns = now.slot(big: now.big) { p.setSlot(ns, big: now.big) }
+                // 켜져 있는 YouTube · Netflix 창만 새 자리로 (꺼진 창은 예전 자리 그대로)
+                if let v = now.yt { p.yt = v }
+                if let v = now.nf { p.nf = v }
+            }
             close()
         })
+        m.addItem(MenuAction("자리 직접 놓기… (앱을 안 열어도 돼요)") { [unowned self] in
+            close()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in self?.startPlacing(pr.id) }   // ☰ 판이 닫힌 뒤
+        })
+        // 모양별 자리: 저장했는지 보여 주고 지울 수 있게
+        for big in [false, true] {
+            let label = big ? "크게" : "작게"
+            if pr.slot(big: big) != nil, pr.slot(big: !big) == nil {
+                let i = NSMenuItem(title: "    ✓ \(label) 보기 자리 저장됨", action: nil, keyEquivalent: ""); i.isEnabled = false
+                m.addItem(i)
+            } else if pr.slot(big: big) != nil {
+                m.addItem(MenuAction("    ✓ \(label) 보기 자리 저장됨 · 지우기") { [unowned self] in
+                    update { p in
+                        if big { p.bigSlot = nil } else { p.smallSlot = nil }
+                        // 예전 방식 자리(저장한 모양)도 남지 않게: 다른 모양 자리가 있으면 그 모양을 기본으로
+                        if p.big == big, let o = p.slot(big: !big), (big ? p.smallSlot : p.bigSlot) != nil {
+                            p.big = !big; p.x = o.x; p.top = o.top; p.width = o.width; p.bigH = o.bigH
+                        }
+                    }
+                    close()
+                })
+            } else {
+                let i = NSMenuItem(title: "    \(label) 보기 자리 없음 — \(label) 보기로 바꾼 뒤 현재 상태 저장", action: nil, keyEquivalent: "")
+                i.isEnabled = false
+                m.addItem(i)
+            }
+        }
+        m.addItem(.separator())
         // 자동으로 쓸 앱: 켜져 있는 앱 + 이미 고른 앱
         let apps = NSMenuItem(title: "이 앱이 앞에 오면 자동", action: nil, keyEquivalent: "")
         let sub = NSMenu()
@@ -1868,9 +1993,129 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         m.addItem(MenuAction("지우기") { [unowned self] in
             playerPresets = playerPresets.filter { $0.id != pr.id }
             if autoActive == pr.id { autoActive = nil }
+            if activePresetID == pr.id { activePresetID = nil }
             close()
         })
         return m
+    }
+    // MARK: 자리 정하기 도구판 (앱을 열지 않고 프리셋 자리 놓기)
+    struct PlaceTarget { let title: String; let size: NSSize; let min: NSSize; let saved: Bool; var color = PlaceColor.player; let save: (inout PlayerPreset, NSRect) -> Void }
+    func placeTargets(_ pr: PlayerPreset) -> [[PlaceTarget]] {
+        let smallNow = pr.slot(big: false), bigNow = pr.slot(big: true)
+        let bigOff = bigNow.flatMap { b in b.h.map { $0 - b.bigH } } ?? 120     // 크게 보기 창 높이 − 아래 칸 높이
+        var groups: [[PlaceTarget]] = [[
+            PlaceTarget(title: "음악 플레이어 · 작게 보기", size: NSSize(width: smallNow?.width ?? detachedWidth ?? 360, height: smallNow?.h ?? 110),
+                        min: NSSize(width: 200, height: 60), saved: smallNow != nil) { p, f in
+                p.setSlot(.init(x: f.minX, top: f.maxY, width: f.width, bigH: p.bigH, h: f.height), big: false)
+                if !p.big { p.x = f.minX; p.top = f.maxY; p.width = f.width }
+            },
+            PlaceTarget(title: "음악 플레이어 · 크게 보기", size: NSSize(width: bigNow?.width ?? 900, height: bigNow?.h ?? BigPlayerView.userHeight + bigOff),
+                        min: NSSize(width: BigPlayerView.minWidth, height: BigPlayerView.height + bigOff), saved: bigNow != nil) { p, f in
+                let bh = max(BigPlayerView.height, f.height - bigOff)
+                p.setSlot(.init(x: f.minX, top: f.maxY, width: f.width, bigH: bh, h: f.height), big: true)
+                if p.big { p.x = f.minX; p.top = f.maxY; p.width = f.width; p.bigH = bh }
+            },
+        ]]
+        for (isYT, name) in [(true, "YouTube"), (false, "Netflix")] {
+            let cur = isYT ? pr.yt : pr.nf
+            groups.append([
+                PlaceTarget(title: "\(name) 큰 창", size: cur?.main?.size ?? NSSize(width: 1100, height: 720), min: NSSize(width: 480, height: 300),
+                            saved: cur?.main != nil, color: isYT ? PlaceColor.youtube : PlaceColor.netflix) { p, f in
+                    var v = (isYT ? p.yt : p.nf) ?? .init(); v.main = f
+                    if isYT { p.yt = v } else { p.nf = v }
+                },
+                PlaceTarget(title: "\(name) 작은 창 (PIP)", size: cur?.mini?.size ?? NSSize(width: 480, height: 270), min: NSSize(width: 200, height: 112),
+                            saved: cur?.mini != nil, color: isYT ? PlaceColor.youtube : PlaceColor.netflix) { p, f in
+                    var v = (isYT ? p.yt : p.nf) ?? .init(); v.mini = f
+                    if isYT { p.yt = v } else { p.nf = v }
+                },
+            ])
+        }
+        return groups
+    }
+    func updatePreset(_ id: String, _ f: (inout PlayerPreset) -> Void) {
+        var all = playerPresets
+        guard let i = all.firstIndex(where: { $0.id == id }) else { return }
+        f(&all[i]); playerPresets = all
+    }
+    private static var placePalette: NSPanel?
+    private static var placeKeyMon: Any?
+    /// 도구판을 띄움: 항목을 누르면 상자가 마우스를 따라다니고, 화면을 누르면 그 자리로. 도구판은 남아서 바로 다음 항목
+    func startPlacing(_ id: String) {
+        guard let pr = playerPresets.first(where: { $0.id == id }) else { endPlacing(); return }
+        Self.placePalette?.orderOut(nil)
+        let W: CGFloat = 230
+        let v = FlippedView()
+        var y: CGFloat = 12
+        let t = NSTextField(labelWithString: "\(pr.name) · 자리 정하기")
+        t.font = .systemFont(ofSize: 13, weight: .semibold)
+        t.frame = NSRect(x: 14, y: y, width: W - 28, height: 18); v.addSubview(t); y += 20
+        let hint = NSTextField(wrappingLabelWithString: "고른 뒤 화면을 누르면 그 자리로 · 휠로 크기 · Esc 취소")
+        hint.font = .systemFont(ofSize: 11); hint.textColor = .secondaryLabelColor
+        hint.frame = NSRect(x: 14, y: y, width: W - 28, height: 30); v.addSubview(hint); y += 36
+        for (gi, g) in placeTargets(pr).enumerated() {
+            if gi > 0 {
+                let line = NSBox(frame: NSRect(x: 14, y: y + 3, width: W - 28, height: 1)); line.boxType = .separator; v.addSubview(line); y += 8
+            }
+            for target in g {
+                let b = ActionButton(title: (target.saved ? "✓  " : "○  ") + target.title, symbol: nil) { [unowned self] _ in
+                    PlacePicker.start(title: "\(pr.name) · \(target.title)", size: target.size, minSize: target.min, color: target.color) { [unowned self] f in
+                        updatePreset(id) { target.save(&$0, f.integral) }
+                        startPlacing(id)   // ✓ 표시 · 미리보기 새로
+                    }
+                    Self.placePalette?.orderFrontRegardless()   // 어두운 판 위로
+                }
+                b.isBordered = false
+                b.alignment = .left
+                b.font = .systemFont(ofSize: 12)
+                b.contentTintColor = target.saved ? .labelColor : .secondaryLabelColor
+                let at = NSMutableAttributedString(string: target.saved ? "●  " : "○  ", attributes: [.foregroundColor: target.color, .font: NSFont.systemFont(ofSize: 12)])
+                at.append(NSAttributedString(string: target.title, attributes: [.foregroundColor: target.saved ? NSColor.labelColor : .secondaryLabelColor, .font: NSFont.systemFont(ofSize: 12)]))
+                b.attributedTitle = at
+                b.wantsLayer = true; b.layer?.cornerRadius = 6
+                b.layer?.backgroundColor = NSColor.labelColor.withAlphaComponent(0.06).cgColor
+                b.frame = NSRect(x: 10, y: y, width: W - 20, height: 26); v.addSubview(b); y += 30
+            }
+        }
+        y += 4
+        let ok = ActionButton(title: "완료", symbol: nil) { [unowned self] _ in endPlacing() }
+        ok.bezelStyle = .rounded; ok.keyEquivalent = "\r"
+        ok.frame = NSRect(x: W - 90, y: y, width: 80, height: 28); v.addSubview(ok); y += 40
+        let fx = NSVisualEffectView(frame: NSRect(x: 0, y: 0, width: W, height: y))
+        fx.material = .hudWindow; fx.blendingMode = .behindWindow; fx.state = .active
+        fx.wantsLayer = true; fx.layer?.cornerRadius = 12; fx.layer?.masksToBounds = true
+        v.frame = fx.bounds; fx.addSubview(v)
+        let p = Self.placePalette ?? {
+            let p = KeyablePanel(contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = true
+            p.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 2)
+            p.collectionBehavior = [.canJoinAllSpaces, .transient, .fullScreenAuxiliary]
+            p.isMovableByWindowBackground = true
+            // 처음 자리: 마우스가 있는 화면 위쪽 가운데
+            let sc = NSScreen.screens.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) } ?? NSScreen.main!
+            p.setFrame(NSRect(x: sc.visibleFrame.midX - W / 2, y: sc.visibleFrame.maxY - 20 - y, width: W, height: y), display: false)
+            return p
+        }()
+        let top = p.frame.maxY
+        p.contentView = fx
+        p.setFrame(NSRect(x: p.frame.minX, y: top - y, width: W, height: y), display: true)
+        p.orderFrontRegardless()
+        Self.placePalette = p
+        // 저장된 자리 미리보기는 도구판이 떠 있는 동안 계속
+        if let now = playerPresets.first(where: { $0.id == id }) { previewPreset(now) }
+        if Self.placeKeyMon == nil {
+            Self.placeKeyMon = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] e in
+                if e.keyCode == 53, !PlacePicker.active { MainActor.assumeIsolated { self?.endPlacing() }; return nil }
+                return e
+            }
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+    func endPlacing() {
+        PlacePicker.cancel()
+        PresetPreview.hide()
+        Self.placePalette?.orderOut(nil); Self.placePalette = nil
+        if let m = Self.placeKeyMon { NSEvent.removeMonitor(m) }; Self.placeKeyMon = nil
     }
     func appName(_ id: String) -> String {
         if let u = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id) { return FileManager.default.displayName(atPath: u.path).replacingOccurrences(of: ".app", with: "") }
@@ -2472,7 +2717,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         c.model.onDetach = nil   // 늘 따로라 합치기 단추 없음
         // 작게 보기 다음 곡 줄을 누르면 크게 보기
         c.model.onNextTap = { [unowned self] in
-            if !BigPlayerView.enabled { BigPlayerView.enabled = true; playerBar.big = true; refresh() }
+            if !BigPlayerView.enabled { setPlayerBig(true) }
         }
         c.model.stripDetached = lyricsDetached
         return c
@@ -2482,9 +2727,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         b.onLyrics = { [unowned self] in lyrics.toggle() }
         b.onDetach = { [unowned self] in toggleDetach(.player) }
         b.onBig = { [unowned self] in
-            BigPlayerView.enabled.toggle()
-            playerBar.big = BigPlayerView.enabled
-            refresh()
+            setPlayerBig(!BigPlayerView.enabled)
         }
         b.big = BigPlayerView.enabled
         b.detached = playerDetached
@@ -2897,7 +3140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else if firstRun {
             w.center()
         }
-        if widget { w.orderFrontRegardless() } else { showWindow() }
+        // 도구함 창은 띄우지 않음 (없앰)
         EdgeDock.shared.present = { [unowned self] w in if widget { w.orderFrontRegardless() } else { showWindow() } }
         EdgeDock.shared.appSize = { [unowned self] in listMode ? Tile.listIcon(iconSize) : iconSize }
         EdgeDock.shared.onChange = { [weak self] in DispatchQueue.main.async { self?.rebuildStatusMenuIfReady() } }
@@ -2930,7 +3173,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         widgetLevel = l
         d.set(l, forKey: "widgetLevel")
         window.level = widgetLevels[l].1
-        window.orderFrontRegardless()
         if let p = playerPanel, p.isVisible { p.level = playerLevel; p.orderFrontRegardless() }   // 떼어 낸 플레이어도 같이 (📌 면 항상 위 그대로)
         buildStatusMenu()
     }
@@ -3005,7 +3247,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 widgetShowsInDock.toggle()
                 d.set(widgetShowsInDock, forKey: "widgetShowsInDock")
                 NSApp.setActivationPolicy(widgetShowsInDock ? .regular : .accessory)
-                window.orderFrontRegardless()
                 buildStatusMenu()
             }
             dock.state = widgetShowsInDock ? .on : .off
@@ -3136,11 +3377,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return true
     }
 
+    /// 도구함 창은 없앰: Dock 아이콘을 누르는 등 '도구함 열기' 는 플레이어 창을 앞으로
     func showWindow() {
-        if launcherHidden { launcherHidden = false }
-        EdgeDock.shared.windowShown()
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
+        guard showPlayer else { return }
+        if playerHidden || playerPanel?.isVisible != true { togglePlayerWindow(); return }
+        if let p = playerPanel {
+            if let dock = EdgeDock.dock(for: p), dock.collapsed { dock.expand() }
+            p.orderFrontRegardless()
+        }
     }
 
     // MARK: 앱 정보
@@ -3630,10 +3874,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return m
     }
 
-    /// 위쪽 앱 창(검색 · 앱 목록)을 안 씀 — 플레이어 창이 메인 (메뉴 막대 🧰 '런처 창 열기' 로 다시)
+    /// 도구함 창(앱 찾기 · 앱 목록)은 없앰 — 늘 숨김. 플레이어 창 · ☰ 판 · 데스크탑 막대가 대신 (1.10~)
     var launcherHidden: Bool {
-        get { d.bool(forKey: "launcherHidden") }
-        set { d.set(newValue, forKey: "launcherHidden"); refresh() }
+        get { true }
+        set { refresh() }
     }
     func refresh() {
         defer { if launcherHidden, window.isVisible { window.orderOut(nil) } }
@@ -4190,10 +4434,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let bulk = NSMenuItem(title: "창 정리", action: nil, keyEquivalent: "")
         bulk.submenu = BulkWindows.menu()
         m.addItem(bulk)
-        m.addItem(Item("런처 창 열기") { [unowned self] in showWindow() })
-        let lh = Item("    앱 창 숨기기 (플레이어 창만)") { [unowned self] in launcherHidden.toggle() }
-        lh.state = launcherHidden ? .on : .off
-        m.addItem(lh)
         m.addItem(Item("Dock 앱 가져오기") { [unowned self] in importDock() })
         m.addItem(Item("옵션…") { [unowned self] in openSettings() })
         m.addItem(.separator())
@@ -4581,9 +4821,6 @@ func buildMainMenu(_ delegate: AppDelegate) {
     let pref = NSMenuItem(title: "옵션…", action: #selector(AppDelegate.openSettings), keyEquivalent: ",")
     pref.target = delegate
     appMenu.addItem(pref)
-    let find = NSMenuItem(title: "앱 찾기", action: #selector(AppDelegate.focusSearch), keyEquivalent: "f")
-    find.target = delegate
-    appMenu.addItem(find)
     let wid = NSMenuItem(title: "위젯 모드로 바꾸기", action: #selector(AppDelegate.toggleWidgetAction), keyEquivalent: "W")
     wid.target = delegate
     appMenu.addItem(wid)
@@ -4681,7 +4918,6 @@ final class QuickBarVC: NSViewController {
         let red = NSColor(red: 0.9, green: 0.04, blue: 0.08, alpha: 1)
         let playerOpen = app.showPlayer && app.playerDetached && !app.playerHidden
         return [
-            Cell(icon: sym("square.grid.2x2.fill"), text: nil, tint: nil, tip: "도구함 열기", badge: "", on: false) { [unowned self] _ in app.closeQuickBar(); app.showWindow() },
             Cell(icon: sym(mail.count > 0 ? "envelope.fill" : "envelope"), text: nil, tint: mail.count > 0 ? .systemBlue : nil, tip: "메일",
                  badge: mail.count > 0 ? (mail.count > 99 ? "99+" : "\(mail.count)") : "", on: false) { [unowned self] _ in
                 app.closeQuickBar(); MailWatch.shared.configured ? MailWindow.shared.show() : app.openSettingsTab("메일") },
@@ -4818,3 +5054,170 @@ final class ActionTarget: NSObject {
 
 /// 마우스를 통과시키는 판 (테두리 표시 등)
 final class PassView: NSView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
+/// 누르면 아래 단추가 받게 (프리셋 줄의 이름 · 아이콘)
+final class PassLabel: NSTextField { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
+final class PassImage: NSImageView { override func hitTest(_ point: NSPoint) -> NSView? { nil } }
+/// 테두리 없어도 키 입력을 받는 판 (자리 정하기 도구판의 완료 · Esc)
+final class KeyablePanel: NSPanel { override var canBecomeKey: Bool { true } }
+/// 마우스를 올리고 내릴 때 알려 주는 단추 (프리셋 줄 미리보기)
+final class HoverButton: ActionButton {
+    var onEnter: (() -> Void)?, onExit: (() -> Void)?
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { onEnter?() }
+    override func mouseExited(with event: NSEvent) { onExit?() }
+    override func viewWillMove(toWindow newWindow: NSWindow?) { if newWindow == nil { onExit?() }; super.viewWillMove(toWindow: newWindow) }
+}
+
+/// 자리 직접 놓기: 상자가 마우스를 따라다니고, 누르면 그 자리로 정함 (앱을 열지 않고 프리셋 자리 정하기)
+/// 휠 = 크기 (비율 그대로) · Esc / 오른쪽 클릭 = 취소
+@MainActor
+enum PlacePicker {
+    private static var covers: [NSPanel] = []
+    private static var ghost: NSPanel?
+    private static var size = NSSize.zero
+    private static var done: ((NSRect) -> Void)?
+    private static var monitor: Any?
+    static var active: Bool { ghost != nil }
+    static func start(title: String, size s: NSSize, minSize: NSSize = NSSize(width: 200, height: 60), color: NSColor = PlaceColor.player, _ onDone: @escaping (NSRect) -> Void) {
+        cancel()
+        size = s; done = onDone
+        // 화면마다 살짝 어두운 판 (누르기를 받아서 뒤의 앱이 눌리지 않게)
+        for sc in NSScreen.screens {
+            let c = CoverPanel(contentRect: sc.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            c.isOpaque = false; c.backgroundColor = NSColor.black.withAlphaComponent(0.18); c.hasShadow = false
+            c.level = .popUpMenu
+            c.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle, .fullScreenAuxiliary]
+            c.acceptsMouseMovedEvents = true
+            let v = CoverView(frame: NSRect(origin: .zero, size: sc.frame.size)); v.minSize = minSize
+            c.contentView = v
+            c.setFrame(sc.frame, display: true)
+            c.orderFrontRegardless()
+            covers.append(c)
+        }
+        let g = NSPanel(contentRect: NSRect(origin: .zero, size: s), styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+        g.isOpaque = false; g.backgroundColor = .clear; g.hasShadow = false; g.ignoresMouseEvents = true
+        g.level = NSWindow.Level(rawValue: NSWindow.Level.popUpMenu.rawValue + 1)
+        g.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle, .fullScreenAuxiliary]
+        g.contentView = GhostView(title: title, color: color)
+        ghost = g
+        follow()
+        g.orderFrontRegardless()
+        covers.first { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) }?.makeKey()
+        NSApp.activate(ignoringOtherApps: true)
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { e in
+            if e.keyCode == 53 { MainActor.assumeIsolated { cancel() }; return nil }
+            return e
+        }
+    }
+    /// 상자 가운데가 마우스에 오게
+    fileprivate static func follow() {
+        guard let g = ghost else { return }
+        let m = NSEvent.mouseLocation
+        g.setFrame(NSRect(x: (m.x - size.width / 2).rounded(), y: (m.y - size.height / 2).rounded(), width: size.width, height: size.height), display: true)
+    }
+    fileprivate static func resize(_ dy: CGFloat, min: NSSize) {
+        let k = dy > 0 ? 1.06 : 1 / 1.06
+        let w = max(min.width, size.width * k)
+        size = NSSize(width: w.rounded(), height: max(min.height, (size.height * w / size.width)).rounded())
+        follow()
+    }
+    fileprivate static func drop() {
+        guard let g = ghost else { return }
+        let f = g.frame, cb = done
+        cancel()
+        cb?(f)
+    }
+    static func cancel() {
+        covers.forEach { $0.orderOut(nil) }; covers = []
+        ghost?.orderOut(nil); ghost = nil
+        done = nil
+        if let monitor { NSEvent.removeMonitor(monitor) }; monitor = nil
+    }
+    private final class CoverPanel: NSPanel {
+        override var canBecomeKey: Bool { true }
+    }
+    private final class CoverView: NSView {
+        var minSize = NSSize(width: 200, height: 60)
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            trackingAreas.forEach(removeTrackingArea)
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseMoved, .activeAlways, .inVisibleRect], owner: self))
+        }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override var acceptsFirstResponder: Bool { true }
+        override func mouseMoved(with e: NSEvent) { PlacePicker.follow() }
+        override func mouseDragged(with e: NSEvent) { PlacePicker.follow() }
+        override func mouseDown(with e: NSEvent) { PlacePicker.drop() }
+        override func rightMouseDown(with e: NSEvent) { PlacePicker.cancel() }
+        override func scrollWheel(with e: NSEvent) { if e.scrollingDeltaY != 0 { PlacePicker.resize(e.scrollingDeltaY, min: minSize) } }
+        override func keyDown(with e: NSEvent) { if e.keyCode == 53 { PlacePicker.cancel() } else { super.keyDown(with: e) } }
+    }
+    private final class GhostView: NSView {
+        let title: String, color: NSColor
+        init(title: String, color: NSColor) { self.title = title; self.color = color; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError() }
+        override func draw(_ r: NSRect) {
+            let rect = bounds.insetBy(dx: 2, dy: 2)
+            let path = NSBezierPath(roundedRect: rect, xRadius: Theme.playerRadius, yRadius: Theme.playerRadius)
+            color.withAlphaComponent(0.3).setFill(); path.fill()
+            path.lineWidth = 2
+            color.setStroke(); path.stroke()
+            let sh = NSShadow(); sh.shadowBlurRadius = 3; sh.shadowColor = .black
+            let a = NSAttributedString(string: title + "\n누르면 여기로 · 휠로 크기 · Esc 취소",
+                                       attributes: [.font: NSFont.systemFont(ofSize: 12, weight: .semibold), .foregroundColor: NSColor.white, .shadow: sh,
+                                                    .paragraphStyle: { let p = NSMutableParagraphStyle(); p.alignment = .center; return p }()])
+            let h = a.boundingRect(with: NSSize(width: bounds.width - 12, height: 200), options: .usesLineFragmentOrigin).height
+            a.draw(in: NSRect(x: 6, y: (bounds.height - h) / 2, width: bounds.width - 12, height: h))
+        }
+    }
+}
+
+/// 창마다 다른 색 (미리보기 · 자리 정하기 상자): 플레이어 파랑 · YouTube 빨강 · Netflix 보라
+enum PlaceColor {
+    static let player = NSColor.launcherAccent
+    static let youtube = NSColor.systemRed
+    static let netflix = NSColor.systemPurple
+}
+/// 배치 미리보기: 프리셋의 크게 / 작게 보기 자리를 화면에 반투명 상자로
+@MainActor
+enum PresetPreview {
+    private static var panels: [NSPanel] = []
+    static func show(_ boxes: [(frame: NSRect, title: String, now: Bool, color: NSColor)]) {
+        hide()
+        for b in boxes {
+            let p = NSPanel(contentRect: b.frame, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered, defer: false)
+            p.isOpaque = false; p.backgroundColor = .clear; p.hasShadow = false
+            p.ignoresMouseEvents = true
+            p.level = .popUpMenu
+            p.collectionBehavior = [.canJoinAllSpaces, .transient, .ignoresCycle]
+            p.contentView = BoxView(title: b.title, strong: b.now, color: b.color)
+            p.setFrame(b.frame, display: true)
+            p.alphaValue = 0
+            p.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { c in c.duration = 0.12; p.animator().alphaValue = 1 }
+            panels.append(p)
+        }
+    }
+    static func hide() { panels.forEach { $0.orderOut(nil) }; panels = [] }
+    private final class BoxView: NSView {
+        let title: String, strong: Bool, color: NSColor
+        init(title: String, strong: Bool, color: NSColor) { self.title = title; self.strong = strong; self.color = color; super.init(frame: .zero) }
+        required init?(coder: NSCoder) { fatalError() }
+        override func draw(_ r: NSRect) {
+            let rect = bounds.insetBy(dx: 2, dy: 2)
+            let path = NSBezierPath(roundedRect: rect, xRadius: Theme.playerRadius, yRadius: Theme.playerRadius)
+            color.withAlphaComponent(strong ? 0.24 : 0.14).setFill(); path.fill()
+            path.lineWidth = 2
+            if !strong { path.setLineDash([6, 4], count: 2, phase: 0) }
+            color.withAlphaComponent(0.95).setStroke(); path.stroke()
+            let a = NSAttributedString(string: title, attributes: [.font: NSFont.systemFont(ofSize: 13, weight: .semibold), .foregroundColor: NSColor.white,
+                                                                   .shadow: { let s = NSShadow(); s.shadowBlurRadius = 3; s.shadowColor = .black; return s }()])
+            let sz = a.size()
+            a.draw(at: NSPoint(x: (bounds.width - sz.width) / 2, y: (bounds.height - sz.height) / 2))
+        }
+    }
+}

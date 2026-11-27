@@ -539,6 +539,99 @@ fn open_pick(app: &tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+// MARK: 배치 미리보기 · 자리 정하기 (Mac 과 같음) — box.html · place.html
+
+/// 미리보기 상자 하나 (자리 · 크기는 논리 픽셀, 색은 CSS 색)
+#[derive(Deserialize, Serialize)]
+struct PBox {
+    x: f64,
+    y: f64,
+    w: f64,
+    h: f64,
+    title: String,
+    color: String,
+    strong: bool,
+}
+
+fn close_prefixed(app: &tauri::AppHandle, prefix: &str) {
+    for (label, w) in app.webview_windows() {
+        if label.starts_with(prefix) {
+            let _ = w.destroy();
+        }
+    }
+}
+
+/// 프리셋 줄에 마우스를 올리면: 자리마다 클릭이 통과하는 투명한 상자 창 (pbox-n)
+#[tauri::command]
+async fn preview_show(app: tauri::AppHandle, boxes: Vec<PBox>) -> Result<(), String> {
+    close_prefixed(&app, "pbox-");
+    for (i, b) in boxes.iter().enumerate() {
+        let data = serde_json::to_string(b).map_err(|e| e.to_string())?;
+        let win = WebviewWindowBuilder::new(&app, format!("pbox-{i}"), WebviewUrl::App("box.html".into()))
+            .title("미리보기")
+            .initialization_script(&format!("window.__BOX = {data};"))
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .resizable(false)
+            .focused(false)
+            .visible(false)
+            .position(b.x, b.y)
+            .inner_size(b.w.max(20.0), b.h.max(20.0))
+            .build()
+            .map_err(|e| e.to_string())?;
+        let _ = win.set_ignore_cursor_events(true);
+        let _ = win.show();
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn preview_hide(app: tauri::AppHandle) {
+    close_prefixed(&app, "pbox-");
+}
+
+/// 자리 정하기: 모니터마다 살짝 어두운 판 (place-n). 마우스가 있는 모니터에 도구판.
+/// data = 프리셋 이름 · 놓을 항목들 (JSON, place.html 이 읽음). 놓으면 place.html 이 'place-drop' 을 알림 → music.js 가 저장
+#[tauri::command]
+async fn place_open(app: tauri::AppHandle, data: String) -> Result<(), String> {
+    close_prefixed(&app, "pbox-");
+    close_prefixed(&app, "place-");
+    let [cx, cy, _, _] = mirror::cursor_monitor();
+    let mons = app.available_monitors().map_err(|e| e.to_string())?;
+    for (i, m) in mons.iter().enumerate() {
+        let (p, sz) = (m.position(), m.size());
+        let home = p.x == cx && p.y == cy;
+        let win = WebviewWindowBuilder::new(&app, format!("place-{i}"), WebviewUrl::App("place.html".into()))
+            .title("자리 정하기")
+            .initialization_script(&format!("window.__PLACE = {data}; window.__HOME = {home};"))
+            .decorations(false)
+            .transparent(true)
+            .shadow(false)
+            .skip_taskbar(true)
+            .always_on_top(true)
+            .resizable(false)
+            .visible(false)
+            .build()
+            .map_err(|e| e.to_string())?;
+        let _ = win.set_position(tauri::PhysicalPosition::new(p.x, p.y));
+        let _ = win.set_size(tauri::PhysicalSize::new(sz.width.max(1), sz.height.max(1)));
+        let _ = win.show();
+        if home {
+            let _ = win.set_focus();
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn place_close(app: tauri::AppHandle) {
+    close_prefixed(&app, "place-");
+    let _ = app.emit("place-closed", ());
+}
+
 /// 비추는 창 만들기 (자리 · 크기는 물리 픽셀)
 fn open_mirror(app: &tauri::AppHandle, m: mirror::Mirror, x: i32, y: i32, w: i32, h: i32) -> Result<(), String> {
     let label = format!("mirror-{}", m.id);
@@ -940,6 +1033,10 @@ pub fn run() {
             cover_open,
             cover_add,
             mirror_pick,
+            preview_show,
+            preview_hide,
+            place_open,
+            place_close,
             mirror_make,
             mirror_restore,
             mirror_info,

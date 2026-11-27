@@ -569,7 +569,6 @@ function settingsDialog() {
   const chk = (k, t, sub) => `<label class="set-ck"><input type="checkbox" data-k="${k}" ${S[k] ? "checked" : ""}><span>${t}${sub ? `<small>${sub}</small>` : ""}</span></label>`;
   modal.innerHTML = `<div class="box wide"><h3 data-tauri-drag-region>설정</h3><div class="settings">
     <h4>모양</h4>
-    <label class="set-ck"><input type="checkbox" data-k="playerMode" ${S.playerMode ? "checked" : ""}><span>플레이어 창만 쓰기<small>켜면 플레이어 창 하나만 떠요 (작게 · 크게 보기). 끄면 앱 목록이 있는 이 창이 다시 보여요</small></span></label>
     <label class="set-row">테마 <select data-k="theme">${opt("default", S.theme, "기본 (어두운 반투명)")}${opt("light", S.theme, "밝게")}${opt("bear", S.theme, "곰 (우유색 · 갈색 · 분홍)")}</select></label>
     <label class="set-row">배경 투명도 <span class="set-range"><input type="range" data-k="bgOpacity" min="10" max="100" step="2" value="${S.bgOpacity || { default: 62, light: 80, bear: 94 }[S.theme] || 62}"><b id="opVal">${S.bgOpacity || { default: 62, light: 80, bear: 94 }[S.theme] || 62}%</b><button type="button" data-act="opReset" title="테마 기본값으로">기본</button></span></label>
     <label class="set-row">배경 그림 <span><button data-act="pickimg">고르기…</button> ${S.themeImage ? '<button data-act="clearimg">지우기</button>' : ""}</span></label>
@@ -994,7 +993,9 @@ $("#resize").addEventListener("mousedown", (e) => {
     $("#edgeHandle").innerHTML = S.docked === "left" ? I.handleR : I.handleL;
     win()?.setMinSize(new T.dpi.LogicalSize(16, 100)).catch(() => {});
   } else S.docked = null;
-  if (S.playerMode) S.detachPlayer = true;
+  // 도구함 창(앱 목록 · 검색)은 없앰 — 늘 플레이어 창만 (Mac 1.10 과 같음). 본 창은 설정 · 대화 상자 때만 잠깐
+  S.playerMode = true;
+  S.detachPlayer = true;
   render();
   applyWindow();
   applyPlayerMode(false);

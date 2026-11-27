@@ -252,6 +252,8 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
         w.delegate = self
         w.setFrameAutosaveName("\(name)VideoWindow")
         if UserDefaults.standard.string(forKey: "NSWindow Frame \(name)VideoWindow") == nil { w.center() }
+        // 켜진 배치 프리셋에 이 창 자리가 있으면 그 자리로 열기
+        if let f = Self.presetFrame?(self, false) { w.setFrame(OnScreen.clamp(f), display: false) }
         window = w
 
         urlWatch = wv.observe(\.url, options: [.new]) { [weak self] _, _ in
@@ -505,6 +507,31 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
 
     func toggleMini() { inMini ? exitMini(showMain: true) : enterMini() }
 
+    // MARK: 배치 프리셋 (큰 창 · 작은 창 자리)
+    /// 프리셋으로 정했지만 작은 창을 아직 안 만들어서 못 옮긴 자리 (처음 작은 창이 될 때 씀)
+    private var pendingMiniFrame: NSRect?
+    /// 켜져 있는 배치 프리셋의 이 창 자리 (true = 작은 창). 창을 새로 열거나 작은 창이 될 때 그 자리로
+    static var presetFrame: ((VideoWindow, Bool) -> NSRect?)?
+    /// 지금 자리: 큰 창 · 작은 창 (만든 적 없으면 nil) · 지금 작은 창인지. 창이 꺼져 있으면 nil
+    var presetFrames: (main: NSRect?, mini: NSRect?, inMini: Bool)? {
+        guard isOpen else { return nil }
+        return (window?.frame, mini?.frame ?? pendingMiniFrame, inMini)
+    }
+    /// 프리셋 자리로 옮기기 (켜져 있을 때만). 작은 창은 위 · 왼쪽 · 폭을 맞추고 높이는 영상 비율대로
+    func place(main m: NSRect?, mini s: NSRect?) {
+        guard isOpen else { return }
+        if let m, let w = window { w.setFrame(OnScreen.clamp(m), display: true) }
+        if let s {
+            if let p = mini {
+                var f = p.frame
+                f.size.width = s.width
+                if let ar = miniOverlay?.aspect, ar > 0 { f.size.height = (s.width / ar).rounded() } else { f.size.height = s.height }
+                f.origin = NSPoint(x: s.minX, y: s.maxY - f.height)
+                p.setFrame(OnScreen.clamp(f), display: true)
+            } else { pendingMiniFrame = s }
+        }
+    }
+
     func enterMini() {
         guard let wv = webView, !inMini else { if webView == nil { show() }; return }
         if inPiP { leaveNativePiP {}; setPiP(false) }
@@ -516,6 +543,9 @@ final class VideoWindow: NSObject, WKNavigationDelegate, WKUIDelegate, NSWindowD
                 return
             }
             let p = self.mini ?? self.makeMini()
+            if let f = self.pendingMiniFrame { p.setFrame(f, display: false); self.pendingMiniFrame = nil }
+            // 켜진 배치 프리셋에 작은 창 자리가 있으면 그 자리로 (위 · 왼쪽 · 폭, 높이는 아래 setAspect 가 영상 비율대로)
+            if let f = Self.presetFrame?(self, true) { p.setFrame(f, display: false) }
             wv.removeFromSuperview()
             wv.frame = p.contentView!.bounds
             wv.autoresizingMask = [.width, .height]

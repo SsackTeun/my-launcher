@@ -140,6 +140,13 @@ final class FavBar {
     func toggleDeskApp(_ id: String) {
         guard let n = desktop, let r = mainApp(id) else { open(id); return }
         let pid = r.processIdentifier
+        // X 로 창을 닫아 둔 앱 (내려 둔 창도 없음): 지금 데스크탑에 창을 다시 열기 (Dock 아이콘 누르기와 같음)
+        if deskMin.contains(id), !FavBar.hasMinimizedWindow(pid: pid) {
+            markMinimized(id, false)
+            open(id)
+            for t in [0.6, 1.5] { DispatchQueue.main.asyncAfter(deadline: .now() + t) { MainActor.assumeIsolated { FavBar.refreshDesktops() } } }
+            return
+        }
         if deskMin.contains(id) {
             let wins = Set(deskMinWins)
             let restore = { [weak self] in
@@ -161,6 +168,18 @@ final class FavBar {
             return
         }
         open(id)
+    }
+    /// 그 앱에 Dock 으로 내려 둔 창이 있는지 (없으면 X 로 닫아 둔 것)
+    static func hasMinimizedWindow(pid: pid_t) -> Bool {
+        guard AXIsProcessTrusted() else { return true }
+        let ax = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(ax, 0.3)
+        var v: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(ax, kAXWindowsAttribute as CFString, &v) == .success, let ws = v as? [AXUIElement] else { return false }
+        return ws.contains { w in
+            var m: CFTypeRef?
+            return AXUIElementCopyAttributeValue(w, kAXMinimizedAttribute as CFString, &m) == .success && (m as? Bool) == true
+        }
     }
     /// 창 내리기(앞 창 하나) · 올리기(only 에 든 창들, 못 찾으면 내려 둔 첫 창)
     static func setMinimized(pid: pid_t, _ on: Bool, only: Set<Int>?) {
@@ -1659,7 +1678,7 @@ final class FavAppCell: NSView, NSDraggingSource {
         hovering = true
         let running = !NSRunningApplication.runningApplications(withBundleIdentifier: id).isEmpty
         if editing { HoverTip.shared.schedule("\(name) — 누르면 빠져요", for: self); return }
-        if bar.isDesktop && bar.deskMin.contains(id) { HoverTip.shared.schedule("\(name)\nDock 에 내려 둔 창 · 누르면 올라와요", for: self); return }
+        if bar.isDesktop && bar.deskMin.contains(id) { HoverTip.shared.schedule("\(name)\n내려 두거나 닫아 둔 창 · 누르면 올라와요", for: self); return }
         HoverTip.shared.schedule(running ? "\(name)\n메모리 · CPU 재는 중…" : "\(name)\n꺼져 있음", for: self)
         if running { measure() }
     }
